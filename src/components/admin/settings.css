@@ -1,0 +1,125 @@
+.admin-settings { display: grid; gap: 22px; padding-bottom: 12px; }
+.admin-settings .admin-config-card { background: #fff; border: 1px solid var(--border, #e8eeeb); border-radius: 18px; padding: 26px; box-shadow: 0 3px 18px #12342803; }
+.admin-settings .admin-config-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+.admin-settings .admin-config-icon { display: grid; place-items: center; width: 48px; height: 48px; flex: 0 0 48px; border-radius: 14px; color: var(--green, #079d68); background: #edf9f3; }
+.admin-settings h2 { color: var(--ink, #18332b); font-size: 19px; line-height: 1.5; margin: 0 0 4px; font-weight: 700; }
+.admin-settings h3 { color: var(--ink, #18332b); font-size: 15px; line-height: 1.5; margin: 0 0 13px; font-weight: 700; }
+.admin-settings p { color: var(--muted, #77847f); margin: 0; font-size: 12px; line-height: 1.8; }
+.admin-settings label { display: flex; flex-direction: column; gap: 8px; color: #54665e; font-size: 12px; font-weight: 600; }
+.admin-settings input, .admin-settings select, .admin-settings textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 11px 13px; min-height: 44px; font: inherit; font-size: 13px; font-weight: 400; color: var(--ink, #18332b); border: 1px solid #dfe8e2; border-radius: 9px; background: #fff; outline: none; transition: border-color .16s, box-shadow .16s; }
+.admin-settings input:focus, .admin-settings select:focus, .admin-settings textarea:focus { border-color: var(--green, #079d68); box-shadow: 0 0 0 3px #089b6612; }
+.admin-settings input::placeholder, .admin-settings textarea::placeholder { color: #98a69d; font-size: 12px; }
+.admin-settings input:disabled, .admin-settings select:disabled, .admin-settings textarea:disabled { background: #f5f8f6; opacity: .7; }
+.admin-settings textarea { resize: vertical; line-height: 1.7; }
+.admin-settings .admin-config-schedule-filters { display: grid; grid-template-columns: minmax(180px, 300px) minmax(160px, 230px); gap: 16px; margin-bottom: 23px; }
+.admin-settings .admin-config-schedule-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
+.admin-settings .admin-config-subsection { min-width: 0; }
+.admin-settings .admin-config-schedule-columns > .admin-config-subsection + .admin-config-subsection { border-left: 1px solid var(--border, #e8eeeb); padding-left: 26px; }
+.admin-settings .admin-config-section-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.admin-settings .admin-config-section-label > strong { font-size: 13px; color: var(--ink, #18332b); }
+.admin-settings .admin-config-eyebrow { color: var(--ink, #18332b); font-size: 13px; font-weight: 700; }
+.admin-settings .admin-config-counter { color: var(--muted, #77847f); font-size: 11px; white-space: nowrap; }
+.admin-settings .admin-config-status { background: #eef7f1; color: #248553; font-size: 10px; line-height: 1.4; border-radius: 6px; padding: 5px 8px; white-space: nowrap; }
+.admin-settings .admin-config-status.custom { background: #f0f4fb; color: #59729d; }
+.admin-settings .admin-config-time-editor { margin: 18px 0; }
+.admin-settings .admin-config-times { display: flex; flex-wrap: wrap; gap: 8px; min-height: 80px; align-content: flex-start; }
+.admin-settings .admin-config-time-chip { display: flex; align-items: center; gap: 6px; padding: 7px 5px 7px 9px; background: #f4f8f5; border: 1px solid #e4eee7; color: #2b5a41; border-radius: 7px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.admin-settings .admin-config-time-chip > svg { color: #83a68d; }
+.admin-settings .admin-config-time-chip button { background: transparent; border: 0; color: #8a9d90; padding: 3px; display: grid; place-items: center; border-radius: 4px; cursor: pointer; }
+.admin-settings .admin-config-time-chip button:hover { color: var(--danger, #d64c51); background: #ffecec; }
+.admin-settings .admin-config-time-chip button:disabled { cursor: default; opacity: .4; }
+.admin-settings .admin-config-add-time { display: flex; align-items: center; gap: 9px; margin-top: 15px; }
+.admin-settings .admin-config-add-time input { width: 116px; min-height: 39px; padding: 8px 10px; }
+.admin-settings .admin-config-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 39px; padding: 10px 14px; border: 1px solid transparent; border-radius: 8px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .16s, border-color .16s, opacity .16s; line-height: 1.5; }
+.admin-settings .admin-config-button.primary { background: var(--green, #079d68); border-color: var(--green, #079d68); color: #fff; }
+.admin-settings .admin-config-button.primary:hover { background: #078554; border-color: #078554; }
+.admin-settings .admin-config-button.secondary { background: #fff; color: #50675a; border-color: #dfe8e2; }
+.admin-settings .admin-config-button.secondary:hover { background: #f5f8f6; border-color: #bed2c5; }
+.admin-settings .admin-config-button:disabled { cursor: default; opacity: .45; }
+.admin-settings .admin-config-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.admin-settings .admin-config-footnote { display: flex; align-items: center; gap: 7px; color: #8b9a91; border-top: 1px solid #eef2ee; margin-top: 23px; padding-top: 16px; font-size: 11px; }
+.admin-settings .admin-config-feedback { display: flex; align-items: flex-start; gap: 9px; padding: 12px 14px; border-radius: 9px; font-size: 12px; line-height: 1.7; margin-bottom: 18px; }
+.admin-settings .admin-config-feedback svg, .admin-settings .admin-config-warning svg, .admin-settings .admin-config-note svg { flex: 0 0 auto; margin-top: 2px; }
+.admin-settings .admin-config-feedback.success { background: #eaf8ee; color: #22834c; }
+.admin-settings .admin-config-feedback.error { background: #fff0ef; color: #b34c49; }
+.admin-settings .admin-config-warning { display: flex; align-items: flex-start; gap: 9px; padding: 12px 13px; margin: 16px 0; border: 1px solid #f0dfb7; background: #fffaf0; border-radius: 8px; color: #99742b; font-size: 11px; line-height: 1.8; }
+.admin-settings .admin-config-note { display: flex; align-items: flex-start; gap: 9px; padding: 12px 15px; background: #f6f8fb; border: 1px solid #e8edf3; color: #738196; border-radius: 9px; font-size: 11px; line-height: 1.8; margin-bottom: 24px; }
+.admin-settings .admin-config-loading { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--muted, #77847f); padding: 25px 0; }
+.admin-settings .admin-config-spinner { animation: admin-config-spin .8s linear infinite; flex-shrink: 0; }
+.admin-settings .admin-config-location-columns { display: grid; grid-template-columns: 1.2fr 1fr; gap: 28px; }
+.admin-settings .admin-config-stop-list { display: flex; flex-direction: column; gap: 9px; margin: 17px 0; }
+.admin-settings .admin-config-stop { display: flex; align-items: center; gap: 11px; border: 1px solid #e5ece7; border-radius: 10px; padding: 13px; }
+.admin-settings .admin-config-stop.inactive { background: #fafbfa; }
+.admin-settings .admin-config-stop-pin { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; background: #edf7f0; color: #32945b; border-radius: 9px; }
+.admin-settings .admin-config-stop.inactive .admin-config-stop-pin { background: #edf0ee; color: #9ba79f; }
+.admin-settings .admin-config-stop-info { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 4px; }
+.admin-settings .admin-config-stop-info strong { color: var(--ink, #18332b); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.admin-settings .admin-config-stop-info > span { color: var(--muted, #77847f); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.admin-settings .admin-config-stop-info small { color: #9aa79e; font-size: 10px; }
+.admin-settings .admin-config-icon-button { display: grid; place-items: center; height: 31px; width: 31px; border: 0; border-radius: 6px; color: #83948a; background: transparent; cursor: pointer; flex-shrink: 0; }
+.admin-settings .admin-config-icon-button:hover { color: var(--green, #079d68); background: #edf7f0; }
+.admin-settings .admin-config-icon-button:disabled { opacity: .4; cursor: default; }
+.admin-settings .admin-config-toggle { position: relative; height: 21px; width: 36px; flex: 0 0 36px; border: 0; padding: 0; border-radius: 12px; background: #dbe3dd; cursor: pointer; transition: background .2s; }
+.admin-settings .admin-config-toggle span { position: absolute; width: 15px; height: 15px; top: 3px; left: 3px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px #243d2520; transition: transform .2s; }
+.admin-settings .admin-config-toggle.on { background: var(--green, #079d68); }
+.admin-settings .admin-config-toggle.on span { transform: translateX(15px); }
+.admin-settings .admin-config-toggle:disabled { opacity: .5; cursor: default; }
+.admin-settings .admin-config-stop-form { background: #f8faf8; border: 1px dashed #dce8df; border-radius: 11px; padding: 18px; display: grid; gap: 14px; }
+.admin-settings .admin-config-stop-form .admin-config-section-label { margin: 0; }
+.admin-settings .admin-config-stop-form > .admin-config-button { justify-self: start; }
+.admin-settings .admin-config-didube { padding: 21px; background: #f8faf8; border: 1px solid #e7eee8; border-radius: 12px; align-self: start; }
+.admin-settings .admin-config-didube .admin-config-eyebrow { color: #6c8b77; font-size: 11px; display: block; margin-bottom: 12px; }
+.admin-settings .admin-config-didube > p { margin-bottom: 20px; }
+.admin-settings .admin-config-didube > label { margin-bottom: 17px; }
+.admin-settings .admin-config-route-note { margin-top: 22px; display: flex; align-items: flex-start; gap: 9px; color: #809286; line-height: 1.8; font-size: 11px; }
+.admin-settings .admin-config-route-note svg { flex-shrink: 0; margin-top: 2px; }
+.admin-settings .admin-config-staff-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.admin-settings .admin-config-access-note { display: flex; gap: 12px; padding: 15px; background: #f0f8f3; border-radius: 10px; color: #4f8e65; }
+.admin-settings .admin-config-access-note svg { flex-shrink: 0; margin-top: 3px; }
+.admin-settings .admin-config-access-note strong { color: #376d4b; font-size: 12px; }
+.admin-settings .admin-config-access-note p { color: #7a9b85; font-size: 11px; margin-top: 4px; }
+.admin-settings .admin-config-user-list { display: grid; gap: 10px; margin-top: 18px; }
+.admin-settings .admin-config-user { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #edf1ed; }
+.admin-settings .admin-config-avatar { display: grid; place-items: center; width: 37px; height: 37px; flex: 0 0 37px; border-radius: 50%; background: #edf2ee; color: #618770; font-size: 14px; font-weight: 600; }
+.admin-settings .admin-config-user > div { display: grid; gap: 4px; flex: 1; min-width: 0; }
+.admin-settings .admin-config-user strong { color: var(--ink, #18332b); font-size: 12px; overflow-wrap: anywhere; }
+.admin-settings .admin-config-user > div > span { color: var(--muted, #77847f); font-size: 11px; overflow-wrap: anywhere; }
+.admin-settings .admin-config-staff-form { background: #f8faf8; border: 1px solid #e7eee8; border-radius: 12px; padding: 21px; display: flex; flex-direction: column; gap: 17px; }
+.admin-settings .admin-config-staff-form h3 { margin-bottom: 0; }
+.admin-settings .admin-config-staff-form > button { align-self: flex-start; }
+.admin-settings .admin-config-input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.admin-settings .admin-config-field-help { color: #98a69d; font-size: 10px; line-height: 1.7; margin-top: -9px; }
+.admin-settings .admin-config-device-columns { display: grid; grid-template-columns: 1fr 1.15fr; gap: 28px; }
+.admin-settings .admin-config-device-list { display: grid; gap: 12px; margin-top: 18px; }
+.admin-settings .admin-config-device { padding: 16px; border: 1px solid #e3ece6; border-radius: 11px; }
+.admin-settings .admin-config-device.revoked { background: #fafbfa; }
+.admin-settings .admin-config-device-top { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; }
+.admin-settings .admin-config-device-top strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; color: var(--ink, #18332b); }
+.admin-settings .admin-config-device-icon { display: grid; place-items: center; width: 35px; height: 35px; flex: 0 0 35px; background: #edf7f0; color: #32945b; border-radius: 9px; }
+.admin-settings .admin-config-device.revoked .admin-config-device-icon { color: #97a39b; background: #f0f2f0; }
+.admin-settings .admin-config-device .admin-config-status.revoked { background: #f1f2f1; color: #96a097; white-space: normal; text-align: center; }
+.admin-settings .admin-config-device > p { font-size: 11px; }
+.admin-settings .admin-config-device .admin-config-button.revoke { padding: 7px 9px; min-height: 30px; color: #b57070; background: #fff; border-color: #f0dede; font-size: 10px; margin-top: 13px; }
+.admin-settings .admin-config-device .admin-config-button.revoke:hover { background: #fff3f3; }
+.admin-settings .admin-config-device-setup { padding: 21px; background: #f8faf8; border: 1px solid #e7eee8; border-radius: 12px; align-self: start; }
+.admin-settings .admin-config-device-setup > p { margin-bottom: 16px; }
+.admin-settings .admin-config-endpoint { display: grid; gap: 9px; margin-bottom: 19px; }
+.admin-settings .admin-config-endpoint > span { color: #54665e; font-size: 11px; font-weight: 600; }
+.admin-settings .admin-config-endpoint > code { padding: 12px; background: #fff; border: 1px solid #e2e9e3; border-radius: 8px; color: #577360; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; user-select: all; }
+.admin-settings .admin-config-device-form { display: grid; gap: 15px; }
+.admin-settings .admin-config-device-form > button { justify-self: start; }
+.admin-settings .admin-config-pairing { margin-top: 20px; padding: 16px; background: #edf8f1; border: 1px solid #cfe8d9; border-radius: 10px; }
+.admin-settings .admin-config-pairing .admin-config-section-label { margin-bottom: 6px; }
+.admin-settings .admin-config-pairing .admin-config-section-label > strong { font-size: 11px; }
+.admin-settings .admin-config-pairing p { font-size: 11px; color: #6e937a; }
+.admin-settings .admin-config-token { display: block; padding: 12px; margin: 14px 0; border: 1px solid #cfe2d5; border-radius: 7px; background: #fff; color: #3a6448; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; user-select: all; }
+.admin-settings .admin-config-empty, .admin-settings .admin-config-empty-time { font-size: 12px; color: #92a095; line-height: 1.8; }
+.admin-settings .admin-config-empty { padding: 20px 0; }
+.admin-settings .admin-config-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+@keyframes admin-config-spin { to { transform: rotate(360deg); } }
+@media (max-width: 1160px) { .admin-settings .admin-config-card { padding: 22px; } .admin-settings .admin-config-schedule-columns { gap: 20px; } .admin-settings .admin-config-schedule-columns > .admin-config-subsection + .admin-config-subsection { padding-left: 20px; } .admin-settings .admin-config-location-columns, .admin-settings .admin-config-staff-columns { gap: 20px; } .admin-settings .admin-config-input-row { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .admin-settings .admin-config-schedule-columns, .admin-settings .admin-config-location-columns, .admin-settings .admin-config-staff-columns { grid-template-columns: 1fr; gap: 25px; } .admin-settings .admin-config-schedule-columns > .admin-config-subsection + .admin-config-subsection { padding-left: 0; border-left: 0; padding-top: 23px; border-top: 1px solid var(--border, #e8eeeb); } .admin-settings .admin-config-times { min-height: auto; } .admin-settings .admin-config-input-row { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) { .admin-settings { gap: 16px; } .admin-settings .admin-config-card { padding: 18px 16px; border-radius: 13px; } .admin-settings .admin-config-heading { gap: 11px; margin-bottom: 20px; } .admin-settings .admin-config-icon { width: 40px; height: 40px; flex-basis: 40px; border-radius: 10px; } .admin-settings h2 { font-size: 16px; } .admin-settings .admin-config-heading p { font-size: 11px; } .admin-settings .admin-config-schedule-filters, .admin-settings .admin-config-input-row { grid-template-columns: 1fr; } .admin-settings .admin-config-schedule-filters { gap: 12px; } .admin-settings .admin-config-button { font-size: 11px; padding: 10px 11px; } .admin-settings .admin-config-add-time { align-items: stretch; } .admin-settings .admin-config-add-time input { width: 104px; } .admin-settings .admin-config-add-time button { flex: 1; } .admin-settings .admin-config-stop { padding: 10px; gap: 7px; } .admin-settings .admin-config-stop-pin { display: none; } .admin-settings .admin-config-didube, .admin-settings .admin-config-staff-form, .admin-settings .admin-config-stop-form { padding: 16px; } .admin-settings .admin-config-user { gap: 9px; } .admin-settings .admin-config-user > .admin-config-status { font-size: 9px; } .admin-settings .admin-config-feedback { padding: 10px 12px; } }
+@media (prefers-reduced-motion: reduce) { .admin-settings .admin-config-spinner { animation: none; } .admin-settings * { transition: none !important; } }
+@media (max-width: 900px) { .admin-settings .admin-config-device-columns { grid-template-columns: 1fr; gap: 24px; } }
+@media (max-width: 560px) { .admin-settings .admin-config-device-setup { padding: 16px; } .admin-settings .admin-config-device-top { flex-wrap: wrap; } .admin-settings .admin-config-device-top > .admin-config-status { margin-left: 45px; } .admin-settings .admin-config-pairing { padding: 13px; } }

@@ -1,0 +1,17 @@
+.html-preview-control{position:fixed;right:14px;bottom:12px;z-index:200;max-width:min(290px,calc(100vw - 28px));background:#fff;color:#204238;border:1px solid #d4e3da;border-radius:9px;box-shadow:0 3px 14px #0d302814;font-size:11px;line-height:1.6}
+.html-preview-toggle{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;padding:6px 10px;border:0;border-radius:9px;font-size:10px;font-weight:600;background:#f5faf7;color:#537366;cursor:pointer}
+.html-preview-toggle>span{font-size:13px;line-height:1;color:#719185}
+.html-preview-options{padding:10px 12px 12px;border-top:1px solid #e3ece6}
+.html-preview-options p{margin:0 0 9px;color:#6d8277;font-size:11px}
+.html-preview-options nav{display:flex;flex-wrap:wrap;gap:6px}
+.html-preview-options a{padding:5px 8px;border:1px solid #dce9e1;border-radius:5px;background:#f8fbf9;white-space:nowrap;font-size:10px}
+.html-preview-options a[aria-current=page]{color:#fff;background:#07984e;border-color:#07984e}
+.html-preview-notice{display:block;margin-top:9px;color:#876120;font-size:10px}
+.html-preview .admin-config-endpoint{display:none}
+.html-preview-control[data-preview-view=admin]{left:26px;right:auto;bottom:4px;width:208px;max-width:208px;background:transparent;border:0;box-shadow:none}
+.html-preview-control[data-preview-view=admin] .html-preview-toggle{padding:0;min-height:13px;background:transparent;color:#a6bfb3;font-size:9px;line-height:1.2}
+.html-preview-control[data-preview-view=admin] .html-preview-options{background:#fff;border:1px solid #d4e3da;border-radius:8px;box-shadow:0 3px 14px #0d302814}
+@media(max-width:1260px){.html-preview-control[data-preview-view=admin]{width:180px;max-width:180px}}
+@media(max-width:1000px){.html-preview-control[data-preview-view=admin]{width:158px;max-width:158px}}
+@media(max-width:760px){.html-preview-control[data-preview-view=admin]{left:auto;right:9px;bottom:8px;width:auto;max-width:min(290px,calc(100vw - 28px));background:#fff;border:1px solid #d4e3da;box-shadow:0 3px 14px #0d302814}.html-preview-control[data-preview-view=admin] .html-preview-toggle{padding:6px 10px;background:#f5faf7;color:#537366;font-size:10px;line-height:1.6}}
+@media(max-width:600px){.html-preview-control{right:9px;bottom:8px}}
