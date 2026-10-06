@@ -66,7 +66,7 @@ function Login({ session, error: outerError, onLogin }: { session: Session; erro
         <label>მომხმარებლის სახელი<div className="auth-input"><UserRound size={17} /><input value={login} onChange={event => setLogin(event.target.value)} required maxLength={80} autoComplete="username" autoCapitalize="none" /></div></label>
         <label>პაროლი<div className="auth-input"><LockKeyhole size={17} /><input type="password" value={password} onChange={event => setPassword(event.target.value)} required minLength={session.needsSetup ? 10 : 1} autoComplete={session.needsSetup ? 'new-password' : 'current-password'} /></div></label>
         {session.needsSetup && <small>გამოიყენეთ მინიმუმ 10 სიმბოლო.</small>}
-        {session.requiresSetupToken && <label>აქტივაციის კოდი<input type="password" value={setupToken} onChange={event => setSetupToken(event.target.value)} required autoComplete="off" /></label>}
+        {session.needsSetup && session.requiresSetupToken && <label>აქტივაციის კოდი<input type="password" value={setupToken} onChange={event => setSetupToken(event.target.value)} required autoComplete="off" /></label>}
         {error && <div className="form-error" role="alert">{error}</div>}
         <button className="auth-submit" disabled={busy}>{busy ? 'იტვირთება…' : session.needsSetup ? 'ანგარიშის შექმნა' : 'შესვლა'}<ArrowRight size={18} /></button>
         <span className="auth-note"><LockKeyhole size={13} /> მხოლოდ თანამშრომლებისთვის</span>

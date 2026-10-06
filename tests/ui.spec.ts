@@ -191,6 +191,58 @@ test('staff login persists across reload and logout closes access', async ({ pag
   expect(protectedResponse.status()).toBe(401);
 });
 
+test('production session metadata allows existing staff login without an activation code', async ({ page }) => {
+  // Production reports the setup-token policy even after its first account exists.
+  // Keep the local server and real login endpoint; override only that session metadata.
+  await page.route('**/api/auth/session', async route => {
+    const response = await route.fetch();
+    expect(response.ok()).toBeTruthy();
+    const session = await response.json();
+    expect(session.user).toBeNull();
+    await route.fulfill({ response, json: { ...session, needsSetup: false, requiresSetupToken: true } });
+  });
+  await page.goto('/admin');
+  await expect(page.getByRole('heading', { name: 'მოგესალმებით', exact: true })).toBeVisible();
+  await expect(page.getByLabel('აქტივაციის კოდი', { exact: true })).toHaveCount(0);
+  await page.getByLabel('მომხმარებლის სახელი', { exact: true }).fill(EMPLOYEE.login);
+  await page.getByLabel('პაროლი', { exact: true }).fill(EMPLOYEE.password);
+  const pending = page.waitForResponse(response => response.url().endsWith('/api/auth/login') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'შესვლა', exact: true }).click();
+  const response = await pending;
+  expect(response.request().postDataJSON()).toMatchObject({ login: EMPLOYEE.login, password: EMPLOYEE.password });
+  expect(response.request().postDataJSON()).not.toHaveProperty('setupToken');
+  expect(response.ok()).toBeTruthy();
+  await expect(page.locator('.auth-card')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'ჯავშნები', exact: true })).toBeVisible();
+  await expect(page.locator('.admin-user')).toContainText(EMPLOYEE.name);
+});
+
+test('production first-user session metadata requires an activation code before submitting setup', async ({ page }) => {
+  // Exercise first-run browser validation without creating or changing any real account.
+  await page.route('**/api/auth/session', async route => {
+    const response = await route.fetch();
+    expect(response.ok()).toBeTruthy();
+    await route.fulfill({ response, json: { ...await response.json(), needsSetup: true, requiresSetupToken: true } });
+  });
+  const setupRequests: string[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/auth/setup' && request.method() === 'POST') setupRequests.push(request.url());
+  });
+  await page.goto('/admin');
+  await expect(page.getByRole('heading', { name: 'პირველი თანამშრომელი', exact: true })).toBeVisible();
+  await page.getByLabel('სახელი', { exact: true }).fill('სატესტო პირველი თანამშრომელი');
+  await page.getByLabel('მომხმარებლის სახელი', { exact: true }).fill('first_user_test');
+  await page.getByLabel('პაროლი', { exact: true }).fill(EMPLOYEE.password);
+  const activationCode = page.getByLabel('აქტივაციის კოდი', { exact: true });
+  await expect(activationCode).toBeVisible();
+  await expect(activationCode).toHaveAttribute('required', '');
+  expect(await activationCode.evaluate(element => (element as HTMLInputElement).validity.valueMissing)).toBe(true);
+  await page.getByRole('button', { name: 'ანგარიშის შექმნა', exact: true }).click();
+  await expect(activationCode).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'პირველი თანამშრომელი', exact: true })).toBeVisible();
+  expect(setupRequests, 'An empty required activation code must prevent the setup POST').toEqual([]);
+});
+
 test('operator confirms an incoming guest booking, deletes it and restores its data', async ({ page }) => {
   const name = 'სატესტო სრული ციკლი';
   const day = futureDate();
