@@ -985,7 +985,7 @@ test('public phone entry never looks up or fills trusted passenger details and c
   expect(profileRequests).toEqual([]);
 });
 
-test('printing all orders for a day includes every confirmed row beyond pagination and search with complete addresses and totals', async ({ page }) => {
+test('printing all orders for a day includes every confirmed row beyond pagination and search with complete pickup addresses and totals', async ({ page }) => {
   const day = futureDate(14);
   const { expected, excludedNames } = await seedPrintableDay(day, '555040', 'სატესტო მთელი დღის ბეჭდვა');
   const selected = expected.filter(row => row.direction === 'gori-tbilisi');
@@ -994,6 +994,30 @@ test('printing all orders for a day includes every confirmed row beyond paginati
   await chooseAdminDate(page, day);
   const visibleRows = page.locator('.admin-booking-table tbody tr');
   await expect(visibleRows).toHaveCount(15);
+  const toolbar = page.locator('.admin-filters');
+  const create = toolbar.getByRole('button', { name: 'ახალი ჯავშანი', exact: true });
+  const toolbarPrint = toolbar.getByRole('button', { name: 'ჯავშნების ბეჭდვა', exact: true });
+  for (const [action, label] of [[create, 'ახალი ჯავშანი'], [toolbarPrint, 'ბეჭდვა']] as const) {
+    await expect(action).toBeVisible();
+    await expect(action).toContainText(label);
+    const appearance = await action.evaluate(button => {
+      const rect = button.getBoundingClientRect();
+      const style = getComputedStyle(button);
+      const visibleColors = [style.backgroundColor, ...(style.backgroundImage.match(/rgba?\([^)]+\)/g) ?? [])]
+        .map(color => color.match(/[\d.]+/g)?.map(Number) ?? [])
+        .filter(channels => channels.length >= 3 && (channels.length < 4 || channels[3] > 0));
+      return { height: rect.height, green: visibleColors.length > 0 && visibleColors.every(channels => channels[1] > channels[0] && channels[1] > channels[2]) };
+    });
+    expect(appearance.height, 'Primary toolbar actions should remain large enough to use').toBeGreaterThanOrEqual(44);
+    expect(appearance.green, 'Create and print should both remain visibly green actions').toBeTruthy();
+  }
+  const searchBox = toolbar.getByRole('textbox', { name: 'მგზავრის სახელი ან ტელეფონი', exact: true });
+  expect((await searchBox.boundingBox())!.width, 'Search should leave room for the labeled primary actions').toBeLessThan(page.viewportSize()!.width / 4);
+  await create.click();
+  const createDialog = page.getByRole('dialog', { name: 'ახალი ჯავშანი', exact: true });
+  await expect(createDialog.getByLabel('მგზავრის სახელი', { exact: true })).toBeVisible();
+  await createDialog.getByRole('button', { name: 'დახურვა', exact: true }).click();
+  await expect(createDialog).toHaveCount(0);
   await page.getByRole('button', { name: 'შემდეგი გვერდი', exact: true }).click();
   await expect(visibleRows).toHaveCount(3);
   await page.getByRole('textbox', { name: 'მგზავრის სახელი ან ტელეფონი', exact: true }).fill(selected[0].name);
@@ -1009,19 +1033,29 @@ test('printing all orders for a day includes every confirmed row beyond paginati
   await dialog.getByLabel('ბეჭდვის რეჟიმი', { exact: true }).selectOption('all');
   const print = dialog.getByRole('button', { name: 'ბეჭდვა / PDF', exact: true });
   await expect(print).toBeEnabled();
+  const dialogLayout = await dialog.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return { width: rect.width, top: rect.top, bottom: rect.bottom, viewportHeight: innerHeight, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth };
+  });
+  expect(dialogLayout.width, 'A desktop print dialog should use the available width for the report').toBeGreaterThanOrEqual(1000);
+  expect(dialogLayout.top).toBeGreaterThanOrEqual(0);
+  expect(dialogLayout.bottom).toBeLessThanOrEqual(dialogLayout.viewportHeight);
+  expect(dialogLayout.scrollHeight, 'Long reports should scroll inside their preview without scrolling the whole dialog').toBeLessThanOrEqual(dialogLayout.clientHeight + 2);
+  expect(dialogLayout.scrollWidth, 'The report should not create a horizontal scrollbar on the whole dialog').toBeLessThanOrEqual(dialogLayout.clientWidth + 2);
   await print.click();
   await expect.poll(async () => (await printedDocuments(page)).length).toBe(1);
   const [document] = await printedDocuments(page);
-  expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'მიმართულება', 'ადგილები', 'ჩასხდომის მისამართი', 'ჩამოსვლის მისამართი']);
+  expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'მიმართულება', 'ადგილები', 'ჩასხდომის მისამართი']);
   expect(document.rows).toHaveLength(18);
   for (const row of selected) {
     const printed = document.rows.find(cells => cells.includes(row.name));
     expect(printed, `Every selected-day order must print, including ${row.name}`).toBeDefined();
+    expect(printed).toHaveLength(7);
     expect(printed).toEqual(expect.arrayContaining([row.time, row.displayedPhone, DIRECTION_LABELS[row.direction], String(row.seats)]));
     expect(printed!.join(' ')).toContain(row.goriAddress);
-    expect(printed!.join(' ')).toContain(publicConfig.didubeName);
-    expect(printed!.join(' ')).toContain(publicConfig.didubeAddress);
   }
+  expect(document.text).not.toContain(publicConfig.didubeName);
+  expect(document.text).not.toContain(publicConfig.didubeAddress);
   for (const name of [...excludedNames, ...expected.filter(row => row.direction === 'tbilisi-gori').map(row => row.name)]) {
     expect(document.text).not.toContain(name);
   }
@@ -1035,8 +1069,15 @@ test('printing all orders for a day includes every confirmed row beyond paginati
   const paper = await page.context().newPage();
   try {
     await paper.setViewportSize({ width: 1123, height: 794 });
+    // A base URL does not change about:blank's origin; navigate first so the
+    // captured document can load the application's actual fonts without CORS.
+    await paper.goto(new URL('/', page.url()).href, { waitUntil: 'load' });
     await paper.setContent(document.html, { waitUntil: 'load' });
     await paper.emulateMedia({ media: 'print' });
+    await paper.evaluate(async () => {
+      await Promise.all(['400 12px "Dachi The Lynx"', ...[400, 500, 600, 700, 800].map(weight => `${weight} 12px "FiraGO"`)].map(face => window.document.fonts.load(face)));
+      await window.document.fonts.ready;
+    });
     await expect(paper.getByRole('table', { name: 'მგზავრებისა და მისამართების სია', exact: true }).getByRole('row')).toHaveCount(19);
     await paper.pdf({ path: '/tmp/greentaxi-booking-report.pdf', printBackground: true, preferCSSPageSize: true });
     await paper.screenshot({ path: '/tmp/greentaxi-booking-report-print.png', fullPage: true });
@@ -1064,14 +1105,18 @@ test('printing a selected half-hour slot includes both directions while excludin
     const document = (await printedDocuments(page))[index];
     const selected = expected.filter(row => row.time === time);
     expect(selected).toHaveLength(7);
+    expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'მიმართულება', 'ადგილები', 'ჩასხდომის მისამართი']);
     expect(document.rows).toHaveLength(7);
     for (const row of selected) {
       const printed = document.rows.find(cells => cells.includes(row.name));
+      expect(printed).toHaveLength(7);
       expect(printed).toEqual(expect.arrayContaining([time, row.displayedPhone, DIRECTION_LABELS[row.direction], String(row.seats)]));
-      expect(printed!.join(' ')).toContain(row.goriAddress);
       if (row.direction === 'tbilisi-gori') {
         expect(printed!.join(' ')).toContain(publicConfig.stops[0].name);
         expect(printed!.join(' ')).toContain(publicConfig.stops[0].address);
+        expect(printed!.join(' ')).not.toContain(row.goriAddress);
+      } else {
+        expect(printed!.join(' ')).toContain(row.goriAddress);
       }
     }
     for (const name of [...excludedNames, ...expected.filter(row => row.time !== time).map(row => row.name)]) expect(document.text).not.toContain(name);

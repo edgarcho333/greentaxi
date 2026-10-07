@@ -17,18 +17,9 @@ function reportDate(date: string): string {
 
 function PickupAddress({ booking, stops }: { booking: Booking; stops: Stop[] }) {
   const stopAddress = booking.direction === 'tbilisi-gori' ? stops.find(stop => stop.id === booking.pickupStopId)?.address : null;
-  return <div className="booking-print-address">
-    <span className="booking-print-city">{booking.direction === 'gori-tbilisi' ? 'გორი' : 'თბილისი'}</span>
-    <span>{booking.direction === 'gori-tbilisi' ? booking.goriAddress : booking.pickupStopName || 'პუნქტი არ არის მითითებული'}</span>
-    {stopAddress && <span>{stopAddress}</span>}
-  </div>;
-}
-
-function DropoffAddress({ booking }: { booking: Booking }) {
-  return <div className="booking-print-address">
-    <span className="booking-print-city">{booking.direction === 'gori-tbilisi' ? 'თბილისი' : 'გორი'}</span>
-    {booking.direction === 'gori-tbilisi' ? <><strong>{booking.didubeName}</strong><span>{booking.didubeAddress}</span></> : <span>{booking.goriAddress}</span>}
-  </div>;
+  const address = booking.direction === 'gori-tbilisi' ? booking.goriAddress
+    : [booking.pickupStopName || 'პუნქტი არ არის მითითებული', stopAddress].filter(Boolean).join(' · ');
+  return <div className="booking-print-address">{address}</div>;
 }
 
 export default function BookingPrintReport({ bookings, date, direction, time, stops = [] }: BookingPrintReportProps) {
@@ -52,8 +43,8 @@ export default function BookingPrintReport({ bookings, date, direction, time, st
     <div className="booking-print-summary"><span>სულ ჯავშნები: <strong>{rows.length}</strong></span><span>სულ ადგილები: <strong>{seatTotal}</strong></span></div>
 
     <table className="booking-print-table" aria-label="მგზავრებისა და მისამართების სია">
-      <colgroup><col className="booking-print-col-number" /><col className="booking-print-col-time" /><col className="booking-print-col-name" /><col className="booking-print-col-phone" /><col className="booking-print-col-direction" /><col className="booking-print-col-seats" /><col className="booking-print-col-address" /><col className="booking-print-col-address" /></colgroup>
-      <thead><tr><th scope="col">№</th><th scope="col">დრო</th><th scope="col">მგზავრი</th><th scope="col">ტელეფონი</th><th scope="col">მიმართულება</th><th scope="col">ადგილები</th><th scope="col">ჩასხდომის მისამართი</th><th scope="col">ჩამოსვლის მისამართი</th></tr></thead>
+      <colgroup><col className="booking-print-col-number" /><col className="booking-print-col-time" /><col className="booking-print-col-name" /><col className="booking-print-col-phone" /><col className="booking-print-col-direction" /><col className="booking-print-col-seats" /><col className="booking-print-col-address" /></colgroup>
+      <thead><tr><th scope="col">№</th><th scope="col">დრო</th><th scope="col">მგზავრი</th><th scope="col">ტელეფონი</th><th scope="col">მიმართულება</th><th scope="col">ადგილები</th><th scope="col">ჩასხდომის მისამართი</th></tr></thead>
       <tbody>
         {rows.map((booking, index) => <tr key={booking.id}>
           <td className="booking-print-number">{index + 1}</td>
@@ -63,9 +54,8 @@ export default function BookingPrintReport({ bookings, date, direction, time, st
           <td className="booking-print-direction">{directions[booking.direction]}</td>
           <td className="booking-print-seats">{booking.seats}</td>
           <td><PickupAddress booking={booking} stops={stops} /></td>
-          <td><DropoffAddress booking={booking} /></td>
         </tr>)}
-        {rows.length === 0 && <tr><td colSpan={8} className="booking-print-empty">არჩეულ თარიღსა და დროზე ჯავშნები არ არის.</td></tr>}
+        {rows.length === 0 && <tr><td colSpan={7} className="booking-print-empty">არჩეულ თარიღსა და დროზე ჯავშნები არ არის.</td></tr>}
       </tbody>
     </table>
     <footer className="booking-print-footer"><span>{reportDate(date)} · {direction === 'both' ? 'ორივე მიმართულება' : directions[direction]} · {time ?? 'ყველა დრო'}</span><span>{rows.length} ჯავშანი · {seatTotal} ადგილი</span></footer>
