@@ -86,6 +86,7 @@ public final class MainActivity extends Activity {
         add(content, brand, 0);
         add(content, text("ზარებიდან განაცხადების დამატება", 20), 8);
         add(content, text("მხოლოდ მიღებული შემომავალი SIM-ზარები დაემატება ოპერატორის შემოსულ განაცხადებს. საუბარი არ იწერება. მგზავრობის დეტალებს ოპერატორი შეავსებს.", 15), 12);
+        add(content, text("ჩვეულებრივი შემომავალი ზარის განაცხადი ემატება პასუხისას. გაურკვეველ შემთხვევებში ვამოწმებთ ჟურნალს საუბრის დასრულების შემდეგ.", 14), 8);
 
         add(content, text("ტელეფონის დაკავშირება", 18), 28);
         serverInput = input("საიტის მისამართი — https://…", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);

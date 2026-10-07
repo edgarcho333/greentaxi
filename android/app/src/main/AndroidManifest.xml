@@ -28,7 +28,7 @@
             android:exported="false" android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-enabled foreground monitoring of newly answered SIM call-log entries and durable synchronization to the paired GreenTaxi operator dashboard." />
+                android:value="User-enabled foreground observation of answered incoming SIM call states, call-log reconciliation, and durable synchronization to the paired GreenTaxi operator dashboard." />
         </service>
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>
