@@ -53,7 +53,7 @@ export default function CallQueue({ scope, search, refresh, onConvert, onChange 
       const phone = call.phone ? formatPhone(call.phone) : 'დამალული ნომერი';
       return <tr key={call.id} data-call-id={call.id} data-call-phase={call.phase}>
         <td><span className="admin-call-source"><Phone size={12} /> SIM ზარი</span></td>
-        <td className="admin-call-identity" title={profile?.name}>{profile ? <><strong>{profile.name}</strong><span className="admin-call-phone">{phone}</span></> : <><strong>{phone}</strong><small className="admin-cell-subtitle">{call.phone ? 'ახალი მგზავრი' : 'ნომერი არ არის ხელმისაწვდომი'}</small></>}</td>
+        <td className="admin-call-identity" title={profile?.name || undefined}>{profile?.name?.trim() ? <><strong>{profile.name}</strong><span className="admin-call-phone">{phone}</span></> : <><strong>{phone}</strong><small className="admin-cell-subtitle">{profile ? 'მისამართები შენახულია' : call.phone ? 'ახალი მგზავრი' : 'ნომერი არ არის ხელმისაწვდომი'}</small></>}</td>
         <td className="admin-call-location" title={profile?.goriAddress}>{profile?.goriAddress || '—'}</td>
         <td className="admin-call-location" title={profile?.pickupStopName || undefined}>{profile?.pickupStopName || '—'}</td>
         <td>{callDate(call.occurredAt)}</td>

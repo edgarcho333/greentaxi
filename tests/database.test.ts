@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -34,7 +34,7 @@ test('production refuses an absent DATABASE_URL', async () => {
 });
 
 async function verifySchemaAndTransactions(first: Database, second: Database = first) {
-  assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 4);
+  assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 5);
   assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM stops').get())?.count, 3);
   assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM base_schedule').get())?.count, 2);
   const user = await first.prepare('INSERT INTO users(login,name,password_hash,created_at) VALUES (?,?,?,?)').run('adapter', 'Operator', 'test-hash', new Date().toISOString());
@@ -89,6 +89,9 @@ async function verifySchemaAndTransactions(first: Database, second: Database = f
   await assert.rejects(first.prepare('UPDATE call_inquiries SET legacy_hash=? WHERE id=?').run(2, inquiry.lastInsertRowid));
   await assert.rejects(first.prepare('UPDATE call_inquiries SET legacy_hash=NULL WHERE id=?').run(inquiry.lastInsertRowid));
   assert.equal((await first.prepare('SELECT legacy_hash FROM call_inquiries WHERE id=?').get(inquiry.lastInsertRowid))?.legacy_hash, 0);
+  const staffBooking = await insertHistoryBooking(first, '568694880', 'Eight-seat staff booking', new Date().toISOString(), 'confirmed', null, 8);
+  await assert.rejects(first.prepare('UPDATE bookings SET seats=? WHERE id=?').run(9, staffBooking.lastInsertRowid));
+  assert.equal((await first.prepare('SELECT seats FROM bookings WHERE id=?').get(staffBooking.lastInsertRowid))?.seats, 8);
 }
 
 test('SQLite migrations and asynchronous transactions preserve isolation and rollback', async () => {
@@ -110,7 +113,7 @@ test('SQLite migration preserves existing data and runs once', async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const database = await createDatabase({ dbPath, databaseUrl: '', production: false });
       try {
-        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 4);
+        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 5);
         assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM stops').get())?.count, 1);
         assert.equal((await database.prepare('SELECT value FROM settings WHERE key=?').get('didubeName'))?.value, 'Existing Didube');
       } finally { await database.close(); }
@@ -134,6 +137,94 @@ test('PostgreSQL concurrent migration and cross-instance transactions preserve i
     await verifySchemaAndTransactions(databases[0], databases[1]);
   } finally {
     await Promise.all(databases.map(database => database.close()));
+    await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    await admin.end();
+  }
+});
+
+test('PostgreSQL staff seat migration upgrades persisted version 4 without changing rows or references', { skip: !process.env.TEST_DATABASE_URL }, async () => {
+  const schema = `staff_upgrade_${randomUUID().replaceAll('-', '')}`;
+  const baseUrl = process.env.TEST_DATABASE_URL!;
+  const connection = new URL(baseUrl);
+  connection.searchParams.set('options', `-csearch_path=${schema}`);
+  const admin = new Pool(postgresPoolOptions(baseUrl));
+  const stored = new Pool(postgresPoolOptions(connection.toString()));
+  const databases: Database[] = [];
+  try {
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const client = await stored.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('CREATE TABLE schema_versions (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)');
+      const oldMigrations = ['001_initial', '002_rate_limits', '003_call_phase', '004_legacy_call_hash'];
+      for (const [index, migration] of oldMigrations.entries()) {
+        const name = `${migration}.postgres.sql`;
+        const sql = await readFile(new URL(`../server/migrations/${name}`, import.meta.url), 'utf8');
+        await client.query(sql);
+        await client.query('INSERT INTO schema_versions(version,name,checksum,applied_at) VALUES ($1,$2,$3,$4)',
+          [index + 1, name, createHash('sha256').update(sql).digest('hex'), '2030-01-01T00:00:00.000Z']);
+      }
+      const bookingSql = `INSERT INTO bookings(name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,didube_name,didube_address,
+        requested_date,requested_time,assigned_date,assigned_time,status,deleted_at,source,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`;
+      const bookingValues = ['568694879', 4, 'tbilisi-gori', 'გორი, შენახული მისამართი', 1, 'Stored stop snapshot', 'დიდუბე', 'Stored Didube address',
+        '2030-01-01', '08:30', '2030-01-01', '09:30', 'confirmed'];
+      const active = (await client.query(bookingSql, ['Stored active passenger', ...bookingValues, null, 'employee', '2030-01-01T00:00:00.000Z', '2030-01-02T00:00:00.000Z'])).rows[0].id;
+      const deleted = (await client.query(bookingSql, ['Stored deleted passenger', ...bookingValues, '2030-01-03T00:00:00.000Z', 'employee', '2030-01-01T00:00:00.000Z', '2030-01-02T00:00:00.000Z'])).rows[0].id;
+      const device = (await client.query('INSERT INTO call_devices(name,token_hash,created_at) VALUES ($1,$2,$3) RETURNING id',
+        ['Synthetic upgrade device', 'synthetic-upgrade-device-hash', '2030-01-01T00:00:00.000Z'])).rows[0].id;
+      for (const bookingId of [active, deleted]) {
+        await client.query('INSERT INTO audit_log(booking_id,action,details,created_at) VALUES ($1,$2,$3,$4)',
+          [bookingId, 'preserved-history', '{"preserve":true}', '2030-01-03T00:00:00.000Z']);
+        await client.query(`INSERT INTO call_inquiries(device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at,deleted_at,booking_id,phase,answered_hash,legacy_hash)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [device, `converted-${bookingId}`, 'preserved-completed-hash', '568694879', '2030-01-01T00:00:00.000Z', 13, '2030-01-01T00:00:00.000Z',
+            bookingId === deleted ? '2030-01-04T00:00:00.000Z' : null, bookingId, 'completed', 'preserved-answered-hash', 0]);
+      }
+      await client.query('INSERT INTO idempotency(scope,key,request_hash,status,response,created_at) VALUES ($1,$2,$3,$4,$5,$6)',
+        ['employee-booking', 'synthetic-upgrade-key', 'preserved-request-hash', 201, JSON.stringify({ id: Number(active), phone: '568694879' }), 1893456000000]);
+      await client.query('COMMIT');
+    } catch (error) { await client.query('ROLLBACK'); throw error; }
+    finally { client.release(); }
+
+    const tables = ['bookings', 'audit_log', 'call_inquiries', 'call_devices', 'idempotency', 'stops', 'settings', 'base_schedule', 'date_schedule', 'passenger_profiles', 'rate_limits'];
+    const snapshots = new Map<string, string>();
+    for (const table of tables) snapshots.set(table, JSON.stringify((await stored.query(`SELECT * FROM ${table} ORDER BY 1,2`)).rows));
+    const versions = (await stored.query('SELECT * FROM schema_versions ORDER BY version')).rows;
+    const indexesSql = 'SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=$1 ORDER BY tablename,indexname';
+    const indexes = (await stored.query(indexesSql, [schema])).rows;
+    const constraintsSql = `SELECT r.relname AS table_name,c.conname AS name,c.contype AS type,pg_get_constraintdef(c.oid) AS definition
+      FROM pg_constraint c JOIN pg_class r ON r.oid=c.conrelid JOIN pg_namespace n ON n.oid=r.relnamespace
+      WHERE n.nspname=$1 ORDER BY r.relname,c.conname`;
+    const constraints = (await stored.query(constraintsSql, [schema])).rows;
+    const sequence = (await stored.query('SELECT last_value,is_called FROM bookings_id_seq')).rows;
+    await assert.rejects(stored.query('UPDATE bookings SET seats=8'), /bookings_seats_check/);
+
+    const initialized = await Promise.allSettled([
+      createDatabase({ databaseUrl: connection.toString(), production: true }),
+      createDatabase({ databaseUrl: connection.toString(), production: true }),
+    ]);
+    for (const result of initialized) if (result.status === 'fulfilled') databases.push(result.value);
+    for (const result of initialized) if (result.status === 'rejected') throw result.reason;
+    assert.equal(databases.length, 2);
+    for (const table of tables) assert.equal(JSON.stringify((await stored.query(`SELECT * FROM ${table} ORDER BY 1,2`)).rows), snapshots.get(table), `${table} rows changed`);
+    assert.deepEqual((await stored.query('SELECT * FROM schema_versions WHERE version<5 ORDER BY version')).rows, versions);
+    assert.equal((await stored.query('SELECT COUNT(*) AS count FROM schema_versions')).rows[0].count, '5');
+    assert.deepEqual((await stored.query(indexesSql, [schema])).rows, indexes);
+    const migratedConstraints = (await stored.query(constraintsSql, [schema])).rows;
+    assert.deepEqual(migratedConstraints.filter(row => row.name !== 'bookings_seats_check'), constraints.filter(row => row.name !== 'bookings_seats_check'));
+    assert.match(migratedConstraints.find(row => row.name === 'bookings_seats_check')!.definition, /seats <= 8/);
+    assert.deepEqual((await stored.query('SELECT last_value,is_called FROM bookings_id_seq')).rows, sequence);
+    const eightSeat = await insertHistoryBooking(databases[0], '568694880', 'New eight-seat staff booking', '2030-01-05T00:00:00.000Z', 'confirmed', null, 8);
+    assert.equal(eightSeat.lastInsertRowid, 3);
+    await assert.rejects(databases[0].prepare('UPDATE bookings SET seats=9 WHERE id=?').run(eightSeat.lastInsertRowid), /bookings_seats_check/);
+    await assert.rejects(databases[0].prepare('UPDATE bookings SET pickup_stop_id=? WHERE id=?').run(999_999, eightSeat.lastInsertRowid), /foreign key/);
+    await assert.rejects(databases[0].prepare('UPDATE call_inquiries SET booking_id=? WHERE id=?').run(999_999, 1), /foreign key/);
+    await assert.rejects(databases[0].prepare('UPDATE audit_log SET booking_id=? WHERE id=?').run(999_999, 1), /foreign key/);
+    assert.equal((await databases[0].prepare('SELECT seats FROM bookings WHERE id=?').get(eightSeat.lastInsertRowid))?.seats, 8);
+  } finally {
+    await Promise.all(databases.map(database => database.close()));
+    await stored.end();
     await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
     await admin.end();
   }
@@ -224,10 +315,10 @@ test('confirmed profile writes merge only matching aliases and preserve newer tr
   } finally { await database.close(); }
 });
 
-async function insertHistoryBooking(database: Database, phone: string, name: string, updatedAt: string, status: 'waiting' | 'confirmed', deletedAt: string | null = null) {
+async function insertHistoryBooking(database: Database, phone: string, name: string, updatedAt: string, status: 'waiting' | 'confirmed', deletedAt: string | null = null, seats = 1) {
   return database.prepare(`INSERT INTO bookings(name,phone,seats,direction,gori_address,didube_name,didube_address,requested_date,requested_time,
     assigned_date,assigned_time,status,deleted_at,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(name, phone, 1, 'gori-tbilisi', `გორი — ${name}`, 'დიდუბე', 'Didube test address', '2030-01-01', '08:30',
+    .run(name, phone, seats, 'gori-tbilisi', `გორი — ${name}`, 'დიდუბე', 'Didube test address', '2030-01-01', '08:30',
       status === 'confirmed' ? '2030-01-01' : null, status === 'confirmed' ? '08:30' : null, status, deletedAt, 'public', '2030-01-01T00:00:00.000Z', updatedAt);
 }
 test('phone migration merges collisions atomically, trusts confirmed history and preserves hashes and invalid rows', async () => {
@@ -266,3 +357,86 @@ test('phone migration merges collisions atomically, trusts confirmed history and
     assert.equal((await readPassengerProfile(database, '568694879'))?.name, 'After migration edit');
   } finally { await database.close(); }
 });
+
+for (const fixture of [
+  { label: 'ordinary primary key', autoincrement: false, empty: false },
+  { label: 'legacy high sequence', autoincrement: true, empty: false },
+  { label: 'empty legacy table with a high sequence', autoincrement: true, empty: true },
+]) {
+  test(`staff seat migration preserves persisted rows, references, indexes and ${fixture.label}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'greentaxi-staff-seats-'));
+    const dbPath = join(directory, 'pre-005.sqlite');
+    try {
+      const { DatabaseSync } = await import('node:sqlite');
+      const previous = new DatabaseSync(dbPath);
+      previous.exec('PRAGMA foreign_keys=ON; BEGIN IMMEDIATE; CREATE TABLE schema_versions (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)');
+      const oldMigrations = ['001_initial', '002_rate_limits', '003_call_phase', '004_legacy_call_hash'];
+      for (const [index, migration] of oldMigrations.entries()) {
+        const name = `${migration}.sqlite.sql`;
+        const sql = await readFile(new URL(`../server/migrations/${name}`, import.meta.url), 'utf8');
+        const appliedSql = fixture.autoincrement && index === 0
+          ? sql.replace('CREATE TABLE IF NOT EXISTS bookings (\n  id INTEGER PRIMARY KEY,', 'CREATE TABLE IF NOT EXISTS bookings (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,')
+          : sql;
+        previous.exec(appliedSql);
+        previous.prepare('INSERT INTO schema_versions(version,name,checksum,applied_at) VALUES (?,?,?,?)')
+          .run(index + 1, name, createHash('sha256').update(sql).digest('hex'), '2030-01-01T00:00:00.000Z');
+      }
+      previous.exec('COMMIT');
+      const historicalBooking = previous.prepare(`INSERT INTO bookings(id,name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,
+        didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,deleted_at,source,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      const bookingValues = ['Stored passenger', '568694879', 4, 'tbilisi-gori', 'გორი, ძველი მისამართი', 1, 'Stored stop snapshot',
+        'დიდუბე', 'Stored Didube address', '2030-01-01', '08:30', '2030-01-01', '09:30', 'confirmed', '2030-01-03T00:00:00.000Z',
+        'employee', '2030-01-01T00:00:00.000Z', '2030-01-02T00:00:00.000Z'];
+      historicalBooking.run(44, ...bookingValues);
+      if (fixture.autoincrement) {
+        historicalBooking.run(9999, ...bookingValues);
+        previous.prepare('DELETE FROM bookings WHERE id=?').run(9999);
+      }
+      if (fixture.empty) previous.prepare('DELETE FROM bookings WHERE id=?').run(44);
+      const reference = fixture.empty ? null : 44;
+      previous.prepare('INSERT INTO audit_log(id,booking_id,action,details,created_at) VALUES (?,?,?,?,?)')
+        .run(61, reference, 'preserved-history', '{"preserve":true}', '2030-01-03T00:00:00.000Z');
+      previous.prepare('INSERT INTO audit_log(id,booking_id,action,details,created_at) VALUES (?,?,?,?,?)')
+        .run(62, null, 'unrelated-history', '{}', '2030-01-03T00:00:00.000Z');
+      previous.prepare('INSERT INTO call_devices(id,name,token_hash,created_at) VALUES (?,?,?,?)')
+        .run(7, 'Synthetic device', 'synthetic-pre-005-device', '2030-01-01T00:00:00.000Z');
+      previous.prepare(`INSERT INTO call_inquiries(id,device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at,
+        deleted_at,booking_id,phase,answered_hash,legacy_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(71, 7, 'converted-and-deleted', 'preserved-completed-hash', '568694879', '2030-01-01T00:00:00.000Z', 13,
+          '2030-01-01T00:00:00.000Z', '2030-01-04T00:00:00.000Z', reference, 'completed', 'preserved-answered-hash', 0);
+      previous.prepare(`INSERT INTO call_inquiries(id,device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at,booking_id)
+        VALUES (?,?,?,?,?,?,?,?,?)`)
+        .run(72, 7, 'unrelated-unconverted', 'unrelated-preserved-hash', null, '2030-01-01T00:00:00.000Z', 0, '2030-01-01T00:00:00.000Z', null);
+      const tables = ['bookings', 'audit_log', 'call_inquiries'];
+      const snapshots = new Map(tables.map(table => [table, previous.prepare(`SELECT * FROM ${table} ORDER BY id`).all().map(row => ({ ...row }))]));
+      const foreignKeys = new Map(tables.map(table => [table, previous.prepare(`PRAGMA foreign_key_list(${table})`).all().map(row => ({ ...row }))]));
+      const indexes = previous.prepare("SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name='bookings' ORDER BY name").all().map(row => String(row.name));
+      const indexColumns = new Map(indexes.map(name => [name, previous.prepare(`PRAGMA index_info(${name})`).all().map(row => ({ ...row }))]));
+      const versions = previous.prepare('SELECT * FROM schema_versions ORDER BY version').all().map(row => ({ ...row }));
+      previous.close();
+
+      const database = await createDatabase({ dbPath, databaseUrl: '', production: false });
+      try {
+        assert.equal((await database.prepare('PRAGMA foreign_keys').get())?.foreign_keys, 1);
+        assert.deepEqual(await database.prepare('PRAGMA foreign_key_check').all(), []);
+        for (const table of tables) {
+          assert.deepEqual((await database.prepare(`SELECT * FROM ${table} ORDER BY id`).all()).map(row => ({ ...row })), snapshots.get(table));
+          assert.deepEqual((await database.prepare(`PRAGMA foreign_key_list(${table})`).all()).map(row => ({ ...row })), foreignKeys.get(table));
+        }
+        const migratedIndexes = (await database.prepare("SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name='bookings' ORDER BY name").all()).map(row => String(row.name));
+        assert.deepEqual(migratedIndexes, indexes);
+        for (const name of indexes) assert.deepEqual((await database.prepare(`PRAGMA index_info(${name})`).all()).map(row => ({ ...row })), indexColumns.get(name));
+        assert.deepEqual((await database.prepare('SELECT * FROM schema_versions WHERE version<5 ORDER BY version').all()).map(row => ({ ...row })), versions);
+        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 5);
+        assert.equal((await database.prepare("SELECT seq FROM sqlite_sequence WHERE name='bookings'").get())?.seq, fixture.autoincrement ? 9999 : 44);
+        const eightSeat = await insertHistoryBooking(database, '568694880', 'New staff booking', '2030-01-05T00:00:00.000Z', 'confirmed', null, 8);
+        assert.equal(eightSeat.lastInsertRowid, fixture.autoincrement ? 10000 : 45);
+        await assert.rejects(database.prepare('UPDATE bookings SET seats=9 WHERE id=?').run(eightSeat.lastInsertRowid));
+        await assert.rejects(database.prepare('UPDATE bookings SET pickup_stop_id=? WHERE id=?').run(999_999, eightSeat.lastInsertRowid));
+        await assert.rejects(database.prepare('UPDATE audit_log SET booking_id=? WHERE id=?').run(999_999, 61));
+        assert.deepEqual(await database.prepare('PRAGMA foreign_key_check').all(), []);
+      } finally { await database.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+}

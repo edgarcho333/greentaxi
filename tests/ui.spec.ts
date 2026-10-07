@@ -1,4 +1,4 @@
-import { test as base, expect, type APIRequestContext, type Page, type Response } from '@playwright/test';
+import { test as base, expect, type APIRequestContext, type Locator, type Page, type Response } from '@playwright/test';
 import type { Booking, CallInquiry, Direction, PassengerProfile, PublicConfig } from '../src/api';
 
 const EMPLOYEE = { login: 'browser_test', name: 'სატესტო თანამშრომელი', password: 'test-only-local-password-123' };
@@ -68,6 +68,10 @@ function bookingRow(page: Page, name: string) {
   return page.locator('.admin-booking-table tbody tr').filter({ has: page.getByText(name, { exact: true }) });
 }
 
+function bookingRowById(page: Page, id: number) {
+  return page.locator(`.admin-booking-table tbody tr[data-booking-id="${id}"]`);
+}
+
 async function openAdminView(page: Page, name: string) {
   await page.getByRole('navigation', { name: 'ადმინისტრატორის ნავიგაცია', exact: true })
     .getByRole('button', { name: name === 'შემოსული' ? /^შემოსული/ : name, exact: name !== 'შემოსული' }).click();
@@ -92,8 +96,45 @@ async function openAuthenticatedAdmin(page: Page) {
 async function openManualOrder(page: Page) {
   await page.getByRole('button', { name: 'ახალი ჯავშანი', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'ახალი ჯავშანი', exact: true });
-  await expect(dialog.getByLabel('დრო', { exact: true })).toBeEnabled();
+  await expect(dialog.getByLabel('ტელეფონის ნომერი', { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
   return dialog;
+}
+
+function operatorGroup(dialog: Locator, name: 'მიმართულება' | 'ადგილების რაოდენობა' | 'თარიღი' | 'დრო') {
+  return dialog.getByRole('group', { name, exact: true });
+}
+
+async function chooseOperatorDirection(dialog: Locator, direction: Direction) {
+  const button = operatorGroup(dialog, 'მიმართულება').getByRole('button', { name: DIRECTION_LABELS[direction], exact: true });
+  await button.click();
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+}
+
+async function chooseOperatorSeats(dialog: Locator, seats: number) {
+  const group = operatorGroup(dialog, 'ადგილების რაოდენობა');
+  await expect(group.getByRole('button')).toHaveCount(8);
+  const button = group.getByRole('button', { name: `${seats} ადგილი`, exact: true });
+  await button.click();
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+}
+
+function operatorDayButton(dialog: Locator, day: string) {
+  const [, month, date] = day.split('-');
+  return operatorGroup(dialog, 'თარიღი').getByRole('button', { name: new RegExp(`^(დღეს|ხვალ|ზეგ), ${date}/${month}$`) });
+}
+
+async function chooseOperatorDay(dialog: Locator, day: string) {
+  const button = operatorDayButton(dialog, day);
+  await button.click();
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+}
+
+async function chooseOperatorTime(dialog: Locator, time: string) {
+  const button = operatorGroup(dialog, 'დრო').getByRole('button', { name: time, exact: true });
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
 }
 
 function isProfileResponse(response: Response, canonicalPhone: string): boolean {
@@ -108,7 +149,7 @@ async function seedConfirmedProfile(input: {
     name: input.name, phone: input.phone, seats: 4,
     direction: input.pickupStopId ? 'tbilisi-gori' : 'gori-tbilisi',
     pickupStopId: input.pickupStopId ?? null,
-    goriAddress: input.address, requestedDate: futureDate(9), requestedTime: '21:00',
+    goriAddress: input.address, requestedDate: futureDate(2), requestedTime: '21:00',
   } });
   expect(response.ok()).toBeTruthy();
   expect(await response.json()).toMatchObject({
@@ -146,7 +187,18 @@ type PrintableFixture = {
   direction: Direction; time: string; goriAddress: string;
 };
 
+async function clearScheduledFixtureDay(day: string) {
+  // New operator bookings share the three-day window. Keep each print fixture
+  // independent of earlier scenarios in this disposable test database.
+  const response = await adminApi.get(`/api/admin/bookings?${new URLSearchParams({ scope: 'scheduled', date: day })}`);
+  expect(response.ok()).toBeTruthy();
+  for (const booking of (await response.json() as { bookings: Booking[] }).bookings) {
+    expect((await adminApi.post(`/api/admin/bookings/${booking.id}/delete`, { data: {} })).ok()).toBeTruthy();
+  }
+}
+
 async function seedPrintableDay(day: string, phonePrefix: string, namePrefix: string) {
+  await clearScheduledFixtureDay(day);
   const expected: PrintableFixture[] = Array.from({ length: 20 }, (_, index) => {
     const phone = `${phonePrefix}${String(index + 1).padStart(3, '0')}`;
     return {
@@ -176,7 +228,8 @@ async function seedPrintableDay(day: string, phonePrefix: string, namePrefix: st
   const moved = await adminApi.post('/api/admin/bookings', { data: { ...common, name: excludedNames[2], phone: `${phonePrefix}902`, requestedDate: day } });
   expect(moved.ok()).toBeTruthy();
   const movedId = (await moved.json() as { id: number }).id;
-  expect((await adminApi.post(`/api/admin/bookings/${movedId}/move`, { data: { date: futureDate(30), time: '08:30' } })).ok()).toBeTruthy();
+  const otherDay = day === futureDate(2) ? futureDate(1) : futureDate(2);
+  expect((await adminApi.post(`/api/admin/bookings/${movedId}/move`, { data: { date: otherDay, time: '08:30' } })).ok()).toBeTruthy();
   return { expected, excludedNames };
 }
 
@@ -469,9 +522,8 @@ test('operator confirms an incoming guest booking, deletes it and restores its d
   await expect(page.locator('.admin-booking-table tbody tr')).toHaveCount(1);
   await row.getByRole('button', { name: 'დამატება', exact: true }).click();
   const confirmDialog = page.getByRole('dialog', { name: 'განაცხადის დამატება', exact: true });
-  await expect(confirmDialog.getByLabel('თარიღი', { exact: true })).toHaveValue(day);
-  await expect(confirmDialog.getByLabel('დრო', { exact: true })).toBeEnabled();
-  await confirmDialog.getByLabel('დრო', { exact: true }).selectOption('09:30');
+  await expect(operatorDayButton(confirmDialog, day)).toHaveAttribute('aria-pressed', 'true');
+  await chooseOperatorTime(confirmDialog, '09:30');
   const confirmed = page.waitForResponse(response => response.url().endsWith(`/api/admin/bookings/${id}/confirm`));
   await confirmDialog.getByRole('button', { name: 'დამატება და დადასტურება', exact: true }).click();
   expect((await confirmed).ok()).toBeTruthy();
@@ -483,6 +535,18 @@ test('operator confirms an incoming guest booking, deletes it and restores its d
   await expect(row).toBeVisible();
   await expect(row).toContainText('დადასტურებული');
   await expect(row.locator('.admin-seat-badge')).toHaveText('3');
+  await row.getByRole('button', { name: `${name}: რედაქტირება`, exact: true }).click();
+  const editDialog = page.getByRole('dialog', { name: 'ჯავშნის რედაქტირება', exact: true });
+  await expect(editDialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
+  const editedAddress = 'გორი, ძველი სახელის შენარჩუნების სატესტო მისამართი';
+  await editDialog.getByLabel('აყვანის მისამართი გორში', { exact: true }).fill(editedAddress);
+  const edited = page.waitForResponse(response => response.url().endsWith(`/api/admin/bookings/${id}`) && response.request().method() === 'PATCH');
+  await editDialog.getByRole('button', { name: 'ცვლილებების შენახვა', exact: true }).click();
+  const editResponse = await edited;
+  expect(editResponse.ok()).toBeTruthy();
+  expect(editResponse.request().postDataJSON()).not.toHaveProperty('name');
+  expect(await editResponse.json()).toMatchObject({ id, name, seats: 3, goriAddress: editedAddress });
+  await expect(editDialog).toHaveCount(0);
   await row.getByRole('button', { name: `${name}: სხვა მოქმედებები`, exact: true }).click();
   await row.getByRole('button', { name: 'წაშლა', exact: true }).click();
   const deleteDialog = page.getByRole('dialog', { name: 'ჯავშნის წაშლა', exact: true });
@@ -494,56 +558,181 @@ test('operator confirms an incoming guest booking, deletes it and restores its d
   await openAdminView(page, 'ისტორია');
   await expect(row).toBeVisible();
   await expect(row.locator('.admin-seat-badge')).toHaveText('3');
+  // The original trip is historical from the browser's perspective. Restoring
+  // it must keep its active original slot instead of selecting a new future day.
+  await page.clock.setFixedTime(new Date(`${futureDate(5)}T12:00:00Z`));
   await row.getByRole('button', { name: 'აღდგენა', exact: true }).click();
   const restoreDialog = page.getByRole('dialog', { name: 'ჯავშნის აღდგენა', exact: true });
-  await expect(restoreDialog.getByLabel('დრო', { exact: true })).toBeEnabled();
-  await expect(restoreDialog.getByLabel('დრო', { exact: true })).toHaveValue('09:30');
+  const original = restoreDialog.getByRole('group', { name: 'აღდგენის დრო', exact: true }).getByRole('button', { name: 'თავდაპირველი დროის შენარჩუნება', exact: true });
+  await expect(original).toBeEnabled();
+  await expect(original).toHaveAttribute('aria-pressed', 'true');
+  await expect(operatorGroup(restoreDialog, 'თარიღი')).toHaveCount(0);
+  await expect(operatorGroup(restoreDialog, 'დრო')).toHaveCount(0);
+  await expect(restoreDialog).toContainText('09:30');
   const restored = page.waitForResponse(response => response.url().endsWith(`/api/admin/bookings/${id}/restore`));
   await restoreDialog.getByRole('button', { name: 'აღდგენა', exact: true }).click();
   const restoredResponse = await restored;
   expect(restoredResponse.ok()).toBeTruthy();
+  expect(restoredResponse.request().postDataJSON()).toEqual({});
   expect(await restoredResponse.json()).toMatchObject({
     id, name, seats: 3, status: 'confirmed', deletedAt: null,
-    assignedDate: day, assignedTime: '09:30', goriAddress: 'გორი, სატესტო ქუჩა 12',
+    assignedDate: day, assignedTime: '09:30', goriAddress: editedAddress,
   });
   await expect(restoreDialog).toHaveCount(0);
   await expect(row).toHaveCount(0);
   await openAdminView(page, 'ჯავშნები');
+  await chooseAdminDate(page, day);
   await expect(row).toBeVisible();
   await expect(row).toContainText('დადასტურებული');
 });
 
-test('a manual staff order is immediately confirmed with four seats', async ({ page }) => {
-  const name = 'სატესტო ხელით შექმნილი';
-  const day = futureDate(3);
-  await login(page);
-  await page.getByRole('button', { name: 'ახალი ჯავშანი', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'ახალი ჯავშანი', exact: true });
-  await dialog.getByLabel('მგზავრის სახელი', { exact: true }).fill(name);
-  await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill('+995555000456');
-  const seats = dialog.getByLabel('ადგილების რაოდენობა', { exact: true });
-  await expect(seats.locator('option')).toHaveText(['1 ადგილი', '2 ადგილი', '3 ადგილი', '4 ადგილი']);
-  await seats.selectOption('4');
-  await dialog.getByLabel(/^აყვანის მისამართი გორში/).fill('გორი, სატესტო ქუჩა 24');
-  await dialog.getByLabel('თარიღი', { exact: true }).fill(day);
-  await expect(dialog.getByLabel('დრო', { exact: true })).toBeEnabled();
-  await dialog.getByLabel('დრო', { exact: true }).selectOption('10:00');
-  const saved = page.waitForResponse(response => response.url().endsWith('/api/admin/bookings') && response.request().method() === 'POST');
-  await dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true }).click();
-  const response = await saved;
-  expect(response.ok()).toBeTruthy();
-  expect(await response.json()).toMatchObject({ name, phone: '555000456', seats: 4, status: 'confirmed', assignedDate: day, assignedTime: '10:00' });
-  await expect(dialog).toHaveCount(0);
-  await chooseAdminDate(page, day);
-  const row = bookingRow(page, name);
-  await expect(row).toBeVisible();
-  await expect(row).toContainText('დადასტურებული');
-  await expect(row.locator('.admin-seat-badge')).toHaveText('4');
+for (const [index, direction] of (Object.keys(DIRECTION_LABELS) as Direction[]).entries()) {
+  test(`an unnamed manual staff order with eight seats is confirmed in ${direction}`, async ({ page }) => {
+    const phone = `55500045${6 + index}`;
+    const day = futureDate(2);
+    const address = `გორი, რვა ადგილის სატესტო მისამართი ${index + 1}`;
+    await openAuthenticatedAdmin(page);
+    const dialog = await openManualOrder(page);
+    await expect(dialog.locator('input[type="date"]')).toHaveCount(0);
+    await expect(operatorGroup(dialog, 'თარიღი').getByRole('button')).toHaveCount(3);
+    await chooseOperatorDirection(dialog, direction);
+    await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(`+995${phone}`);
+    await chooseOperatorSeats(dialog, 8);
+    await dialog.getByLabel(direction === 'gori-tbilisi' ? 'აყვანის მისამართი გორში' : 'ჩამოსვლის მისამართი გორში', { exact: true }).fill(address);
+    if (direction === 'tbilisi-gori') {
+      await dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true }).selectOption(String(publicConfig.stops[0].id));
+    }
+    await chooseOperatorDay(dialog, day);
+    const hours = operatorGroup(dialog, 'დრო');
+    await expect(hours.getByRole('button')).toHaveCount(18);
+    for (const time of TIMES) await expect(hours.getByRole('button', { name: time, exact: true })).toBeVisible();
+    const hourBounds = await hours.evaluate(group => {
+      const bounds = group.getBoundingClientRect();
+      return {
+        scrollHeight: group.scrollHeight, clientHeight: group.clientHeight,
+        outside: Array.from(group.querySelectorAll('button')).filter(button => {
+          const rect = button.getBoundingClientRect();
+          return rect.left < bounds.left - 1 || rect.right > bounds.right + 1 || rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1;
+        }).length,
+      };
+    });
+    expect(hourBounds.scrollHeight, 'Active hours should be visible together without a scrolling hour picker').toBeLessThanOrEqual(hourBounds.clientHeight + 1);
+    expect(hourBounds.outside, 'Every active hour must fit inside the hour picker').toBe(0);
+    await chooseOperatorTime(dialog, '09:30');
+    const saved = page.waitForResponse(response => response.url().endsWith('/api/admin/bookings') && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true }).click();
+    const response = await saved;
+    expect(response.ok()).toBeTruthy();
+    expect(response.request().postDataJSON()).not.toHaveProperty('name');
+    const booking = await response.json() as Booking;
+    expect(booking).toMatchObject({
+      name: '', phone, seats: 8, direction, goriAddress: address,
+      pickupStopId: direction === 'tbilisi-gori' ? publicConfig.stops[0].id : null,
+      status: 'confirmed', requestedDate: day, requestedTime: '09:30', assignedDate: day, assignedTime: '09:30',
+    });
+    await expect(dialog).toHaveCount(0);
+    if (direction === 'tbilisi-gori') await page.locator('.admin-filters').getByRole('combobox').first().selectOption(direction);
+    await chooseAdminDate(page, day);
+    await chooseAdminTime(page, '09:30');
+    const row = bookingRowById(page, booking.id);
+    await expect(row).toBeVisible();
+    await expect(row).toContainText('დადასტურებული');
+    await expect(row).toContainText('555 00 04 ' + String(56 + index));
+    await expect(row.locator('.admin-seat-badge')).toHaveText('8');
+  });
+}
+
+test('operator hours use Tbilisi time, keep a future choice on ticks and refresh the three-day window at midnight', async ({ page }) => {
+  await page.clock.install({ time: new Date('2030-05-04T10:00:00Z') });
+  await page.clock.pauseAt(new Date('2030-05-04T10:00:01Z'));
+  const posts: string[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/admin/bookings' && request.method() === 'POST') posts.push(request.url());
+  });
+  await openAuthenticatedAdmin(page);
+  const dialog = await openManualOrder(page);
+  const hours = operatorGroup(dialog, 'დრო');
+  const days = operatorGroup(dialog, 'თარიღი');
+  await expect(operatorDayButton(dialog, '2030-05-04')).toHaveAttribute('aria-pressed', 'true');
+  await expect(hours.getByRole('button')).toHaveText(['15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00']);
+  await expect(hours.getByRole('button', { name: '11:00', exact: true })).toHaveCount(0);
+  await expect(hours.getByRole('button', { name: '14:00', exact: true })).toHaveCount(0);
+  await dialog.getByLabel('აყვანის მისამართი გორში', { exact: true }).fill('გორი, საათის ცვლილების სატესტო მისამართი');
+  await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill('555073701');
+  await chooseOperatorDay(dialog, '2030-05-05');
+  await expect(hours.getByRole('button')).toHaveText(TIMES);
+  await chooseOperatorTime(dialog, '08:30');
+  await page.clock.fastForward(3_599_000);
+  await expect(operatorDayButton(dialog, '2030-05-05')).toHaveAttribute('aria-pressed', 'true');
+  await expect(hours.getByRole('button', { name: '08:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await chooseOperatorDay(dialog, '2030-05-04');
+  await expect(hours.getByRole('button')).toHaveText(['16:00', '17:00', '18:00', '19:00', '20:00', '21:00']);
+  await chooseOperatorTime(dialog, '16:00');
+  await page.clock.fastForward(60 * 60 * 1000);
+  await expect(hours.getByRole('button')).toHaveText(['17:00', '18:00', '19:00', '20:00', '21:00']);
+  await expect(hours.locator('[aria-pressed="true"]')).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true })).toBeDisabled();
+  await page.clock.fastForward(8 * 60 * 60 * 1000);
+  await expect(days.getByRole('button')).toHaveCount(3);
+  for (const day of ['2030-05-05', '2030-05-06', '2030-05-07']) await expect(operatorDayButton(dialog, day)).toBeVisible();
+  await expect(operatorDayButton(dialog, '2030-05-04')).toHaveCount(0);
+  await expect(operatorDayButton(dialog, '2030-05-05')).toHaveAttribute('aria-pressed', 'true');
+  await expect(hours.getByRole('button')).toHaveText(TIMES);
+  await expect(hours.locator('[aria-pressed="true"]')).toHaveCount(0);
+  await expect(dialog.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue('გორი, საათის ცვლილების სატესტო მისამართი');
+  await dialog.getByRole('button', { name: 'გაუქმება', exact: true }).click();
+  await chooseAdminDate(page, '2030-05-08');
+  const clamped = await openManualOrder(page);
+  await expect(operatorDayButton(clamped, '2030-05-05')).toHaveAttribute('aria-pressed', 'true');
+  await expect(operatorDayButton(clamped, '2030-05-08')).toHaveCount(0);
+  expect(posts, 'Clock updates must never submit an order').toEqual([]);
+});
+
+test('operator rejects a newly disabled hour and requires an explicit alternative before retrying', async ({ page, browserErrors }) => {
+  const day = futureDate(1);
+  const phone = '555073702';
+  await openAuthenticatedAdmin(page);
+  const dialog = await openManualOrder(page);
+  await dialog.getByLabel('აყვანის მისამართი გორში', { exact: true }).fill('გორი, გამორთული დროის სატესტო მისამართი');
+  await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(phone);
+  await chooseOperatorSeats(dialog, 8);
+  await chooseOperatorDay(dialog, day);
+  await chooseOperatorTime(dialog, '08:30');
+  try {
+    expect((await adminApi.put('/api/admin/schedule/date', { data: { direction: 'gori-tbilisi', date: day, times: TIMES.filter(time => time !== '08:30') } })).ok()).toBeTruthy();
+    const rejected = page.waitForResponse(response => response.url().endsWith('/api/admin/bookings') && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true }).click();
+    const failure = await rejected;
+    expect(failure.status()).toBe(409);
+    expect(await failure.json()).toMatchObject({ code: 'SLOT_INACTIVE' });
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    const hours = operatorGroup(dialog, 'დრო');
+    await expect(hours.getByRole('button', { name: '08:30', exact: true })).toHaveCount(0);
+    await expect(hours.locator('[aria-pressed="true"]')).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true })).toBeDisabled();
+    const unchanged = await adminApi.get(`/api/admin/bookings?${new URLSearchParams({ scope: 'scheduled', date: day, search: phone })}`);
+    expect(unchanged.ok()).toBeTruthy();
+    expect((await unchanged.json() as { bookings: Booking[] }).bookings).toEqual([]);
+    await chooseOperatorTime(dialog, '10:00');
+    const accepted = page.waitForResponse(response => response.url().endsWith('/api/admin/bookings') && response.request().method() === 'POST');
+    await dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true }).click();
+    const saved = await accepted;
+    expect(saved.ok()).toBeTruthy();
+    expect(await saved.json()).toMatchObject({ name: '', phone, seats: 8, status: 'confirmed', assignedDate: day, assignedTime: '10:00' });
+    await expect(dialog).toHaveCount(0);
+  } finally {
+    expect((await adminApi.delete(`/api/admin/schedule/date?${new URLSearchParams({ direction: 'gori-tbilisi', date: day })}`)).ok()).toBeTruthy();
+    // This scenario deliberately receives the asserted real HTTP409. Ignore only
+    // Chromium's matching resource-status message; every other error still fails.
+    for (let index = browserErrors.length - 1; index >= 0; index--) {
+      if (/^Console: https?:\/\/[^\s]+\/api\/admin\/bookings Failed to load resource:.*\b409\b/.test(browserErrors[index])) browserErrors.splice(index, 1);
+    }
+  }
 });
 
 test('direction, date and time filters change the actual scheduled order list', async ({ page }) => {
   const day = futureDate();
-  const nextDay = futureDate(3);
+  const nextDay = futureDate(1);
   const fixtures = [
     { name: 'ფილტრის ტესტი პირველი', direction: 'gori-tbilisi', requestedDate: day, requestedTime: '08:00' },
     { name: 'ფილტრის ტესტი მეორე', direction: 'gori-tbilisi', requestedDate: day, requestedTime: '09:00' },
@@ -635,23 +824,20 @@ test('answered Android SIM inquiry is deduplicated, restored and converted into 
   await callRow.getByRole('button', { name: 'ჯავშნის შექმნა', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'ზარის მიხედვით ჯავშნის შექმნა', exact: true });
   await expect(dialog.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue(displayedCaller);
-  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveValue('');
+  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
   await expect(dialog.getByLabel(/^აყვანის მისამართი გორში/)).toHaveValue('');
-  const name = 'სატესტო სატელეფონო ჯავშანი';
-  const day = futureDate(4);
-  await dialog.getByLabel('მგზავრის სახელი', { exact: true }).fill(name);
-  await dialog.getByLabel('ადგილების რაოდენობა', { exact: true }).selectOption('4');
+  const day = futureDate(1);
+  await chooseOperatorSeats(dialog, 8);
   await dialog.getByLabel(/^აყვანის მისამართი გორში/).fill('გორი, სატესტო ქუჩა 48');
-  await dialog.getByLabel('თარიღი', { exact: true }).fill(day);
-  await expect(dialog.getByLabel('დრო', { exact: true })).toBeEnabled();
-  await dialog.getByLabel('დრო', { exact: true }).selectOption('11:00');
+  await chooseOperatorDay(dialog, day);
+  await chooseOperatorTime(dialog, '11:00');
   const converted = page.waitForResponse(response => response.url().endsWith(`/api/admin/calls/${inquiry.id}/convert`));
   await dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true }).click();
   const convertedResponse = await converted;
   expect(convertedResponse.ok()).toBeTruthy();
   const saved = await convertedResponse.json() as Booking;
   expect(saved).toMatchObject({
-    name, phone: caller, seats: 4, status: 'confirmed',
+    name: '', phone: caller, seats: 8, status: 'confirmed',
     assignedDate: day, assignedTime: '11:00', goriAddress: 'გორი, სატესტო ქუჩა 48',
   });
   await expect(dialog).toHaveCount(0);
@@ -663,8 +849,8 @@ test('answered Android SIM inquiry is deduplicated, restored and converted into 
   await openAdminView(page, 'ჯავშნები');
   await chooseAdminDate(page, day);
   await chooseAdminTime(page, '11:00');
-  await expect(bookingRow(page, name)).toBeVisible();
-  await expect(bookingRow(page, name)).toContainText('დადასტურებული');
+  await expect(bookingRowById(page, saved.id)).toBeVisible();
+  await expect(bookingRowById(page, saved.id)).toContainText('დადასტურებული');
   const revoked = await adminApi.patch(`/api/admin/devices/${device.id}`, { data: { active: false } });
   expect(revoked.ok()).toBeTruthy();
   const denied = await adminApi.post('/api/integrations/android/calls', {
@@ -675,7 +861,7 @@ test('answered Android SIM inquiry is deduplicated, restored and converted into 
 
 test('restore confirmed order requires explicit alternative when its previous slot is disabled', async ({ page }) => {
   const name = 'სატესტო გამორთული სლოტის აღდგენა';
-  const day = futureDate(5);
+  const day = futureDate(2);
   const created = await adminApi.post('/api/admin/bookings', { data: {
     name, phone: '+995555000501', seats: 2, direction: 'gori-tbilisi',
     requestedDate: day, requestedTime: '09:30', goriAddress: 'გორი, სატესტო ქუჩა 60',
@@ -688,40 +874,44 @@ test('restore confirmed order requires explicit alternative when its previous sl
     data: { direction: 'gori-tbilisi', date: day, times: ['07:00', '10:00'] },
   });
   expect(override.ok()).toBeTruthy();
-  await login(page);
-  await openAdminView(page, 'ისტორია');
-  await page.getByRole('textbox', { name: 'მგზავრის სახელი ან ტელეფონი', exact: true }).fill(name);
-  const row = bookingRow(page, name);
-  await expect(row).toBeVisible();
-  await row.getByRole('button', { name: 'აღდგენა', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'ჯავშნის აღდგენა', exact: true });
-  const time = dialog.getByLabel('დრო', { exact: true });
-  await expect(time).toBeEnabled();
-  await expect(time).toHaveValue('');
-  await expect(time.locator('option')).toHaveText(['აირჩიეთ მოქმედი დრო', '07:00', '10:00']);
-  await expect(dialog.locator('.admin-notice')).toContainText('ჯავშნის გადატანა ავტომატურად არ მოხდება');
-  await expect(dialog.getByRole('button', { name: 'აღდგენა', exact: true })).toBeDisabled();
-  const unchanged = await adminApi.get(`/api/admin/bookings?${new URLSearchParams({ scope: 'deleted', search: name })}`);
-  expect(unchanged.ok()).toBeTruthy();
-  expect((await unchanged.json() as { bookings: Booking[] }).bookings)
-    .toEqual([expect.objectContaining({ id: booking.id, assignedDate: day, assignedTime: '09:30' })]);
-  await time.selectOption('07:00');
-  await expect(dialog.getByRole('button', { name: 'აღდგენა', exact: true })).toBeEnabled();
-  const restored = page.waitForResponse(response => response.url().endsWith(`/api/admin/bookings/${booking.id}/restore`));
-  await dialog.getByRole('button', { name: 'აღდგენა', exact: true }).click();
-  const response = await restored;
-  expect(response.ok()).toBeTruthy();
-  expect(await response.json()).toMatchObject({
-    id: booking.id, name, seats: 2, status: 'confirmed', deletedAt: null,
-    requestedDate: day, requestedTime: '09:30', assignedDate: day, assignedTime: '07:00',
-  });
-  await expect(dialog).toHaveCount(0);
-  await expect(row).toHaveCount(0);
-  await openAdminView(page, 'ჯავშნები');
-  await chooseAdminDate(page, day);
-  await chooseAdminTime(page, '07:00');
-  await expect(row).toBeVisible();
-  await expect(row.locator('.admin-time-value')).toHaveText('07:00');
+  try {
+    await openAuthenticatedAdmin(page);
+    await openAdminView(page, 'ისტორია');
+    await page.getByRole('textbox', { name: 'მგზავრის სახელი ან ტელეფონი', exact: true }).fill(name);
+    const row = bookingRow(page, name);
+    await expect(row).toBeVisible();
+    await row.getByRole('button', { name: 'აღდგენა', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'ჯავშნის აღდგენა', exact: true });
+    const time = operatorGroup(dialog, 'დრო');
+    await chooseOperatorDay(dialog, day);
+    await expect(time.getByRole('button')).toHaveText(['07:00', '10:00']);
+    await expect(time.locator('[aria-pressed="true"]')).toHaveCount(0);
+    await expect(dialog.locator('.admin-form-hint')).toContainText('ჯავშანი ავტომატურად არ გადაიტანება');
+    await expect(dialog.getByRole('button', { name: 'აღდგენა', exact: true })).toBeDisabled();
+    const unchanged = await adminApi.get(`/api/admin/bookings?${new URLSearchParams({ scope: 'deleted', search: name })}`);
+    expect(unchanged.ok()).toBeTruthy();
+    expect((await unchanged.json() as { bookings: Booking[] }).bookings)
+      .toEqual([expect.objectContaining({ id: booking.id, assignedDate: day, assignedTime: '09:30' })]);
+    await chooseOperatorTime(dialog, '07:00');
+    await expect(dialog.getByRole('button', { name: 'აღდგენა', exact: true })).toBeEnabled();
+    const restored = page.waitForResponse(response => response.url().endsWith(`/api/admin/bookings/${booking.id}/restore`));
+    await dialog.getByRole('button', { name: 'აღდგენა', exact: true }).click();
+    const response = await restored;
+    expect(response.ok()).toBeTruthy();
+    expect(await response.json()).toMatchObject({
+      id: booking.id, name, seats: 2, status: 'confirmed', deletedAt: null,
+      requestedDate: day, requestedTime: '09:30', assignedDate: day, assignedTime: '07:00',
+    });
+    await expect(dialog).toHaveCount(0);
+    await expect(row).toHaveCount(0);
+    await openAdminView(page, 'ჯავშნები');
+    await chooseAdminDate(page, day);
+    await chooseAdminTime(page, '07:00');
+    await expect(row).toBeVisible();
+    await expect(row.locator('.admin-time-value')).toHaveText('07:00');
+  } finally {
+    expect((await adminApi.delete(`/api/admin/schedule/date?${new URLSearchParams({ direction: 'gori-tbilisi', date: day })}`)).ok()).toBeTruthy();
+  }
 });
 
 test('restore waiting request succeeds when every slot on its requested day is disabled', async ({ page }) => {
@@ -818,13 +1008,12 @@ test('passenger profile autofill accepts Georgian phone formats and keeps fresh 
   const formats = ['555 010 101', '995555010101', '+995 555 010 101'];
   for (const [index, formatted] of formats.entries()) {
     const dialog = await openManualOrder(page);
-    await dialog.getByLabel('მიმართულება', { exact: true }).selectOption('tbilisi-gori');
-    await expect(dialog.getByLabel('დრო', { exact: true })).toBeEnabled();
-    const freshDate = await dialog.getByLabel('თარიღი', { exact: true }).inputValue();
-    const freshTime = await dialog.getByLabel('დრო', { exact: true }).inputValue();
-    expect(freshDate).not.toBe(futureDate(9));
-    expect(freshTime).not.toBe('21:00');
-    await expect(dialog.getByLabel('ადგილების რაოდენობა', { exact: true })).toHaveValue('1');
+    await chooseOperatorDirection(dialog, 'tbilisi-gori');
+    const freshDate = futureDate(1);
+    const freshTime = '08:30';
+    await chooseOperatorDay(dialog, freshDate);
+    await chooseOperatorTime(dialog, freshTime);
+    await expect(operatorGroup(dialog, 'ადგილების რაოდენობა').getByRole('button', { name: '1 ადგილი', exact: true })).toHaveAttribute('aria-pressed', 'true');
     const lookup = page.waitForResponse(response => isProfileResponse(response, phone));
     await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(formatted);
     await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).blur();
@@ -833,25 +1022,31 @@ test('passenger profile autofill accepts Georgian phone formats and keeps fresh 
     expect((await response.json() as { profile: PassengerProfile | null }).profile)
       .toMatchObject({ phone, name, goriAddress: address, pickupStopId: stop.id });
     await expect(dialog.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue('555 01 01 01');
-    await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveValue(name);
+    await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
     await expect(dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue(address);
     await expect(dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true })).toHaveValue(String(stop.id));
-    await expect(dialog.getByLabel('თარიღი', { exact: true })).toHaveValue(freshDate);
-    await expect(dialog.getByLabel('დრო', { exact: true })).toHaveValue(freshTime);
-    await expect(dialog.getByLabel('ადგილების რაოდენობა', { exact: true })).toHaveValue('1');
+    await expect(operatorDayButton(dialog, freshDate)).toHaveAttribute('aria-pressed', 'true');
+    await expect(operatorGroup(dialog, 'დრო').getByRole('button', { name: freshTime, exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(operatorGroup(dialog, 'ადგილების რაოდენობა').getByRole('button', { name: '1 ადგილი', exact: true })).toHaveAttribute('aria-pressed', 'true');
     if (index < formats.length - 1) {
       await dialog.getByRole('button', { name: 'გაუქმება', exact: true }).click();
       await expect(dialog).toHaveCount(0);
+      const profile = await adminApi.get(`/api/admin/passengers/profile?phone=${phone}`);
+      expect(profile.ok()).toBeTruthy();
+      expect((await profile.json() as { profile: PassengerProfile }).profile.name).toBe(name);
     } else {
       const saved = page.waitForResponse(value => value.url().endsWith('/api/admin/bookings') && value.request().method() === 'POST');
       await dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true }).click();
       const savedResponse = await saved;
       expect(savedResponse.ok()).toBeTruthy();
       expect(await savedResponse.json()).toMatchObject({
-        phone, name, goriAddress: address, pickupStopId: stop.id, seats: 1,
+        phone, name: '', goriAddress: address, pickupStopId: stop.id, seats: 1,
         status: 'confirmed', assignedDate: freshDate, assignedTime: freshTime,
       });
       await expect(dialog).toHaveCount(0);
+      const profile = await adminApi.get(`/api/admin/passengers/profile?phone=${phone}`);
+      expect(profile.ok()).toBeTruthy();
+      expect((await profile.json() as { profile: PassengerProfile }).profile.name).toBe(name);
     }
   }
 });
@@ -864,11 +1059,11 @@ test('passenger profile autofill clears old automatic values for an unknown numb
   await seedConfirmedProfile({ phone, name, address, pickupStopId: stop.id });
   await openAuthenticatedAdmin(page);
   const dialog = await openManualOrder(page);
-  await dialog.getByLabel('მიმართულება', { exact: true }).selectOption('tbilisi-gori');
+  await chooseOperatorDirection(dialog, 'tbilisi-gori');
   const known = page.waitForResponse(response => isProfileResponse(response, phone));
   await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(phone);
   expect((await known).ok()).toBeTruthy();
-  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveValue(name);
+  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
   await expect(dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue(address);
   await expect(dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true })).toHaveValue(String(stop.id));
   const unknownPhone = '555019991';
@@ -877,19 +1072,15 @@ test('passenger profile autofill clears old automatic values for an unknown numb
   const unknownResponse = await unknown;
   expect(unknownResponse.ok()).toBeTruthy();
   expect(await unknownResponse.json()).toEqual({ profile: null });
-  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveValue('');
   await expect(dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue('');
   await expect(dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true })).toHaveValue('');
-  const manualName = 'სატესტო ხელით შეყვანილი სახელი';
   const manualAddress = 'გორი, ხელით შეყვანილი მისამართი 112';
-  await dialog.getByLabel('მგზავრის სახელი', { exact: true }).fill(manualName);
   await dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true }).fill(manualAddress);
   await dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true }).selectOption(String(publicConfig.stops[2].id));
   const anotherPhone = '555019992';
   const anotherUnknown = page.waitForResponse(response => isProfileResponse(response, anotherPhone));
   await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(anotherPhone);
   expect((await anotherUnknown).ok()).toBeTruthy();
-  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveValue(manualName);
   await expect(dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue(manualAddress);
   await expect(dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true })).toHaveValue(String(publicConfig.stops[2].id));
 });
@@ -913,13 +1104,13 @@ test('passenger profile autofill never overwrites manual edits or a deliberate c
     await route.fulfill({ response });
   });
   const dialog = await openManualOrder(page);
-  await dialog.getByLabel('მიმართულება', { exact: true }).selectOption('tbilisi-gori');
+  await chooseOperatorDirection(dialog, 'tbilisi-gori');
+  await chooseOperatorDay(dialog, futureDate(1));
+  await chooseOperatorTime(dialog, '08:30');
   const lookup = page.waitForResponse(response => isProfileResponse(response, phone));
-  const manualName = 'სატესტო ოპერატორის ახალი სახელი';
   try {
     await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(phone);
     await backendReady;
-    await dialog.getByLabel('მგზავრის სახელი', { exact: true }).fill(manualName);
     await dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true }).fill('სატესტო დროებითი მისამართი');
     await dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true }).clear();
     await dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true }).selectOption(String(publicConfig.stops[2].id));
@@ -927,8 +1118,8 @@ test('passenger profile autofill never overwrites manual edits or a deliberate c
   const response = await lookup;
   expect(response.ok()).toBeTruthy();
   expect((await response.json() as { profile: PassengerProfile | null }).profile?.name).toBe('სატესტო ძველი პროფილის სახელი');
-  await expect(dialog.locator('.admin-profile-feedback')).toContainText('მგზავრი ნაპოვნია');
-  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveValue(manualName);
+  await expect(dialog.locator('.admin-profile-feedback')).toContainText('მისამართები ნაპოვნია.');
+  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
   await expect(dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue('');
   await expect(dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true })).toHaveValue(String(publicConfig.stops[2].id));
   const manualAddress = 'გორი, ოპერატორის ახალი მისამართი 203';
@@ -938,7 +1129,7 @@ test('passenger profile autofill never overwrites manual edits or a deliberate c
   const savedResponse = await saved;
   expect(savedResponse.ok()).toBeTruthy();
   expect(await savedResponse.json()).toMatchObject({
-    phone, name: manualName, goriAddress: manualAddress, pickupStopId: publicConfig.stops[2].id,
+    phone, name: '', goriAddress: manualAddress, pickupStopId: publicConfig.stops[2].id,
   });
 });
 
@@ -1023,46 +1214,48 @@ test('live Android call shows a known profile, updates the same row on completio
   const lookup = page.waitForResponse(response => isProfileResponse(response, phone));
   await row.getByRole('button', { name: 'ჯავშნის შექმნა', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'ზარის მიხედვით ჯავშნის შექმნა', exact: true });
-  const manualName = 'სატესტო ზარის შესწორებული სახელი';
   const manualAddress = 'გორი, ზარის შესწორებული მისამართი 304';
   let freshDate = '';
   let freshTime = '';
   try {
     // The trusted profile included in the card fills the form before the held lookup resolves.
     await expect(dialog.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue(displayedPhone);
-    await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveValue(name);
+    await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
     await expect(dialog.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(address);
-    await dialog.getByLabel('მიმართულება', { exact: true }).selectOption('tbilisi-gori');
+    await chooseOperatorDirection(dialog, 'tbilisi-gori');
     await expect(dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true })).toHaveValue(String(stop.id));
-    await expect(dialog.getByLabel('ადგილების რაოდენობა', { exact: true })).toHaveValue('1');
-    await expect(dialog.getByLabel('თარიღი', { exact: true })).toHaveValue(futureDate(0));
-    await expect(dialog.getByLabel('დრო', { exact: true })).toBeEnabled();
-    freshDate = await dialog.getByLabel('თარიღი', { exact: true }).inputValue();
-    freshTime = await dialog.getByLabel('დრო', { exact: true }).inputValue();
-    expect(freshTime).not.toBe('21:00');
+    await expect(operatorGroup(dialog, 'ადგილების რაოდენობა').getByRole('button', { name: '1 ადგილი', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(operatorDayButton(dialog, futureDate(0))).toHaveAttribute('aria-pressed', 'true');
+    freshDate = futureDate(1);
+    freshTime = '08:30';
+    await chooseOperatorDay(dialog, freshDate);
+    await chooseOperatorTime(dialog, freshTime);
+    await chooseOperatorSeats(dialog, 8);
     await backendReady;
-    await dialog.getByLabel('მგზავრის სახელი', { exact: true }).fill(manualName);
     await dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true }).fill(manualAddress);
     await dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true }).selectOption(String(publicConfig.stops[2].id));
   } finally { releaseLookup(); }
   expect((await lookup).ok()).toBeTruthy();
-  await expect(dialog.locator('.admin-profile-feedback')).toContainText('მგზავრი ნაპოვნია');
-  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveValue(manualName);
+  await expect(dialog.locator('.admin-profile-feedback')).toContainText('მისამართები ნაპოვნია.');
+  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
   await expect(dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue(manualAddress);
   await expect(dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true })).toHaveValue(String(publicConfig.stops[2].id));
-  await expect(dialog.getByLabel('თარიღი', { exact: true })).toHaveValue(freshDate);
-  await expect(dialog.getByLabel('დრო', { exact: true })).toHaveValue(freshTime);
-  await expect(dialog.getByLabel('ადგილების რაოდენობა', { exact: true })).toHaveValue('1');
+  await expect(operatorDayButton(dialog, freshDate)).toHaveAttribute('aria-pressed', 'true');
+  await expect(operatorGroup(dialog, 'დრო').getByRole('button', { name: freshTime, exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(operatorGroup(dialog, 'ადგილების რაოდენობა').getByRole('button', { name: '8 ადგილი', exact: true })).toHaveAttribute('aria-pressed', 'true');
   const converted = page.waitForResponse(value => value.url().endsWith(`/api/admin/calls/${id}/convert`));
   await dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true }).click();
   const response = await converted;
   expect(response.ok()).toBeTruthy();
   expect(await response.json()).toMatchObject({
-    phone, name: manualName, goriAddress: manualAddress, pickupStopId: publicConfig.stops[2].id,
-    direction: 'tbilisi-gori', seats: 1, status: 'confirmed', assignedDate: freshDate, assignedTime: freshTime,
+    phone, name: '', goriAddress: manualAddress, pickupStopId: publicConfig.stops[2].id,
+    direction: 'tbilisi-gori', seats: 8, status: 'confirmed', assignedDate: freshDate, assignedTime: freshTime,
   });
   await expect(dialog).toHaveCount(0);
   await expect(row).toHaveCount(0);
+  const trusted = await adminApi.get(`/api/admin/passengers/profile?phone=${phone}`);
+  expect(trusted.ok()).toBeTruthy();
+  expect((await trusted.json() as { profile: PassengerProfile }).profile.name).toBe(name);
 });
 
 test('passenger profile autofill leaves an inactive remembered stop unselected until an active stop is chosen', async ({ page }) => {
@@ -1078,14 +1271,16 @@ test('passenger profile autofill leaves an inactive remembered stop unselected u
   expect((await adminApi.patch(`/api/admin/stops/${id}`, { data: { active: false } })).ok()).toBeTruthy();
   await openAuthenticatedAdmin(page);
   const dialog = await openManualOrder(page);
-  await dialog.getByLabel('მიმართულება', { exact: true }).selectOption('tbilisi-gori');
+  await chooseOperatorDirection(dialog, 'tbilisi-gori');
+  await chooseOperatorDay(dialog, futureDate(1));
+  await chooseOperatorTime(dialog, '08:30');
   const lookup = page.waitForResponse(response => isProfileResponse(response, phone));
   await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(phone);
   const response = await lookup;
   expect(response.ok()).toBeTruthy();
   expect((await response.json() as { profile: PassengerProfile | null }).profile)
     .toMatchObject({ phone, name, goriAddress: address, pickupStopId: null });
-  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveValue(name);
+  await expect(dialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
   await expect(dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue(address);
   const stop = dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true });
   await expect(stop).toHaveValue('');
@@ -1096,7 +1291,7 @@ test('passenger profile autofill leaves an inactive remembered stop unselected u
   await dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true }).click();
   const savedResponse = await saved;
   expect(savedResponse.ok()).toBeTruthy();
-  expect(await savedResponse.json()).toMatchObject({ phone, name, pickupStopId: publicConfig.stops[0].id, status: 'confirmed' });
+  expect(await savedResponse.json()).toMatchObject({ phone, name: '', pickupStopId: publicConfig.stops[0].id, status: 'confirmed' });
 });
 
 test('public phone entry never looks up or fills trusted passenger details and cannot replace their profile', async ({ page }) => {
@@ -1151,7 +1346,7 @@ test('public phone entry never looks up or fills trusted passenger details and c
 });
 
 test('printing all orders for a day includes every confirmed row beyond pagination and search with complete pickup addresses and totals', async ({ page }) => {
-  const day = futureDate(14);
+  const day = futureDate(2);
   const { expected, excludedNames } = await seedPrintableDay(day, '555040', 'სატესტო მთელი დღის ბეჭდვა');
   const selected = expected.filter(row => row.direction === 'gori-tbilisi');
   await captureNativePrinting(page);
@@ -1180,7 +1375,8 @@ test('printing all orders for a day includes every confirmed row beyond paginati
   expect((await searchBox.boundingBox())!.width, 'Search should leave room for the labeled primary actions').toBeLessThan(page.viewportSize()!.width / 4);
   await create.click();
   const createDialog = page.getByRole('dialog', { name: 'ახალი ჯავშანი', exact: true });
-  await expect(createDialog.getByLabel('მგზავრის სახელი', { exact: true })).toBeVisible();
+  await expect(createDialog.getByLabel('მგზავრის სახელი', { exact: true })).toHaveCount(0);
+  await expect(createDialog.getByLabel('ტელეფონის ნომერი', { exact: true })).toBeVisible();
   await createDialog.getByRole('button', { name: 'დახურვა', exact: true }).click();
   await expect(createDialog).toHaveCount(0);
   await page.getByRole('button', { name: 'შემდეგი გვერდი', exact: true }).click();
@@ -1250,7 +1446,7 @@ test('printing all orders for a day includes every confirmed row beyond paginati
 });
 
 test('printing a selected half-hour slot includes both directions while excluding other times and dates', async ({ page }) => {
-  const day = futureDate(18);
+  const day = futureDate(1);
   const { expected, excludedNames } = await seedPrintableDay(day, '555041', 'სატესტო არჩეული დროის ბეჭდვა');
   await captureNativePrinting(page);
   await openAuthenticatedAdmin(page);
@@ -1294,7 +1490,8 @@ test('printing a selected half-hour slot includes both directions while excludin
 
 test('printing stays blocked for an empty day or a failed fresh report and recovers without opening native print', async ({ page }) => {
   const emptyDay = futureDate(22);
-  const reportDay = futureDate(26);
+  const reportDay = futureDate(2);
+  await clearScheduledFixtureDay(reportDay);
   const created = await adminApi.post('/api/admin/bookings', { data: {
     name: 'სატესტო შეცდომამდე საბეჭდი ჯავშანი', phone: '555042001', seats: 1,
     direction: 'gori-tbilisi', requestedDate: reportDay, requestedTime: '08:30', goriAddress: 'გორი, ბეჭდვის შეცდომის სატესტო მისამართი',

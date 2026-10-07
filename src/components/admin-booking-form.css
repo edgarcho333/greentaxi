@@ -1,0 +1,50 @@
+.admin-dialog.admin-operator-booking-dialog { width: min(900px, calc(100vw - 48px)); max-width: 900px; min-width: 0; }
+.admin-operator-booking-dialog > header { padding: 19px 22px 15px; }
+.admin-operator-booking-dialog > header > div { min-width: 0; }
+.admin-operator-booking-form { padding: 17px 22px 0; }
+.admin-operator-booking-form > label, .admin-operator-location > label { display: flex; flex-direction: column; gap: 5px; margin: 0 0 12px; color: #50685a; font-size: 12px; font-weight: 500; }
+.admin-operator-booking-form input, .admin-operator-booking-form select, .admin-operator-booking-form textarea { min-width: 0; min-height: 44px; width: 100%; padding: 9px 11px; font-size: 14px; }
+.admin-operator-booking-form textarea { height: 44px; min-height: 44px; resize: vertical; }
+.admin-operator-booking-form select { max-width: 100%; }
+.admin-operator-group { min-width: 0; margin: 0 0 12px; padding: 0; border: 0; }
+.admin-operator-group legend { width: 100%; margin-bottom: 6px; padding: 0; color: #50685a; font-size: 12px; font-weight: 500; }
+.admin-operator-directions, .admin-operator-restore-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.admin-operator-seats { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; }
+.admin-operator-days { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.admin-operator-times { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; overflow: visible; }
+.admin-operator-group button, .admin-operator-restore-options button { min-height: 44px; min-width: 0; padding: 8px 10px; border: 1px solid #dce8df; border-radius: 8px; background: #f8fbf9; color: #315e43; font-size: 14px; font-weight: 500; line-height: 1.4; }
+.admin-operator-group button:hover:not(:disabled):not([aria-pressed=true]), .admin-operator-restore-options button:hover:not(:disabled):not([aria-pressed=true]) { border-color: #53b97b; background: #eaf8ee; }
+.admin-operator-group button[aria-pressed=true], .admin-operator-restore-options button[aria-pressed=true] { border-color: #078643; background: #078643; color: #fff; box-shadow: 0 2px 5px #07864318; }
+.admin-operator-group button:disabled, .admin-operator-restore-options button:disabled { cursor: default; opacity: .65; }
+.admin-operator-days button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-height: 48px; padding-block: 6px; }
+.admin-operator-days button small { color: #779381; font-size: 10px; font-weight: 400; }
+.admin-operator-days button[aria-pressed=true] small { color: #e4f7ea; }
+.admin-operator-seats button, .admin-operator-times button { font-variant-numeric: tabular-nums; }
+.admin-operator-fixed-stop { display: flex; align-items: flex-start; gap: 7px; padding: 7px 9px; margin: 0 0 12px; border-radius: 7px; background: #eef8f1; color: #557a60; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.admin-operator-fixed-stop svg { flex-shrink: 0; margin-top: 1px; }
+.admin-operator-fixed-stop strong { color: #376847; font-weight: 600; }
+.admin-operator-booking-form .admin-profile-feedback, .admin-operator-booking-form .admin-form-hint { margin: 0 0 10px; font-size: 11px; }
+.admin-operator-time-status { margin: 0; padding: 12px 0; color: #7c9484; font-size: 12px; }
+.admin-operator-restore { margin-bottom: 12px; }
+.admin-operator-restore p { display: flex; align-items: flex-start; gap: 7px; margin: 9px 0 0; color: #708778; font-size: 12px; line-height: 1.6; }
+.admin-operator-booking-form .admin-order-summary { margin-bottom: 13px; }
+.admin-operator-booking-form .admin-dialog-footer { position: sticky; bottom: 0; z-index: 2; margin: 15px -22px 0; padding: 13px 22px; box-shadow: 0 -3px 10px #173e2506; }
+.admin-operator-booking-form .admin-dialog-footer button { min-height: 44px; white-space: normal; }
+@media (max-width: 760px) {
+  .admin-dialog.admin-operator-booking-dialog { width: calc(100vw - 28px); }
+  .admin-operator-booking-dialog > header { padding: 17px 16px 13px; }
+  .admin-operator-booking-dialog > header h2 { font-size: 19px; }
+  .admin-operator-booking-form { padding: 13px 16px 0; }
+  .admin-operator-booking-form > label, .admin-operator-location > label { margin-bottom: 10px; font-size: 11px; }
+  .admin-operator-booking-form input, .admin-operator-booking-form textarea { font-size: 16px; padding: 8px 9px; }
+  .admin-operator-booking-form select { font-size: 13px; padding: 8px 9px; }
+  .admin-operator-group { margin-bottom: 10px; }
+  .admin-operator-group legend { font-size: 11px; margin-bottom: 5px; }
+  .admin-operator-directions, .admin-operator-days, .admin-operator-restore-options { gap: 6px; }
+  .admin-operator-seats, .admin-operator-times { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .admin-operator-group button, .admin-operator-restore-options button { padding: 7px 5px; font-size: 13px; }
+  .admin-operator-directions button { font-size: 12px; }
+  .admin-operator-fixed-stop { margin-bottom: 10px; font-size: 10px; }
+  .admin-operator-booking-form .admin-dialog-footer { margin-inline: -16px; padding: 11px 16px; gap: 7px; }
+  .admin-operator-booking-form .admin-dialog-footer button { font-size: 12px; padding: 9px 10px; }
+}

@@ -26,10 +26,10 @@ function direction(value: unknown): Direction {
   if (!DIRECTIONS.includes(value as Direction)) reject(400, 'აირჩიეთ მიმართულება.', 'VALIDATION');
   return value as Direction;
 }
-function date(value: unknown): string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) reject(400, 'მიუთითეთ სწორი თარიღი.', 'VALIDATION');
+function date(value: unknown, code = 'VALIDATION'): string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) reject(400, 'მიუთითეთ სწორი თარიღი.', code);
   const parsed = new Date(`${value}T12:00:00Z`);
-  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) reject(400, 'მიუთითეთ სწორი თარიღი.', 'VALIDATION');
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) reject(400, 'მიუთითეთ სწორი თარიღი.', code);
   return value;
 }
 function time(value: unknown): string {
@@ -62,8 +62,8 @@ function originalPhoneForRetry(value: unknown): string | null | undefined {
   if (digits.length < 9 || digits.length > 15) return undefined;
   return digits.length === 9 ? `+995${digits}` : `+${digits}`;
 }
-function seatCount(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 4) reject(400, 'ადგილების რაოდენობა უნდა იყოს 1-დან 4-მდე.', 'VALIDATION');
+function seatCount(value: unknown, maximum = 4): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > maximum) reject(400, `ადგილების რაოდენობა უნდა იყოს 1-დან ${maximum}-მდე.`, 'VALIDATION');
   return value;
 }
 function login(value: unknown): string {
@@ -211,6 +211,14 @@ export async function createApp(options: Options = {}) {
   function future(day: string, slotTime: string): boolean {
     return new Date(`${day}T${slotTime}:00+04:00`).getTime() > now().getTime();
   }
+  const tbilisiCalendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tbilisi', year: 'numeric', month: '2-digit', day: '2-digit' });
+  function staffDateWindow(day: string) {
+    const parts = tbilisiCalendar.formatToParts(now());
+    const today = ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)!.value).join('-');
+    const lastDay = new Date(`${today}T12:00:00Z`);
+    lastDay.setUTCDate(lastDay.getUTCDate() + 2);
+    if (day < today || day > lastDay.toISOString().slice(0, 10)) reject(400, 'აირჩიეთ დღეს, ხვალ ან ზეგ.', 'DATE_OUT_OF_RANGE');
+  }
   async function activeSlot(d: Direction, day: string, slotTime: string, futureRequired = false) {
     if (!(await configuredTimes(d, day)).effective.includes(slotTime)) reject(409, 'არჩეული დრო გამორთულია. აირჩიეთ მოქმედი დრო.', 'SLOT_INACTIVE');
     if (futureRequired && !future(day, slotTime)) reject(400, 'აირჩიეთ მომავალი თარიღი და დრო.', 'SLOT_PAST');
@@ -225,11 +233,11 @@ export async function createApp(options: Options = {}) {
     if (result.deleted_at) reject(409, 'ჯავშანი წაშლილია. ჯერ აღადგინეთ.', 'DELETED');
     return result;
   }
-  async function inputBooking(body: Row, existing?: Row) {
+  async function inputBooking(body: Row, existing?: Row, employee = false) {
     const d = existing ? existing.direction as Direction : direction(body.direction);
-    const name = text(body.name ?? existing?.name, 'სახელი', 2, 100);
+    const name = text(body.name === undefined ? existing?.name ?? (employee ? '' : undefined) : body.name, 'სახელი', employee ? 0 : 2, 100);
     const number = phone(body.phone ?? existing?.phone);
-    const seats = seatCount(body.seats ?? existing?.seats);
+    const seats = seatCount(body.seats ?? existing?.seats, employee ? 8 : 4);
     const address = text(body.goriAddress ?? existing?.gori_address, 'გორის მისამართი', 3, 500);
     let stopId: number | null = null;
     let stopName: string | null = null;
@@ -248,10 +256,11 @@ export async function createApp(options: Options = {}) {
     return readPassengerProfile(db, number);
   }
   async function createBooking(body: Row, employee?: User, source: 'public' | 'employee' | 'android' = employee ? 'employee' : 'public') {
-    const input = (await inputBooking(body));
-    const day = date(body.requestedDate);
+    const input = (await inputBooking(body, undefined, Boolean(employee)));
+    const day = date(body.requestedDate, employee ? 'DATE_INVALID' : 'VALIDATION');
     const slotTime = time(body.requestedTime);
-    (await activeSlot(input.direction, day, slotTime, !employee));
+    if (employee) staffDateWindow(day);
+    (await activeSlot(input.direction, day, slotTime, true));
     const stamp = now().toISOString();
     const config = (await settings());
     const result = (await db.prepare(`INSERT INTO bookings(name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,source,created_at,updated_at)
@@ -521,7 +530,7 @@ export async function createApp(options: Options = {}) {
     const result = await transaction(async () => {
       const row = (await activeBooking(numberId(req.params.id)));
       if (req.body.direction !== undefined && req.body.direction !== row.direction) reject(400, 'მიმართულების შეცვლა დაუშვებელია.', 'VALIDATION');
-      const input = (await inputBooking(req.body, row));
+      const input = (await inputBooking(req.body, row, true));
       (await db.prepare('UPDATE bookings SET name=?,phone=?,seats=?,gori_address=?,pickup_stop_id=?,pickup_stop_name=?,updated_at=? WHERE id=?').run(input.name, input.phone, input.seats, input.goriAddress, input.pickupStopId, input.pickupStopName, now().toISOString(), row.id));
       (await audit('edit', req.employee, row.id, { fields: Object.keys(req.body) }));
       const edited = await getBooking(row.id);
@@ -533,13 +542,14 @@ export async function createApp(options: Options = {}) {
   app.post('/api/admin/bookings/:id/confirm', async (req: ContextRequest, res) => {
     (await idempotent(req, res, `confirm:${numberId(req.params.id)}`, async () => {
       const row = (await activeBooking(numberId(req.params.id)));
-      const day = date(req.body.date);
+      const day = date(req.body.date, 'DATE_INVALID');
       const slotTime = time(req.body.time);
       if (row.status === 'confirmed') {
         if (row.assigned_date !== day || row.assigned_time !== slotTime) reject(409, 'ჯავშანი უკვე დადასტურებულია. გამოიყენეთ გადატანა.', 'ALREADY_CONFIRMED');
         return booking(row);
       }
-      (await activeSlot(row.direction, day, slotTime));
+      staffDateWindow(day);
+      (await activeSlot(row.direction, day, slotTime, true));
       (await db.prepare("UPDATE bookings SET assigned_date=?,assigned_time=?,status='confirmed',updated_at=? WHERE id=?").run(day, slotTime, now().toISOString(), row.id));
       (await audit('confirm', req.employee, row.id, { date: day, time: slotTime }));
       const confirmed = await getBooking(row.id);
@@ -551,9 +561,10 @@ export async function createApp(options: Options = {}) {
     const result = await transaction(async () => {
       const row = (await activeBooking(numberId(req.params.id)));
       if (row.status !== 'confirmed') reject(409, 'ჯერ დაადასტურეთ ჯავშანი.', 'NOT_CONFIRMED');
-      const day = date(req.body.date);
+      const day = date(req.body.date, 'DATE_INVALID');
       const slotTime = time(req.body.time);
-      (await activeSlot(row.direction, day, slotTime));
+      staffDateWindow(day);
+      (await activeSlot(row.direction, day, slotTime, true));
       (await db.prepare('UPDATE bookings SET assigned_date=?,assigned_time=?,updated_at=? WHERE id=?').run(day, slotTime, now().toISOString(), row.id));
       (await audit('move', req.employee, row.id, { fromDate: row.assigned_date, fromTime: row.assigned_time, date: day, time: slotTime }));
       return booking((await getBooking(row.id)));
@@ -579,9 +590,11 @@ export async function createApp(options: Options = {}) {
       let day: string | null = row.assigned_date;
       let slotTime: string | null = row.assigned_time;
       if (row.status === 'confirmed') {
-        day = date(req.body.date ?? row.assigned_date);
-        slotTime = time(req.body.time ?? row.assigned_time);
-        (await activeSlot(row.direction, day, slotTime));
+        const rescheduling = req.body.date !== undefined || req.body.time !== undefined;
+        day = date(req.body.date === undefined ? row.assigned_date : req.body.date, 'DATE_INVALID');
+        slotTime = time(req.body.time === undefined ? row.assigned_time : req.body.time);
+        if (rescheduling) staffDateWindow(day);
+        (await activeSlot(row.direction, day, slotTime, rescheduling));
       }
       (await db.prepare('UPDATE bookings SET deleted_at=NULL,assigned_date=?,assigned_time=?,updated_at=? WHERE id=?').run(day, slotTime, now().toISOString(), row.id));
       (await audit('restore', req.employee, row.id, { date: day, time: slotTime }));

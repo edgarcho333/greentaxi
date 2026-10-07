@@ -149,7 +149,7 @@ test('idempotency protects public double-submit and rejects reusing a key with d
 });
 
 test('a dated override preserves occupied disabled slots and restoring one requires an active replacement', async () => {
-  const day = '2030-01-11';
+  const day = '2030-01-03';
   const created = await successful(f, '/admin/bookings', 'POST', input({ requestedDate: day, requestedTime: '08:30' }));
   await successful(f, '/admin/schedule/date', 'PUT', { direction: 'gori-tbilisi', date: day, times: ['09:00', '12:00'] });
   const schedule = await successful(f, `/admin/schedule?direction=gori-tbilisi&date=${day}`);
@@ -247,22 +247,136 @@ test('public future-slot validation uses Tbilisi time and rejects malformed inpu
   } finally { await fresh.close(); }
 });
 
-test('employee historical orders can be restored to their original active slots while public requests must be future', async () => {
+test('historical confirmation retries and untouched restorations preserve their original slots while new assignments must be future', async () => {
   let clock = new Date('2030-01-01T00:00:00Z');
   const fresh = await fixture({ now: () => clock });
   try {
     const past = await fresh.request('/admin/bookings', 'POST', input({ requestedDate: '2029-12-31' }));
-    assert.equal(past.status, 201);
+    assert.equal(past.status, 400);
+    assert.equal(past.data.code, 'DATE_OUT_OF_RANGE');
     const publicPast = await fresh.request('/bookings', 'POST', input({ requestedDate: '2029-12-31' }), {}, false);
     assert.equal(publicPast.status, 400);
     assert.equal(publicPast.data.code, 'SLOT_PAST');
     const created = await successful(fresh, '/admin/bookings', 'POST', input());
+    const historicalEdit = await successful(fresh, '/admin/bookings', 'POST', input({ name: 'შესანარჩუნებელი სახელი' }));
     await successful(fresh, `/admin/bookings/${created.id}/delete`, 'POST', {});
     clock = new Date('2030-01-03T00:00:00Z');
+    const repeat = await successful(fresh, `/admin/bookings/${historicalEdit.id}/confirm`, 'POST', { date: DAY, time: '08:30' });
+    assert.equal(repeat.id, historicalEdit.id);
+    const edited = await successful(fresh, `/admin/bookings/${historicalEdit.id}`, 'PATCH', { seats: 8 });
+    assert.equal(edited.name, 'შესანარჩუნებელი სახელი');
+    assert.equal(edited.seats, 8);
+    const explicitPast = await fresh.request(`/admin/bookings/${created.id}/restore`, 'POST', { date: DAY, time: '08:30' });
+    assert.equal(explicitPast.status, 400);
+    assert.equal(explicitPast.data.code, 'DATE_OUT_OF_RANGE');
+    assert.ok((await fresh.db.prepare('SELECT deleted_at FROM bookings WHERE id=?').get(created.id))!.deleted_at);
     const oldRestore = await fresh.request(`/admin/bookings/${created.id}/restore`, 'POST', {});
     assert.equal(oldRestore.status, 200);
     assert.equal(oldRestore.data.assignedDate, DAY);
     assert.equal(oldRestore.data.status, 'confirmed');
+  } finally { await fresh.close(); }
+});
+
+test('operator orders accept eight seats and optional names while edits and trusted profiles preserve names when omitted', async () => {
+  const fresh = await fixture();
+  try {
+    const existing = await successful(fresh, '/admin/bookings', 'POST', input({ name: 'არსებული სანდო სახელი', phone: '568694879' }));
+    const unnamed = await successful(fresh, '/admin/bookings', 'POST', input({ name: undefined, phone: '568694879', seats: 8 }));
+    assert.equal(unnamed.name, '');
+    assert.equal(unnamed.seats, 8);
+    assert.equal((await successful(fresh, '/admin/passengers/profile?phone=568694879')).profile.name, existing.name);
+    const edited = await successful(fresh, `/admin/bookings/${existing.id}`, 'PATCH', { seats: 8, goriAddress: 'გორი, განახლებული მისამართი' });
+    assert.equal(edited.name, existing.name);
+    assert.equal(edited.seats, 8);
+    const cleared = await successful(fresh, `/admin/bookings/${existing.id}`, 'PATCH', { name: '' });
+    assert.equal(cleared.name, '');
+    assert.equal((await successful(fresh, '/admin/passengers/profile?phone=568694879')).profile.name, existing.name);
+    for (const seats of [0, 9, 1.5, '8']) {
+      assert.equal((await fresh.request('/admin/bookings', 'POST', input({ name: undefined, seats }))).status, 400);
+      assert.equal((await fresh.request(`/admin/bookings/${existing.id}`, 'PATCH', { seats })).status, 400);
+    }
+    for (const fields of [{ name: undefined }, { name: '' }, { seats: 5 }, { seats: 8 }]) {
+      const response = await fresh.request('/bookings', 'POST', input(fields), {}, false);
+      assert.equal(response.status, 400);
+      assert.equal(response.data.code, 'VALIDATION');
+    }
+    const publicFour = await fresh.request('/bookings', 'POST', input({ seats: 4, requestedDate: '2030-01-20' }), {}, false);
+    assert.equal(publicFour.status, 201);
+    const slot = (await successful(fresh, `/admin/schedule?direction=gori-tbilisi&date=${DAY}`)).slots.find((item: any) => item.time === '08:30');
+    assert.equal(slot.bookingCount, 2);
+    assert.equal(slot.seatCount, 16);
+  } finally { await fresh.close(); }
+});
+
+test('the operator calendar rolls at Tbilisi midnight and spans month boundaries using three local calendar days', async () => {
+  let clock = new Date('2030-01-01T19:59:59Z'); // Tbilisi is still January 1.
+  const fresh = await fixture({ now: () => clock });
+  try {
+    await successful(fresh, '/admin/bookings', 'POST', input({ name: undefined, requestedDate: '2030-01-03', requestedTime: '06:00' }));
+    assert.equal((await fresh.request('/admin/bookings', 'POST', input({ requestedDate: '2030-01-04' }))).data.code, 'DATE_OUT_OF_RANGE');
+    clock = new Date('2030-01-01T20:00:00Z'); // January 2 locally, although UTC is January 1.
+    for (const day of ['2030-01-02', '2030-01-03', '2030-01-04']) {
+      await successful(fresh, '/admin/bookings', 'POST', input({ name: undefined, requestedDate: day, requestedTime: '06:00' }));
+    }
+    for (const day of ['2030-01-01', '2030-01-05']) {
+      const rejected = await fresh.request('/admin/bookings', 'POST', input({ requestedDate: day }));
+      assert.equal(rejected.status, 400);
+      assert.equal(rejected.data.code, 'DATE_OUT_OF_RANGE');
+    }
+  } finally { await fresh.close(); }
+  const leap = await fixture({ now: () => new Date('2032-02-28T20:00:00Z') }); // February 29 locally, in a leap year.
+  try {
+    for (const day of ['2032-02-29', '2032-03-01', '2032-03-02']) {
+      await successful(leap, '/admin/bookings', 'POST', input({ requestedDate: day, requestedTime: '06:00' }));
+    }
+    assert.equal((await leap.request('/admin/bookings', 'POST', input({ requestedDate: '2032-03-03' }))).data.code, 'DATE_OUT_OF_RANGE');
+    for (const requestedDate of [undefined, null, '2032-02-30', '2032-2-29']) {
+      const rejected = await leap.request('/admin/bookings', 'POST', input({ requestedDate }));
+      assert.equal(rejected.status, 400);
+      assert.equal(rejected.data.code, 'DATE_INVALID');
+    }
+  } finally { await leap.close(); }
+});
+
+test('every new operator assignment rejects elapsed times and distant dates without changing incoming or deleted orders', async () => {
+  const fresh = await fixture({ now: () => new Date('2030-01-01T04:30:00Z') }); // Exactly 08:30 in Tbilisi.
+  try {
+    const today = '2030-01-01';
+    for (const requestedTime of ['08:00', '08:30']) {
+      const rejected = await fresh.request('/admin/bookings', 'POST', input({ name: undefined, requestedDate: today, requestedTime }));
+      assert.equal(rejected.status, 400);
+      assert.equal(rejected.data.code, 'SLOT_PAST');
+    }
+    const waiting = await successful(fresh, '/bookings', 'POST', input(), undefined);
+    const original = await successful(fresh, '/admin/bookings', 'POST', input());
+    await successful(fresh, `/admin/bookings/${original.id}/delete`, 'POST', {});
+    for (const [date, time, code] of [[today, '08:30', 'SLOT_PAST'], ['2030-01-04', '09:00', 'DATE_OUT_OF_RANGE'], ['2030-02-31', '09:00', 'DATE_INVALID']]) {
+      for (const [id, action] of [[waiting.id, 'confirm'], [original.id, 'restore']]) {
+        const rejected = await fresh.request(`/admin/bookings/${id}/${action}`, 'POST', { date, time });
+        assert.equal(rejected.status, 400);
+        assert.equal(rejected.data.code, code);
+      }
+    }
+    const waitingRow = (await fresh.db.prepare('SELECT status,assigned_date,assigned_time FROM bookings WHERE id=?').get(waiting.id))!;
+    assert.equal(waitingRow.status, 'waiting');
+    assert.equal(waitingRow.assigned_date, null);
+    assert.equal(waitingRow.assigned_time, null);
+    assert.ok((await fresh.db.prepare('SELECT deleted_at FROM bookings WHERE id=?').get(original.id))!.deleted_at);
+    await successful(fresh, `/admin/bookings/${original.id}/restore`, 'POST', {});
+    for (const [date, time, code] of [[today, '08:30', 'SLOT_PAST'], ['2030-01-04', '09:00', 'DATE_OUT_OF_RANGE']]) {
+      const rejected = await fresh.request(`/admin/bookings/${original.id}/move`, 'POST', { date, time });
+      assert.equal(rejected.data.code, code);
+    }
+    const unchanged = await successful(fresh, `/admin/bookings?scope=scheduled&date=${DAY}`);
+    assert.equal(unchanged.bookings.find((row: any) => row.id === original.id).assignedTime, '08:30');
+    const future = await successful(fresh, '/admin/bookings', 'POST', input({ requestedDate: today, requestedTime: '09:00' }));
+    assert.equal(future.assignedTime, '09:00');
+    const tomorrowSlots = (await successful(fresh, `/public/slots?direction=gori-tbilisi&date=${DAY}`)).slots;
+    assert.equal(tomorrowSlots.length, 18);
+    assert.equal(tomorrowSlots[0].time, '06:00');
+    const inactive = await fresh.request('/admin/bookings', 'POST', input({ requestedTime: '08:15' }));
+    assert.equal(inactive.status, 409);
+    assert.equal(inactive.data.code, 'SLOT_INACTIVE');
   } finally { await fresh.close(); }
 });
 
@@ -462,6 +576,37 @@ test('a private-number call waits for enrichment and converts atomically to exac
     assert.equal((await successful(fresh, '/admin/calls?scope=incoming')).calls.length, 0);
     const history = await successful(fresh, '/admin/calls?scope=converted');
     assert.equal(history.calls[0].bookingId, converted.id);
+  } finally { await fresh.close(); }
+});
+
+test('live calls in either direction convert without a name to eight-seat operator orders and retain trusted customer names', async () => {
+  const fresh = await fixture({ now: () => new Date('2030-01-01T04:30:00Z') });
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'ოპერატორის რვა ადგილის ტესტი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const stop = (await successful(fresh, '/public/config')).stops[0];
+    const known = await successful(fresh, '/admin/bookings', 'POST', input({ name: 'ზარის სანდო სახელი', phone: '568694879' }));
+    for (const direction of ['gori-tbilisi', 'tbilisi-gori']) {
+      const event = callEvent({ eventId: `operator-eight-${direction}`, phase: 'answered', durationSeconds: 0, phone: direction === 'gori-tbilisi' ? '568694879' : null });
+      const received = await fresh.request('/integrations/android/calls', 'POST', event, bearer, false);
+      assert.equal(received.status, 201);
+      const body = input({ name: undefined, phone: '568694879', seats: 8, direction, ...(direction === 'tbilisi-gori' ? { pickupStopId: stop.id } : {}) });
+      for (const fields of [{ seats: 9 }, { requestedDate: '2030-01-04' }, { requestedDate: '2030-01-01', requestedTime: '08:30' }]) {
+        const rejected = await fresh.request(`/admin/calls/${received.data.id}/convert`, 'POST', { ...body, ...fields });
+        assert.equal(rejected.status, 400);
+        assert.equal((await fresh.db.prepare('SELECT booking_id FROM call_inquiries WHERE id=?').get(received.data.id))!.booking_id, null);
+      }
+      const converted = await successful(fresh, `/admin/calls/${received.data.id}/convert`, 'POST', body);
+      assert.equal(converted.name, '');
+      assert.equal(converted.seats, 8);
+      assert.equal(converted.direction, direction);
+      assert.equal(converted.status, 'confirmed');
+      assert.equal(converted.pickupStopId, direction === 'tbilisi-gori' ? stop.id : null);
+      assert.equal((await successful(fresh, '/admin/passengers/profile?phone=568694879')).profile.name, known.name);
+      const retry = await successful(fresh, `/admin/calls/${received.data.id}/convert`, 'POST', body);
+      assert.equal(retry.id, converted.id);
+      assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='call.convert' AND booking_id=?").get(converted.id))!.count, 1);
+    }
   } finally { await fresh.close(); }
 });
 
