@@ -23,14 +23,24 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private static final int PERMISSION_REQUEST = 40;
     private static final int GREEN = Color.rgb(0, 153, 82);
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService connectionWorker = Executors.newSingleThreadExecutor();
     private AppSettings settings;
     private CallQueue queue;
     private EditText serverInput;
@@ -38,6 +48,11 @@ public final class MainActivity extends Activity {
     private TextView statusView;
     private TextView permissionsView;
     private TextView queueView;
+    private TextView connectionView;
+    private Button connectionButton;
+    private volatile HttpURLConnection checkingConnection;
+    private volatile boolean destroyed;
+    private int connectionGeneration;
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             refreshStatus();
@@ -79,6 +94,10 @@ public final class MainActivity extends Activity {
         tokenInput = input("დაკავშირების კოდი ადმინისტრატორის პანელიდან", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         add(content, tokenInput, 8);
         add(content, button("დაკავშირება", this::pair), 8);
+        connectionButton = button("კავშირის შემოწმება", this::checkConnection);
+        add(content, connectionButton, 8);
+        connectionView = text("კავშირი ჯერ არ შემოწმებულა", 14);
+        add(content, connectionView, 8);
 
         add(content, text("წვდომა და მუშაობა", 18), 28);
         permissionsView = text("", 14);
@@ -172,12 +191,98 @@ public final class MainActivity extends Activity {
             }
             settings.pair(raw, token);
             tokenInput.setText("");
-            settings.status("ტელეფონი დაკავშირებულია; შეგიძლიათ ჩართოთ მონიტორინგი");
+            connectionGeneration++;
+            connectionButton.setEnabled(true);
+            connectionView.setText("დაკავშირების მონაცემები შენახულია; შეამოწმეთ კავშირი");
+            settings.status("დაკავშირების მონაცემები შენახულია; შეამოწმეთ კავშირი");
             if (settings.enabled()) startMonitoring();
             refreshStatus();
             message("დაკავშირების მონაცემები შენახულია");
         } catch (Exception invalid) {
             message("დაკავშირება ვერ შეინახა; შეამოწმეთ მისამართი და კოდი");
+        }
+    }
+
+    private void checkConnection() {
+        final AppSettings.Binding binding = settings.binding();
+        final String server = binding.server;
+        final String token;
+        try {
+            if (!settings.hasToken() || !validServer(server)) {
+                connectionView.setText("ჯერ შეინახეთ საიტის მისამართი და დაკავშირების კოდი");
+                return;
+            }
+            token = binding.token();
+            if (!token.matches("^gtdevice_[a-f0-9]{64}$")) throw new IllegalStateException("token_unavailable");
+        } catch (Exception unavailable) {
+            connectionView.setText("დაკავშირების კოდი მიუწვდომელია — ხელახლა შეინახეთ კოდი");
+            return;
+        }
+        final int generation = ++connectionGeneration;
+        connectionButton.setEnabled(false);
+        connectionView.setText("სერვერთან კავშირი მოწმდება…");
+        connectionWorker.execute(() -> {
+            String result;
+            HttpURLConnection active = null;
+            try {
+                URL endpoint = new URL(server + "/api/integrations/android/connection");
+                if (!"https".equalsIgnoreCase(endpoint.getProtocol())) throw new IllegalStateException("https_required");
+                active = (HttpURLConnection) endpoint.openConnection();
+                checkingConnection = active;
+                active.setInstanceFollowRedirects(false);
+                active.setConnectTimeout(10_000);
+                active.setReadTimeout(15_000);
+                active.setRequestMethod("GET");
+                active.setRequestProperty("Authorization", "Bearer " + token);
+                active.setRequestProperty("Accept", "application/json");
+                int responseCode = active.getResponseCode();
+                if (responseCode == 200) {
+                    JSONObject response = new JSONObject(readConnectionResponse(active.getInputStream()));
+                    JSONObject device = response.optJSONObject("device");
+                    if (!Boolean.TRUE.equals(response.opt("connected")) || device == null
+                            || device.optString("id", "").isEmpty()) throw new IllegalStateException("response_invalid");
+                    result = "სერვერთან კავშირი დადასტურებულია";
+                } else if (responseCode == 401) {
+                    result = "კოდი არასწორია ან გაუქმებულია — ხელახლა დააკავშირეთ ტელეფონი";
+                } else {
+                    result = "სერვერთან კავშირი ვერ დადასტურდა (" + responseCode + ")";
+                }
+            } catch (Exception unavailable) {
+                result = "კავშირი ვერ შემოწმდა — შეამოწმეთ ინტერნეტი და საიტის მისამართი";
+            } finally {
+                checkingConnection = null;
+                if (active != null) active.disconnect();
+            }
+            final String displayedResult = result;
+            handler.post(() -> {
+                if (destroyed || generation != connectionGeneration) return;
+                connectionView.setText(settings.bindingCurrent(binding) ? displayedResult
+                        : "კავშირის მონაცემები შეიცვალა — ხელახლა შეამოწმეთ კავშირი");
+                connectionButton.setEnabled(true);
+            });
+        });
+    }
+
+    private static String readConnectionResponse(InputStream source) throws Exception {
+        try (InputStream input = source; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                if (output.size() + count > 16_384) throw new IllegalStateException("response_too_large");
+                output.write(buffer, 0, count);
+            }
+            return output.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+
+    private static boolean validServer(String server) {
+        try {
+            URI uri = new URI(server);
+            return "https".equalsIgnoreCase(uri.getScheme()) && uri.getHost() != null
+                    && uri.getUserInfo() == null && uri.getQuery() == null && uri.getFragment() == null
+                    && (uri.getRawPath() == null || uri.getRawPath().isEmpty() || uri.getRawPath().equals("/"));
+        } catch (Exception invalid) {
+            return false;
         }
     }
 
@@ -188,7 +293,8 @@ public final class MainActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) != PackageManager.PERMISSION_GRANTED) missing.add(Manifest.permission.READ_PHONE_NUMBERS);
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) missing.add(Manifest.permission.POST_NOTIFICATIONS);
         if (missing.isEmpty()) {
-            message("ნებართვები ჩართულია");
+            message(CallMonitorService.notificationsEnabled(this) ? "ნებართვები ჩართულია"
+                    : "შეტყობინებები გამორთულია — შეამოწმეთ აპის პარამეტრები");
         } else {
             requestPermissions(missing.toArray(new String[0]), PERMISSION_REQUEST);
         }
@@ -210,7 +316,7 @@ public final class MainActivity extends Activity {
     }
 
     private void startMonitoring() {
-        if (!settings.hasToken() || settings.server().isEmpty()) {
+        if (!settings.hasToken() || !validServer(settings.server())) {
             message("ჯერ დააკავშირეთ ტელეფონი");
             return;
         }
@@ -219,20 +325,32 @@ public final class MainActivity extends Activity {
             message("მონიტორინგისთვის საჭიროა ზარებისა და SIM-ის წვდომა");
             return;
         }
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        if (!CallMonitorService.notificationsEnabled(this)) {
             requestPermissions();
             message("მონიტორინგის შეტყობინებისთვის ჩართეთ შეტყობინებების ნებართვა");
             return;
         }
         try {
-            settings.token();
+            if (!settings.token().matches("^gtdevice_[a-f0-9]{64}$")) throw new IllegalStateException("token_unavailable");
             settings.beginMonitoring();
             startForegroundService(new Intent(this, CallMonitorService.class));
         } catch (Exception unavailable) {
-            settings.disable();
             settings.status("მონიტორინგი ვერ ჩაირთო — შეამოწმეთ დაკავშირება და აპის პარამეტრები");
         }
         refreshStatus();
+    }
+
+    private void resumeMonitoring() {
+        if (!settings.enabled() || CallMonitorService.isRunning() || !settings.hasToken()
+                || !validServer(settings.server()) || !CallMonitorService.permissionsGranted(this)
+                || !CallMonitorService.notificationsEnabled(this)) return;
+        try {
+            if (!settings.token().matches("^gtdevice_[a-f0-9]{64}$")) throw new IllegalStateException("token_unavailable");
+            // Resume an existing opt-in without changing its baseline, watermark, or queued calls.
+            startForegroundService(new Intent(this, CallMonitorService.class));
+        } catch (Exception unavailable) {
+            settings.status("მონიტორინგი ვერ განახლდა — შეამოწმეთ აპის პარამეტრები");
+        }
     }
 
     private void stopMonitoring() {
@@ -247,19 +365,29 @@ public final class MainActivity extends Activity {
         String access = "ზარების ჟურნალი: " + (checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED ? "ჩართულია" : "მიუწვდომელია");
         access += "\nSIM-ის წვდომა: " + (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED ? "ჩართულია" : "მიუწვდომელია");
         access += "\nSIM-ანგარიშის წვდომა: " + (checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED ? "ჩართულია" : "მიუწვდომელია");
-        if (Build.VERSION.SDK_INT >= 33) {
-            access += "\nშეტყობინებები: " + (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED ? "ჩართულია" : "გამორთულია");
-        }
+        access += "\nშეტყობინებები: " + (CallMonitorService.notificationsEnabled(this) ? "ჩართულია" : "გამორთულია");
         permissionsView.setText(access);
-        statusView.setText(settings.status());
-        queueView.setText("გასაგზავნი ზარები: " + queue.pendingCount());
+        statusView.setText(settings.enabled() && !CallMonitorService.isRunning()
+                ? "მონიტორინგი ამჟამად არ მუშაობს; შეამოწმეთ ნებართვები და ხელახლა ჩართეთ"
+                : settings.status());
+        queueView.setText("გასაგზავნი ზარები: " + queue.pendingCount()
+                + "\nსერვერის მიერ მიღებული ზარები: " + queue.deliveredCount());
     }
 
     private void openSettings(Intent intent) {
         try { startActivity(intent); } catch (RuntimeException unavailable) { message("გახსენით ტელეფონის პარამეტრები და მოძებნეთ Green Taxi"); }
     }
 
-    @Override protected void onResume() { super.onResume(); handler.post(refresh); }
+    @Override protected void onResume() { super.onResume(); resumeMonitoring(); handler.post(refresh); }
     @Override protected void onPause() { handler.removeCallbacks(refresh); super.onPause(); }
-    @Override protected void onDestroy() { queue.close(); super.onDestroy(); }
+    @Override protected void onDestroy() {
+        destroyed = true;
+        connectionGeneration++;
+        handler.removeCallbacksAndMessages(null);
+        connectionWorker.shutdownNow();
+        HttpURLConnection active = checkingConnection;
+        if (active != null) active.disconnect();
+        queue.close();
+        super.onDestroy();
+    }
 }

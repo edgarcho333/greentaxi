@@ -7,6 +7,7 @@ import android.security.keystore.KeyProperties;
 import android.util.Base64;
 
 import java.security.KeyStore;
+import java.util.Map;
 import java.util.UUID;
 
 import javax.crypto.Cipher;
@@ -16,7 +17,20 @@ import javax.crypto.spec.GCMParameterSpec;
 
 final class AppSettings {
     private static final String KEY_ALIAS = "greentaxi_device_token_v1";
+    private static final Object BINDING_LOCK = new Object();
     private final SharedPreferences preferences;
+
+    static final class Binding {
+        final String server;
+        private final String encryptedToken;
+
+        private Binding(String server, String encryptedToken) {
+            this.server = server;
+            this.encryptedToken = encryptedToken;
+        }
+
+        String token() throws Exception { return decryptToken(encryptedToken); }
+    }
 
     AppSettings(Context context) {
         preferences = context.getSharedPreferences("greentaxi_calls", Context.MODE_PRIVATE);
@@ -35,7 +49,26 @@ final class AppSettings {
     boolean hasToken() { return preferences.contains("encrypted_token"); }
     boolean enabled() { return preferences.getBoolean("enabled", false); }
     boolean authPaused() { return preferences.getBoolean("auth_paused", false); }
-    void authPaused(boolean value) { preferences.edit().putBoolean("auth_paused", value).commit(); }
+    Binding binding() {
+        Map<String, ?> values = preferences.getAll();
+        Object server = values.get("server");
+        Object token = values.get("encrypted_token");
+        return new Binding(server instanceof String ? (String) server : "",
+                token instanceof String ? (String) token : "");
+    }
+
+    boolean bindingCurrent(Binding binding) {
+        Binding current = binding();
+        return binding.server.equals(current.server) && binding.encryptedToken.equals(current.encryptedToken);
+    }
+
+    boolean pauseAuthenticationIfCurrent(Binding binding) {
+        synchronized (BINDING_LOCK) {
+            if (!bindingCurrent(binding)) return false;
+            preferences.edit().putBoolean("auth_paused", true).commit();
+            return true;
+        }
+    }
     String status() { return preferences.getString("status", "მონიტორინგი შეჩერებულია"); }
     void status(String value) { preferences.edit().putString("status", value).apply(); }
     long baseline() { return preferences.getLong("baseline_ms", Long.MAX_VALUE); }
@@ -57,22 +90,25 @@ final class AppSettings {
     }
 
     void pair(String server, String replacementToken) throws Exception {
-        SharedPreferences.Editor editor = preferences.edit().putString("server", server);
-        if (!replacementToken.isEmpty()) {
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.ENCRYPT_MODE, key());
-            byte[] ciphertext = cipher.doFinal(replacementToken.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            editor.putString("encrypted_token", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP)
-                    + ":" + Base64.encodeToString(ciphertext, Base64.NO_WRAP));
-        }
-        if (!hasToken() && replacementToken.isEmpty()) throw new IllegalArgumentException("token_required");
-        if (!editor.putBoolean("auth_paused", false).commit()) {
-            throw new IllegalStateException("pairing_storage_unavailable");
+        synchronized (BINDING_LOCK) {
+            SharedPreferences.Editor editor = preferences.edit().putString("server", server);
+            if (!replacementToken.isEmpty()) {
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.ENCRYPT_MODE, key());
+                byte[] ciphertext = cipher.doFinal(replacementToken.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                editor.putString("encrypted_token", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP)
+                        + ":" + Base64.encodeToString(ciphertext, Base64.NO_WRAP));
+            }
+            if (!hasToken() && replacementToken.isEmpty()) throw new IllegalArgumentException("token_required");
+            if (!editor.putBoolean("auth_paused", false).commit()) {
+                throw new IllegalStateException("pairing_storage_unavailable");
+            }
         }
     }
 
-    String token() throws Exception {
-        String encoded = preferences.getString("encrypted_token", "");
+    String token() throws Exception { return binding().token(); }
+
+    private static String decryptToken(String encoded) throws Exception {
         String[] parts = encoded.split(":", 2);
         if (parts.length != 2) throw new IllegalStateException("token_unavailable");
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");

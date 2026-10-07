@@ -336,12 +336,20 @@ export async function createApp(options: Options = {}) {
     (await idempotent(req, res, 'public-booking', async () => ({ id: (await createBooking(req.body)).id })));
   });
 
-  app.post('/api/integrations/android/calls', rateLimit('android-calls', 120, 60 * 1000), async (req, res) => {
+  async function authenticatedDevice(req: Request): Promise<Row> {
     const authorization = req.get('Authorization');
     if (!authorization || !/^Bearer gtdevice_[a-f0-9]{64}$/.test(authorization)) reject(401, 'მოწყობილობის ავტორიზაცია აუცილებელია.', 'DEVICE_UNAUTHORIZED');
     const token = authorization.slice('Bearer '.length);
     const device = (await db.prepare('SELECT * FROM call_devices WHERE token_hash=? AND active=1').get(digest(token))) as Row | undefined;
     if (!device) reject(401, 'მოწყობილობის წვდომა გაუქმებულია ან კოდი არასწორია.', 'DEVICE_UNAUTHORIZED');
+    return device;
+  }
+  app.get('/api/integrations/android/connection', rateLimit('android-connection', 60, 60 * 1000), async (req, res) => {
+    const device = await authenticatedDevice(req);
+    res.json({ connected: true, device: { id: device.id, name: device.name } });
+  });
+  app.post('/api/integrations/android/calls', rateLimit('android-calls', 120, 60 * 1000), async (req, res) => {
+    const device = await authenticatedDevice(req);
     const kind = req.body.kind;
     if (!['incoming', 'missed', 'rejected', 'outgoing'].includes(kind)) reject(400, 'ზარის ტიპი არასწორია.', 'VALIDATION');
     if (kind !== 'incoming') {

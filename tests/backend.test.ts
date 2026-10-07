@@ -341,6 +341,34 @@ function callEvent(overrides: Record<string, unknown> = {}) {
   return { eventId: 'android-call-1001', phone: '+995599123456', occurredAt: '2030-01-01T10:20:30+04:00', durationSeconds: 15, kind: 'incoming', ...overrides };
 }
 
+test('Android connection checks authenticate the own active device without creating inquiries or changing lastSeen or audit', async () => {
+  const fresh = await fixture();
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'Redmi კავშირის ტესტი' });
+    await successful(fresh, '/admin/devices', 'POST', { name: 'სხვა ტელეფონი' });
+    const before = await fresh.db.prepare('SELECT * FROM call_devices ORDER BY id').all();
+    const auditBefore = await fresh.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get();
+    for (const authorization of [undefined, 'Bearer invalid', `Bearer gtdevice_${'1'.repeat(64)}`]) {
+      const headers: Record<string, string> = authorization ? { Authorization: authorization } : {};
+      const denied = await fresh.request('/integrations/android/connection', 'GET', undefined, headers, false);
+      assert.equal(denied.status, 401);
+      assert.equal(denied.data.code, 'DEVICE_UNAUTHORIZED');
+    }
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const connected = await fresh.request('/integrations/android/connection', 'GET', undefined, bearer, false);
+    assert.equal(connected.status, 200);
+    assert.deepEqual(connected.data, { connected: true, device: { id: paired.device.id, name: paired.device.name } });
+    assert.deepEqual(await fresh.db.prepare('SELECT * FROM call_devices ORDER BY id').all(), before);
+    assert.deepEqual(await fresh.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get(), auditBefore);
+    assert.equal((await successful(fresh, '/admin/calls')).calls.length, 0);
+    assert.equal(((await fresh.db.prepare('SELECT COUNT(*) AS count FROM bookings').get()) as { count: number }).count, 0);
+    await successful(fresh, `/admin/devices/${paired.device.id}`, 'PATCH', { active: false });
+    const revoked = await fresh.request('/integrations/android/connection', 'GET', undefined, bearer, false);
+    assert.equal(revoked.status, 401);
+    assert.equal(revoked.data.code, 'DEVICE_UNAUTHORIZED');
+  } finally { await fresh.close(); }
+});
+
 test('Android device tokens are hashed, expose no staff access, update lastSeen, and stop working after revocation', async () => {
   const fresh = await fixture();
   try {

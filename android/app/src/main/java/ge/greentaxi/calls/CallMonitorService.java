@@ -41,6 +41,7 @@ public final class CallMonitorService extends Service {
     private static final String CHANNEL = "greentaxi_call_monitor";
     private static final int NOTIFICATION_ID = 10;
     private static final long OVERLAP_MS = 24 * 60 * 60_000L;
+    private static volatile boolean running;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
     private AppSettings settings;
@@ -65,37 +66,53 @@ public final class CallMonitorService extends Service {
                 && context.checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED;
     }
 
+    static boolean isRunning() { return running; }
+
+    static boolean notificationsEnabled(android.content.Context context) {
+        if (Build.VERSION.SDK_INT >= 33
+                && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false;
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null || !manager.areNotificationsEnabled()) return false;
+        NotificationChannel channel = manager.getNotificationChannel(CHANNEL);
+        return channel == null || channel.getImportance() != NotificationManager.IMPORTANCE_NONE;
+    }
+
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (!settings.enabled() || !settings.hasToken() || settings.server().isEmpty()) {
+            running = false;
             stopSelf();
             return START_NOT_STICKY;
         }
         if (!permissionsGranted(this)) {
+            running = false;
             settings.status("ზარების წვდომა აკლია — გახსენით აპი და შეამოწმეთ ნებართვები");
             stopSelf();
             return START_NOT_STICKY;
         }
-        Notification notification = notification("მონიტორინგი ჩართულია");
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
-        }
-        if (!started) {
-            started = true;
-            observer = new ContentObserver(mainHandler) {
-                @Override public void onChange(boolean selfChange) { scheduleScan(); }
-            };
-            try {
-                getContentResolver().registerContentObserver(CallLog.Calls.CONTENT_URI, true, observer);
-                worker.scheduleWithFixedDelay(this::tick, 0, 60, TimeUnit.SECONDS);
-            } catch (SecurityException revoked) {
-                settings.status("ზარების წვდომა შეწყდა — შეამოწმეთ ნებართვები");
-                stopSelf();
-                return START_NOT_STICKY;
+        try {
+            Notification notification = notification("მონიტორინგი ჩართულია");
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
             }
-        } else {
-            scheduleScan();
+            if (!started) {
+                ContentObserver newObserver = new ContentObserver(mainHandler) {
+                    @Override public void onChange(boolean selfChange) { scheduleScan(); }
+                };
+                getContentResolver().registerContentObserver(CallLog.Calls.CONTENT_URI, true, newObserver);
+                observer = newObserver;
+                worker.scheduleWithFixedDelay(this::tick, 0, 60, TimeUnit.SECONDS);
+                started = true;
+            } else {
+                scheduleScan();
+            }
+            running = true;
+        } catch (RuntimeException unavailable) {
+            running = false;
+            settings.status("მონიტორინგი ვერ ჩაირთო — შეამოწმეთ აპის ნებართვები და პარამეტრები");
+            stopSelf();
+            return START_NOT_STICKY;
         }
         return START_STICKY;
     }
@@ -204,24 +221,26 @@ public final class CallMonitorService extends Service {
 
     private String uploadPending() {
         if (settings.authPaused()) return "კავშირი შეჩერებულია — ხელახლა დააკავშირეთ ტელეფონი";
-        if (queue.pendingCount() == 0) return "მონიტორინგი ჩართულია · ყველა ზარი გაგზავნილია";
+        if (queue.pendingCount() == 0) return "მონიტორინგი ჩართულია · რიგი ცარიელია; ველოდებით ახალ ზარს";
         ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
         NetworkCapabilities network = connectivity == null ? null : connectivity.getNetworkCapabilities(connectivity.getActiveNetwork());
         if (network == null || !network.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
             return "ინტერნეტს ელოდება · ზარები შენახულია ტელეფონში";
         }
+        AppSettings.Binding binding = settings.binding();
         String token;
         try {
-            token = settings.token();
+            token = binding.token();
         } catch (Exception missingKey) {
-            settings.authPaused(true);
+            if (!settings.pauseAuthenticationIfCurrent(binding)) return "კავშირის მონაცემები შეიცვალა; ზარები გაგზავნას ელოდება";
             return "დაკავშირების კოდი მიუწვდომელია — ხელახლა დააკავშირეთ ტელეფონი";
         }
-        String status = "მონიტორინგი ჩართულია";
+        String status = "შენახული ზარები გაგზავნას ელოდება; ხელახლა ვცდით";
         for (CallQueue.Event event : queue.due(System.currentTimeMillis())) {
             if (!settings.enabled() || worker.isShutdown()) break;
+            if (!settings.bindingCurrent(binding)) return "კავშირის მონაცემები შეიცვალა; ზარები გაგზავნას ელოდება";
             try {
-                URL endpoint = new URL(settings.server() + "/api/integrations/android/calls");
+                URL endpoint = new URL(binding.server + "/api/integrations/android/calls");
                 if (!"https".equalsIgnoreCase(endpoint.getProtocol())) throw new IllegalStateException("https_required");
                 connection = (HttpURLConnection) endpoint.openConnection();
                 connection.setInstanceFollowRedirects(false);
@@ -243,7 +262,7 @@ public final class CallMonitorService extends Service {
                 try (java.io.OutputStream output = connection.getOutputStream()) { output.write(body); }
                 int responseCode = connection.getResponseCode();
                 if (responseCode == 401) {
-                    settings.authPaused(true);
+                    if (!settings.pauseAuthenticationIfCurrent(binding)) return "კავშირის მონაცემები შეიცვალა; ზარები გაგზავნას ელოდება";
                     return "კავშირი გაუქმებულია — ხელახლა დააკავშირეთ ტელეფონი";
                 }
                 if (responseCode >= 200 && responseCode < 300) {
@@ -263,7 +282,7 @@ public final class CallMonitorService extends Service {
                 if (active != null) active.disconnect();
             }
         }
-        if (queue.pendingCount() == 0) return "მონიტორინგი ჩართულია · ყველა ზარი გაგზავნილია";
+        if (queue.pendingCount() == 0) return "მონიტორინგი ჩართულია · რიგი ცარიელია; ველოდებით ახალ ზარს";
         return status;
     }
 
@@ -295,6 +314,7 @@ public final class CallMonitorService extends Service {
     }
 
     @Override public void onDestroy() {
+        running = false;
         if (observer != null) getContentResolver().unregisterContentObserver(observer);
         worker.shutdownNow();
         HttpURLConnection active = connection;

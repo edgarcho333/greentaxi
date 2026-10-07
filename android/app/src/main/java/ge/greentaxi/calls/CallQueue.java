@@ -51,6 +51,12 @@ final class CallQueue extends SQLiteOpenHelper {
         }
     }
 
+    synchronized int deliveredCount() {
+        try (Cursor cursor = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM call_events WHERE delivered = 1", null)) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
+    }
+
     synchronized List<Event> due(long now) {
         List<Event> events = new ArrayList<>();
         try (Cursor cursor = getReadableDatabase().rawQuery(
