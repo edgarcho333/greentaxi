@@ -216,8 +216,8 @@ export async function createApp(options: Options = {}) {
     const parts = tbilisiCalendar.formatToParts(now());
     const today = ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)!.value).join('-');
     const lastDay = new Date(`${today}T12:00:00Z`);
-    lastDay.setUTCDate(lastDay.getUTCDate() + 2);
-    if (day < today || day > lastDay.toISOString().slice(0, 10)) reject(400, 'აირჩიეთ დღეს, ხვალ ან ზეგ.', 'DATE_OUT_OF_RANGE');
+    lastDay.setUTCDate(lastDay.getUTCDate() + 1);
+    if (day < today || day > lastDay.toISOString().slice(0, 10)) reject(400, 'აირჩიეთ დღეს ან ხვალ.', 'DATE_OUT_OF_RANGE');
   }
   async function activeSlot(d: Direction, day: string, slotTime: string, futureRequired = false) {
     if (!(await configuredTimes(d, day)).effective.includes(slotTime)) reject(409, 'არჩეული დრო გამორთულია. აირჩიეთ მოქმედი დრო.', 'SLOT_INACTIVE');

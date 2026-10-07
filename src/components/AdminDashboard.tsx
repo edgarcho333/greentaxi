@@ -164,7 +164,7 @@ function Dialog({ title, subtitle, children, onClose, className, busy = false }:
   return <div className="admin-modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className={`admin-dialog${className ? ` ${className}` : ''}`} role="dialog" aria-modal="true" aria-labelledby="admin-dialog-title"><header><div><h2 id="admin-dialog-title">{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button type="button" className="admin-icon-button" disabled={busy} onClick={onClose} aria-label="დახურვა"><X size={21} /></button></header>{children}</section></div>;
 }
 
-function staffDateAllowed(date: string, anchor = today()) { return date >= anchor && date <= addDays(anchor, 2); }
+function staffDateAllowed(date: string, anchor = today()) { return date >= anchor && date <= addDays(anchor, 1); }
 function staffFutureTime(date: string, time: string, now = Date.now()) { return /^([01]\d|2[0-3]):[0-5]\d$/.test(time) && new Date(`${date}T${time}:00+04:00`).getTime() > now; }
 function staffDefaultDate(date: string) { return staffDateAllowed(date) ? date : today(); }
 
@@ -199,7 +199,7 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
   const [originalError, setOriginalError] = useState('');
   const [originalRevision, setOriginalRevision] = useState(0);
   const anchor = today();
-  const days = [anchor, addDays(anchor, 1), addDays(anchor, 2)];
+  const days = [anchor, addDays(anchor, 1)];
   const needsSchedule = modal.kind === 'create' || modal.kind === 'confirm' || modal.kind === 'move' || (modal.kind === 'restore' && restoreMode === 'select');
   const isDetails = modal.kind === 'create' || modal.kind === 'edit';
   const scheduleKey = `${fields.direction}:${fields.requestedDate}`;
@@ -308,7 +308,7 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
     if (!detailsValid || !restoreReady) { setError('შეავსეთ მგზავრობის მონაცემები.'); return; }
     if (needsSchedule && (!scheduleValid || !staffDateAllowed(fields.requestedDate) || !staffFutureTime(fields.requestedDate, fields.requestedTime))) {
       autoPick.current = false; setClockNow(Date.now()); setFields(current => ({ ...current, requestedDate: staffDefaultDate(current.requestedDate), requestedTime: '' }));
-      setError('აირჩიეთ მომავალი მოქმედი დრო მომდევნო სამი დღიდან.'); return;
+      setError('აირჩიეთ მომავალი მოქმედი დრო დღეს ან ხვალ.'); return;
     }
     busyRef.current = true; setBusy(true); setError('');
     try {
@@ -358,8 +358,8 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
         </>}
       </div>}
       {needsSchedule && <>
-        <fieldset className="admin-operator-group" role="group" aria-label="თარიღი"><legend>თარიღი</legend><div className="admin-operator-days">{days.map((day, index) => { const label = ['დღეს', 'ხვალ', 'ზეგ'][index]; return <button type="button" key={day} aria-label={`${label}, ${dateLabel(day)}`} aria-pressed={fields.requestedDate === day} disabled={busy} onClick={() => update('requestedDate', day)}><span>{label}</span><small>{dateLabel(day)}</small></button>; })}</div></fieldset>
-        <fieldset className="admin-operator-group" role="group" aria-label="დრო"><legend>დრო</legend>{scheduleLoading || !schedule ? <p className="admin-operator-time-status" role="status">{scheduleError ? 'განრიგი ვერ ჩაიტვირთა.' : 'დროები იტვირთება…'}</p> : activeTimes.length ? <div className="admin-operator-times">{activeTimes.map(slot => <button type="button" key={slot} aria-pressed={fields.requestedTime === slot} disabled={busy} onClick={() => update('requestedTime', slot)}>{slot}</button>)}</div> : <div className="admin-notice">მომავალი მოქმედი დრო არ არის. აირჩიეთ ხვალ ან ზეგ.</div>}</fieldset>
+        <fieldset className="admin-operator-group" role="group" aria-label="თარიღი"><legend>თარიღი</legend><div className="admin-operator-days">{days.map((day, index) => { const label = ['დღეს', 'ხვალ'][index]; return <button type="button" key={day} aria-label={`${label}, ${dateLabel(day)}`} aria-pressed={fields.requestedDate === day} disabled={busy} onClick={() => update('requestedDate', day)}><span>{label}</span><small>{dateLabel(day)}</small></button>; })}</div></fieldset>
+        <fieldset className="admin-operator-group" role="group" aria-label="დრო"><legend>დრო</legend>{scheduleLoading || !schedule ? <p className="admin-operator-time-status" role="status">{scheduleError ? 'განრიგი ვერ ჩაიტვირთა.' : 'დროები იტვირთება…'}</p> : activeTimes.length ? <div className="admin-operator-times">{activeTimes.map(slot => <button type="button" key={slot} aria-pressed={fields.requestedTime === slot} disabled={busy} onClick={() => update('requestedTime', slot)}>{slot}</button>)}</div> : <div className="admin-notice">არჩეულ დღეზე მომავალი მოქმედი დრო არ არის. აირჩიეთ სხვა დღე.</div>}</fieldset>
         {scheduleError && <div className="admin-error" role="alert">{scheduleError}<button type="button" disabled={busy} onClick={() => setScheduleRevision(value => value + 1)}>განრიგის ხელახლა ჩატვირთვა</button></div>}
         {!scheduleLoading && schedule && activeTimes.length > 0 && !fields.requestedTime && <p className="admin-form-hint">აირჩიეთ მომავალი მოქმედი დრო. ჯავშანი ავტომატურად არ გადაიტანება.</p>}
         {modal.kind === 'confirm' && <p className="admin-form-hint"><CheckCircle2 size={16} />დამატება განაცხადს ავტომატურად დაადასტურებს.</p>}

@@ -8,6 +8,7 @@ const testDirectory = mkdtempSync(join(tmpdir(), 'greentaxi-e2e-'));
 const baseURL = 'http://127.0.0.1:3100';
 
 export default defineConfig({
+  metadata: { fixtureDatabasePath: join(testDirectory, 'greentaxi.sqlite') },
   testDir: './tests',
   testMatch: '**/*.spec.ts',
   fullyParallel: false,

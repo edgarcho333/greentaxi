@@ -1,5 +1,9 @@
 import { test as base, expect, type APIRequestContext, type Locator, type Page, type Response } from '@playwright/test';
+import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { Booking, CallInquiry, Direction, PassengerProfile, PublicConfig } from '../src/api';
+import { createDatabase } from '../server/database';
 
 const EMPLOYEE = { login: 'browser_test', name: 'სატესტო თანამშრომელი', password: 'test-only-local-password-123' };
 const TIMES = ['06:00', '07:00', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00'];
@@ -121,7 +125,7 @@ async function chooseOperatorSeats(dialog: Locator, seats: number) {
 
 function operatorDayButton(dialog: Locator, day: string) {
   const [, month, date] = day.split('-');
-  return operatorGroup(dialog, 'თარიღი').getByRole('button', { name: new RegExp(`^(დღეს|ხვალ|ზეგ), ${date}/${month}$`) });
+  return operatorGroup(dialog, 'თარიღი').getByRole('button', { name: new RegExp(`^(დღეს|ხვალ), ${date}/${month}$`) });
 }
 
 async function chooseOperatorDay(dialog: Locator, day: string) {
@@ -149,7 +153,7 @@ async function seedConfirmedProfile(input: {
     name: input.name, phone: input.phone, seats: 4,
     direction: input.pickupStopId ? 'tbilisi-gori' : 'gori-tbilisi',
     pickupStopId: input.pickupStopId ?? null,
-    goriAddress: input.address, requestedDate: futureDate(2), requestedTime: '21:00',
+    goriAddress: input.address, requestedDate: futureDate(1), requestedTime: '21:00',
   } });
   expect(response.ok()).toBeTruthy();
   expect(await response.json()).toMatchObject({
@@ -188,13 +192,32 @@ type PrintableFixture = {
 };
 
 async function clearScheduledFixtureDay(day: string) {
-  // New operator bookings share the three-day window. Keep each print fixture
+  // New operator bookings share the two-day window. Keep each print fixture
   // independent of earlier scenarios in this disposable test database.
   const response = await adminApi.get(`/api/admin/bookings?${new URLSearchParams({ scope: 'scheduled', date: day })}`);
   expect(response.ok()).toBeTruthy();
   for (const booking of (await response.json() as { bookings: Booking[] }).bookings) {
     expect((await adminApi.post(`/api/admin/bookings/${booking.id}/delete`, { data: {} })).ok()).toBeTruthy();
   }
+}
+
+async function setHistoricalFixtureDate(id: number, day: string) {
+  // API-created fixtures can represent an existing earlier trip without trying
+  // to book an elapsed departure. Use only this run's disposable server DB.
+  const dbPath = test.info().config.metadata.fixtureDatabasePath;
+  expect(typeof dbPath).toBe('string');
+  expect(basename(dbPath)).toBe('greentaxi.sqlite');
+  const fixtureDirectory = dirname(resolve(dbPath));
+  expect(dirname(fixtureDirectory)).toBe(resolve(tmpdir()));
+  expect(basename(fixtureDirectory)).toMatch(/^greentaxi-e2e-[^/]+$/);
+  expect(dbPath).toBe(join(fixtureDirectory, 'greentaxi.sqlite'));
+  const databaseUrl = process.env.E2E_DATABASE_URL;
+  if (!databaseUrl) expect(existsSync(dbPath)).toBeTruthy();
+  const database = await createDatabase({ dbPath, databaseUrl, production: false });
+  try {
+    const changed = await database.prepare("UPDATE bookings SET requested_date=?,assigned_date=? WHERE id=? AND status='confirmed' AND source='employee'").run(day, day, id);
+    expect(changed.changes).toBe(1);
+  } finally { await database.close(); }
 }
 
 async function seedPrintableDay(day: string, phonePrefix: string, namePrefix: string) {
@@ -228,8 +251,7 @@ async function seedPrintableDay(day: string, phonePrefix: string, namePrefix: st
   const moved = await adminApi.post('/api/admin/bookings', { data: { ...common, name: excludedNames[2], phone: `${phonePrefix}902`, requestedDate: day } });
   expect(moved.ok()).toBeTruthy();
   const movedId = (await moved.json() as { id: number }).id;
-  const otherDay = day === futureDate(2) ? futureDate(1) : futureDate(2);
-  expect((await adminApi.post(`/api/admin/bookings/${movedId}/move`, { data: { date: otherDay, time: '08:30' } })).ok()).toBeTruthy();
+  await setHistoricalFixtureDate(movedId, futureDate(0));
   return { expected, excludedNames };
 }
 
@@ -509,7 +531,7 @@ test('production first-user session metadata requires an activation code before 
 
 test('operator confirms an incoming guest booking, deletes it and restores its data', async ({ page }) => {
   const name = 'სატესტო სრული ციკლი';
-  const day = futureDate();
+  const day = futureDate(1);
   await fillPublicForm(page, { direction: 'gori-tbilisi', seats: 3, name, date: day, time: '09:30' });
   const id = await submitPublicForm(page);
   await login(page);
@@ -589,12 +611,13 @@ test('operator confirms an incoming guest booking, deletes it and restores its d
 for (const [index, direction] of (Object.keys(DIRECTION_LABELS) as Direction[]).entries()) {
   test(`an unnamed manual staff order with eight seats is confirmed in ${direction}`, async ({ page }) => {
     const phone = `55500045${6 + index}`;
-    const day = futureDate(2);
+    const day = futureDate(1);
     const address = `გორი, რვა ადგილის სატესტო მისამართი ${index + 1}`;
     await openAuthenticatedAdmin(page);
     const dialog = await openManualOrder(page);
     await expect(dialog.locator('input[type="date"]')).toHaveCount(0);
-    await expect(operatorGroup(dialog, 'თარიღი').getByRole('button')).toHaveCount(3);
+    await expect(operatorGroup(dialog, 'თარიღი').getByRole('button')).toHaveCount(2);
+    await expect(operatorGroup(dialog, 'თარიღი').getByRole('button', { name: /^ზეგ,/ })).toHaveCount(0);
     await chooseOperatorDirection(dialog, direction);
     await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(`+995${phone}`);
     await chooseOperatorSeats(dialog, 8);
@@ -642,7 +665,7 @@ for (const [index, direction] of (Object.keys(DIRECTION_LABELS) as Direction[]).
   });
 }
 
-test('operator hours use Tbilisi time, keep a future choice on ticks and refresh the three-day window at midnight', async ({ page }) => {
+test('operator hours use Tbilisi time, keep a future choice on ticks and refresh today and tomorrow at midnight', async ({ page }) => {
   await page.clock.install({ time: new Date('2030-05-04T10:00:00Z') });
   await page.clock.pauseAt(new Date('2030-05-04T10:00:01Z'));
   const posts: string[] = [];
@@ -673,18 +696,20 @@ test('operator hours use Tbilisi time, keep a future choice on ticks and refresh
   await expect(hours.locator('[aria-pressed="true"]')).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true })).toBeDisabled();
   await page.clock.fastForward(8 * 60 * 60 * 1000);
-  await expect(days.getByRole('button')).toHaveCount(3);
-  for (const day of ['2030-05-05', '2030-05-06', '2030-05-07']) await expect(operatorDayButton(dialog, day)).toBeVisible();
+  await expect(days.getByRole('button')).toHaveCount(2);
+  for (const day of ['2030-05-05', '2030-05-06']) await expect(operatorDayButton(dialog, day)).toBeVisible();
+  await expect(days.getByRole('button', { name: /^ზეგ,/ })).toHaveCount(0);
+  await expect(operatorDayButton(dialog, '2030-05-07')).toHaveCount(0);
   await expect(operatorDayButton(dialog, '2030-05-04')).toHaveCount(0);
   await expect(operatorDayButton(dialog, '2030-05-05')).toHaveAttribute('aria-pressed', 'true');
   await expect(hours.getByRole('button')).toHaveText(TIMES);
   await expect(hours.locator('[aria-pressed="true"]')).toHaveCount(0);
   await expect(dialog.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue('გორი, საათის ცვლილების სატესტო მისამართი');
   await dialog.getByRole('button', { name: 'გაუქმება', exact: true }).click();
-  await chooseAdminDate(page, '2030-05-08');
+  await chooseAdminDate(page, '2030-05-07');
   const clamped = await openManualOrder(page);
   await expect(operatorDayButton(clamped, '2030-05-05')).toHaveAttribute('aria-pressed', 'true');
-  await expect(operatorDayButton(clamped, '2030-05-08')).toHaveCount(0);
+  await expect(operatorDayButton(clamped, '2030-05-07')).toHaveCount(0);
   expect(posts, 'Clock updates must never submit an order').toEqual([]);
 });
 
@@ -731,8 +756,8 @@ test('operator rejects a newly disabled hour and requires an explicit alternativ
 });
 
 test('direction, date and time filters change the actual scheduled order list', async ({ page }) => {
-  const day = futureDate();
-  const nextDay = futureDate(1);
+  const day = futureDate(1);
+  const nextDay = futureDate(0);
   const fixtures = [
     { name: 'ფილტრის ტესტი პირველი', direction: 'gori-tbilisi', requestedDate: day, requestedTime: '08:00' },
     { name: 'ფილტრის ტესტი მეორე', direction: 'gori-tbilisi', requestedDate: day, requestedTime: '09:00' },
@@ -741,10 +766,11 @@ test('direction, date and time filters change the actual scheduled order list', 
   ];
   for (const input of fixtures) {
     const response = await adminApi.post('/api/admin/bookings', { data: {
-      ...input, phone: '+995555000789', seats: 2, goriAddress: 'გორი, სატესტო ქუჩა 36',
+      ...input, requestedDate: day, phone: '+995555000789', seats: 2, goriAddress: 'გორი, სატესტო ქუჩა 36',
       ...(input.direction === 'tbilisi-gori' ? { pickupStopId: publicConfig.stops[0].id } : {}),
     } });
     expect(response.ok()).toBeTruthy();
+    if (input.requestedDate !== day) await setHistoricalFixtureDate((await response.json() as Booking).id, input.requestedDate);
   }
   await login(page);
   await page.getByRole('textbox', { name: 'მგზავრის სახელი ან ტელეფონი', exact: true }).fill('ფილტრის ტესტი');
@@ -861,7 +887,7 @@ test('answered Android SIM inquiry is deduplicated, restored and converted into 
 
 test('restore confirmed order requires explicit alternative when its previous slot is disabled', async ({ page }) => {
   const name = 'სატესტო გამორთული სლოტის აღდგენა';
-  const day = futureDate(2);
+  const day = futureDate(1);
   const created = await adminApi.post('/api/admin/bookings', { data: {
     name, phone: '+995555000501', seats: 2, direction: 'gori-tbilisi',
     requestedDate: day, requestedTime: '09:30', goriAddress: 'გორი, სატესტო ქუჩა 60',
@@ -1346,7 +1372,7 @@ test('public phone entry never looks up or fills trusted passenger details and c
 });
 
 test('printing all orders for a day includes every confirmed row beyond pagination and search with complete pickup addresses and totals', async ({ page }) => {
-  const day = futureDate(2);
+  const day = futureDate(1);
   const { expected, excludedNames } = await seedPrintableDay(day, '555040', 'სატესტო მთელი დღის ბეჭდვა');
   const selected = expected.filter(row => row.direction === 'gori-tbilisi');
   await captureNativePrinting(page);
@@ -1490,7 +1516,7 @@ test('printing a selected half-hour slot includes both directions while excludin
 
 test('printing stays blocked for an empty day or a failed fresh report and recovers without opening native print', async ({ page }) => {
   const emptyDay = futureDate(22);
-  const reportDay = futureDate(2);
+  const reportDay = futureDate(1);
   await clearScheduledFixtureDay(reportDay);
   const created = await adminApi.post('/api/admin/bookings', { data: {
     name: 'სატესტო შეცდომამდე საბეჭდი ჯავშანი', phone: '555042001', seats: 1,

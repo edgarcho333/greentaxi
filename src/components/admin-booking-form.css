@@ -10,7 +10,7 @@
 .admin-operator-group legend { width: 100%; margin-bottom: 6px; padding: 0; color: #50685a; font-size: 12px; font-weight: 500; }
 .admin-operator-directions, .admin-operator-restore-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .admin-operator-seats { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; }
-.admin-operator-days { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.admin-operator-days { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .admin-operator-times { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; overflow: visible; }
 .admin-operator-group button, .admin-operator-restore-options button { min-height: 44px; min-width: 0; padding: 8px 10px; border: 1px solid #dce8df; border-radius: 8px; background: #f8fbf9; color: #315e43; font-size: 14px; font-weight: 500; line-height: 1.4; }
 .admin-operator-group button:hover:not(:disabled):not([aria-pressed=true]), .admin-operator-restore-options button:hover:not(:disabled):not([aria-pressed=true]) { border-color: #53b97b; background: #eaf8ee; }

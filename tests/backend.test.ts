@@ -149,7 +149,7 @@ test('idempotency protects public double-submit and rejects reusing a key with d
 });
 
 test('a dated override preserves occupied disabled slots and restoring one requires an active replacement', async () => {
-  const day = '2030-01-03';
+  const day = '2030-01-01';
   const created = await successful(f, '/admin/bookings', 'POST', input({ requestedDate: day, requestedTime: '08:30' }));
   await successful(f, '/admin/schedule/date', 'PUT', { direction: 'gori-tbilisi', date: day, times: ['09:00', '12:00'] });
   const schedule = await successful(f, `/admin/schedule?direction=gori-tbilisi&date=${day}`);
@@ -308,17 +308,17 @@ test('operator orders accept eight seats and optional names while edits and trus
   } finally { await fresh.close(); }
 });
 
-test('the operator calendar rolls at Tbilisi midnight and spans month boundaries using three local calendar days', async () => {
+test('the operator calendar rolls at Tbilisi midnight and spans month boundaries using today and tomorrow only', async () => {
   let clock = new Date('2030-01-01T19:59:59Z'); // Tbilisi is still January 1.
   const fresh = await fixture({ now: () => clock });
   try {
-    await successful(fresh, '/admin/bookings', 'POST', input({ name: undefined, requestedDate: '2030-01-03', requestedTime: '06:00' }));
-    assert.equal((await fresh.request('/admin/bookings', 'POST', input({ requestedDate: '2030-01-04' }))).data.code, 'DATE_OUT_OF_RANGE');
+    await successful(fresh, '/admin/bookings', 'POST', input({ name: undefined, requestedDate: '2030-01-02', requestedTime: '06:00' }));
+    assert.equal((await fresh.request('/admin/bookings', 'POST', input({ requestedDate: '2030-01-03' }))).data.code, 'DATE_OUT_OF_RANGE');
     clock = new Date('2030-01-01T20:00:00Z'); // January 2 locally, although UTC is January 1.
-    for (const day of ['2030-01-02', '2030-01-03', '2030-01-04']) {
+    for (const day of ['2030-01-02', '2030-01-03']) {
       await successful(fresh, '/admin/bookings', 'POST', input({ name: undefined, requestedDate: day, requestedTime: '06:00' }));
     }
-    for (const day of ['2030-01-01', '2030-01-05']) {
+    for (const day of ['2030-01-01', '2030-01-04']) {
       const rejected = await fresh.request('/admin/bookings', 'POST', input({ requestedDate: day }));
       assert.equal(rejected.status, 400);
       assert.equal(rejected.data.code, 'DATE_OUT_OF_RANGE');
@@ -326,10 +326,10 @@ test('the operator calendar rolls at Tbilisi midnight and spans month boundaries
   } finally { await fresh.close(); }
   const leap = await fixture({ now: () => new Date('2032-02-28T20:00:00Z') }); // February 29 locally, in a leap year.
   try {
-    for (const day of ['2032-02-29', '2032-03-01', '2032-03-02']) {
+    for (const day of ['2032-02-29', '2032-03-01']) {
       await successful(leap, '/admin/bookings', 'POST', input({ requestedDate: day, requestedTime: '06:00' }));
     }
-    assert.equal((await leap.request('/admin/bookings', 'POST', input({ requestedDate: '2032-03-03' }))).data.code, 'DATE_OUT_OF_RANGE');
+    assert.equal((await leap.request('/admin/bookings', 'POST', input({ requestedDate: '2032-03-02' }))).data.code, 'DATE_OUT_OF_RANGE');
     for (const requestedDate of [undefined, null, '2032-02-30', '2032-2-29']) {
       const rejected = await leap.request('/admin/bookings', 'POST', input({ requestedDate }));
       assert.equal(rejected.status, 400);
@@ -350,7 +350,7 @@ test('every new operator assignment rejects elapsed times and distant dates with
     const waiting = await successful(fresh, '/bookings', 'POST', input(), undefined);
     const original = await successful(fresh, '/admin/bookings', 'POST', input());
     await successful(fresh, `/admin/bookings/${original.id}/delete`, 'POST', {});
-    for (const [date, time, code] of [[today, '08:30', 'SLOT_PAST'], ['2030-01-04', '09:00', 'DATE_OUT_OF_RANGE'], ['2030-02-31', '09:00', 'DATE_INVALID']]) {
+    for (const [date, time, code] of [[today, '08:30', 'SLOT_PAST'], ['2030-01-03', '09:00', 'DATE_OUT_OF_RANGE'], ['2030-02-31', '09:00', 'DATE_INVALID']]) {
       for (const [id, action] of [[waiting.id, 'confirm'], [original.id, 'restore']]) {
         const rejected = await fresh.request(`/admin/bookings/${id}/${action}`, 'POST', { date, time });
         assert.equal(rejected.status, 400);
@@ -363,7 +363,7 @@ test('every new operator assignment rejects elapsed times and distant dates with
     assert.equal(waitingRow.assigned_time, null);
     assert.ok((await fresh.db.prepare('SELECT deleted_at FROM bookings WHERE id=?').get(original.id))!.deleted_at);
     await successful(fresh, `/admin/bookings/${original.id}/restore`, 'POST', {});
-    for (const [date, time, code] of [[today, '08:30', 'SLOT_PAST'], ['2030-01-04', '09:00', 'DATE_OUT_OF_RANGE']]) {
+    for (const [date, time, code] of [[today, '08:30', 'SLOT_PAST'], ['2030-01-03', '09:00', 'DATE_OUT_OF_RANGE']]) {
       const rejected = await fresh.request(`/admin/bookings/${original.id}/move`, 'POST', { date, time });
       assert.equal(rejected.data.code, code);
     }
@@ -591,7 +591,7 @@ test('live calls in either direction convert without a name to eight-seat operat
       const received = await fresh.request('/integrations/android/calls', 'POST', event, bearer, false);
       assert.equal(received.status, 201);
       const body = input({ name: undefined, phone: '568694879', seats: 8, direction, ...(direction === 'tbilisi-gori' ? { pickupStopId: stop.id } : {}) });
-      for (const fields of [{ seats: 9 }, { requestedDate: '2030-01-04' }, { requestedDate: '2030-01-01', requestedTime: '08:30' }]) {
+      for (const fields of [{ seats: 9 }, { requestedDate: '2030-01-03' }, { requestedDate: '2030-01-01', requestedTime: '08:30' }]) {
         const rejected = await fresh.request(`/admin/calls/${received.data.id}/convert`, 'POST', { ...body, ...fields });
         assert.equal(rejected.status, 400);
         assert.equal((await fresh.db.prepare('SELECT booking_id FROM call_inquiries WHERE id=?').get(received.data.id))!.booking_id, null);
