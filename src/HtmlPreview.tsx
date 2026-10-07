@@ -4,7 +4,7 @@ import BookingPage from './components/BookingPage';
 import { previewUser } from './htmlPreviewApi';
 
 export default function HtmlPreview() {
-  const readView = () => ['#public', '#booking'].includes(window.location.hash) ? 'public' : 'admin';
+  const readView = () => ['#public', '#booking', '#routes', '#help'].includes(window.location.hash) ? 'public' : 'admin';
   const [view, setView] = useState(readView);
   const [expanded, setExpanded] = useState(false);
   const [notice, setNotice] = useState('');

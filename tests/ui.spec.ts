@@ -180,19 +180,41 @@ async function seedPrintableDay(day: string, phonePrefix: string, namePrefix: st
   return { expected, excludedNames };
 }
 
+async function expectPublicStep(page: Page, name: 'მგზავრობა' | 'მისამართი' | 'კონტაქტი') {
+  const current = page.getByRole('list', { name: 'დაჯავშნის ეტაპები', exact: true }).locator('[aria-current="step"]');
+  await expect(current).toHaveCount(1);
+  await expect(current).toContainText(name);
+}
+
+async function choosePublicSeats(page: Page, count: number) {
+  const seats = page.getByRole('spinbutton', { name: 'ადგილების რაოდენობა', exact: true });
+  const decrease = page.getByRole('button', { name: 'ადგილების რაოდენობის შემცირება', exact: true });
+  const increase = page.getByRole('button', { name: 'ადგილების რაოდენობის გაზრდა', exact: true });
+  await expect(seats).toHaveValue('1');
+  await expect(decrease).toBeDisabled();
+  for (let value = 1; value < count; value++) await increase.click();
+  await expect(seats).toHaveValue(String(count));
+  if (count === 4) await expect(increase).toBeDisabled();
+}
+
+async function continuePublicBooking(page: Page, name: 'მისამართი' | 'კონტაქტი') {
+  await page.getByRole('button', { name: 'გაგრძელება', exact: true }).click();
+  await expectPublicStep(page, name);
+}
+
 async function fillPublicForm(page: Page, input: {
   direction: Direction; seats: number; name: string; date?: string; time?: string;
 }) {
   const day = input.date ?? futureDate();
   const address = 'გორი, სატესტო ქუჩა 12';
   await page.goto('/');
+  await expectPublicStep(page, 'მგზავრობა');
   await page.getByRole('button', { name: DIRECTION_LABELS[input.direction], exact: true }).click();
   await page.getByLabel('მგზავრობის თარიღი', { exact: true }).fill(day);
   await expect(page.getByRole('group', { name: 'მგზავრობის დრო', exact: true }).getByRole('button')).toHaveText(TIMES);
-  const seats = page.getByLabel('ადგილების რაოდენობა', { exact: true });
-  await expect(seats.locator('option')).toHaveText(['1 ადგილი', '2 ადგილი', '3 ადგილი', '4 ადგილი']);
-  await seats.selectOption(String(input.seats));
+  await choosePublicSeats(page, input.seats);
   await page.getByRole('button', { name: input.time ?? '08:30', exact: true }).click();
+  await continuePublicBooking(page, 'მისამართი');
   if (input.direction === 'gori-tbilisi') {
     await page.getByLabel('ჩასხდომის მისამართი გორში', { exact: true }).fill(address);
     await expect(page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true })).toHaveCount(0);
@@ -203,6 +225,7 @@ async function fillPublicForm(page: Page, input: {
     await page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true }).selectOption(String(publicConfig.stops[0].id));
     await expect(page.locator('.booking-fixed-location')).toHaveCount(0);
   }
+  await continuePublicBooking(page, 'კონტაქტი');
   await page.getByLabel('სახელი და გვარი', { exact: true }).fill(input.name);
   await page.getByLabel('ტელეფონის ნომერი', { exact: true }).fill('+995555000123');
   return { day, address };
@@ -240,6 +263,130 @@ for (const direction of Object.keys(DIRECTION_LABELS) as Direction[]) {
     });
   }
 }
+
+test('public booking validates each step and preserves every field when going back', async ({ page }) => {
+  const name = 'სატესტო ეტაპებით უკან დაბრუნებული მგზავრი';
+  const phone = '555074101';
+  const address = 'გორი, ეტაპების სატესტო მისამართი';
+  const day = futureDate(6);
+  const posts: string[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/bookings' && request.method() === 'POST') posts.push(request.url());
+  });
+  await page.goto('/');
+  await expectPublicStep(page, 'მგზავრობა');
+  await page.getByRole('button', { name: DIRECTION_LABELS['tbilisi-gori'], exact: true }).click();
+  await page.getByLabel('მგზავრობის თარიღი', { exact: true }).fill(day);
+  await expect(page.getByRole('group', { name: 'მგზავრობის დრო', exact: true }).getByRole('button')).toHaveText(TIMES);
+  await choosePublicSeats(page, 4);
+  await page.getByRole('button', { name: 'ადგილების რაოდენობის შემცირება', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'ადგილების რაოდენობა', exact: true })).toHaveValue('3');
+  await page.getByRole('button', { name: 'გაგრძელება', exact: true }).click();
+  await expectPublicStep(page, 'მგზავრობა');
+  await expect(page.getByRole('alert')).toBeVisible();
+  expect(posts, 'Journey validation must not create an order').toHaveLength(0);
+  await page.getByRole('button', { name: '09:30', exact: true }).click();
+  await continuePublicBooking(page, 'მისამართი');
+  await page.getByRole('button', { name: 'გაგრძელება', exact: true }).click();
+  await expectPublicStep(page, 'მისამართი');
+  await expect(page.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true })).toHaveAttribute('aria-invalid', 'true');
+  expect(posts, 'Address validation must not create an order').toHaveLength(0);
+  await page.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true }).fill(address);
+  await page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true }).selectOption(String(publicConfig.stops[0].id));
+  await continuePublicBooking(page, 'კონტაქტი');
+  await page.getByLabel('სახელი და გვარი', { exact: true }).fill(name);
+  await page.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(`+995${phone}`);
+  await page.getByLabel('ტელეფონის ნომერი', { exact: true }).blur();
+  await page.getByRole('button', { name: 'უკან', exact: true }).click();
+  await expectPublicStep(page, 'მისამართი');
+  await expect(page.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue(address);
+  await expect(page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true })).toHaveValue(String(publicConfig.stops[0].id));
+  await page.getByRole('button', { name: 'უკან', exact: true }).click();
+  await expectPublicStep(page, 'მგზავრობა');
+  await expect(page.getByRole('button', { name: DIRECTION_LABELS['tbilisi-gori'], exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByLabel('მგზავრობის თარიღი', { exact: true })).toHaveValue(day);
+  await expect(page.getByRole('spinbutton', { name: 'ადგილების რაოდენობა', exact: true })).toHaveValue('3');
+  await expect(page.getByRole('button', { name: '09:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await continuePublicBooking(page, 'მისამართი');
+  await continuePublicBooking(page, 'კონტაქტი');
+  await expect(page.getByLabel('სახელი და გვარი', { exact: true })).toHaveValue(name);
+  await expect(page.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue('555 07 41 01');
+  await page.getByLabel('ტელეფონის ნომერი', { exact: true }).fill('123');
+  await page.getByRole('button', { name: 'ჯავშნის გაგზავნა', exact: true }).click();
+  await expectPublicStep(page, 'კონტაქტი');
+  await expect(page.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByRole('alert')).toBeVisible();
+  expect(posts, 'Invalid contact information must not create an order').toHaveLength(0);
+  await page.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(phone);
+  const id = await submitPublicForm(page);
+  expect(posts).toHaveLength(1);
+  const incoming = await adminApi.get('/api/admin/bookings?scope=incoming');
+  expect(incoming.ok()).toBeTruthy();
+  expect((await incoming.json() as { bookings: Booking[] }).bookings.find(booking => booking.id === id)).toMatchObject({
+    name, phone, direction: 'tbilisi-gori', seats: 3, goriAddress: address,
+    requestedDate: day, requestedTime: '09:30', pickupStopId: publicConfig.stops[0].id,
+    status: 'waiting', assignedDate: null, assignedTime: null,
+  });
+});
+
+test('public booking prevents concurrent submits and retries a lost response with the same idempotency key', async ({ page }) => {
+  const name = 'სატესტო დაკარგული პასუხის ხელახალი გაგზავნა';
+  const posts: { key: string | undefined; payload: unknown }[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/bookings' && request.method() === 'POST') {
+      posts.push({ key: request.headers()['idempotency-key'], payload: request.postDataJSON() });
+    }
+  });
+  await fillPublicForm(page, { direction: 'gori-tbilisi', seats: 2, name, date: futureDate(7) });
+  const errorMessage = 'სატესტო პასუხი დაიკარგა — სცადეთ ხელახლა';
+  await page.evaluate(message => {
+    const originalFetch = window.fetch;
+    let attempts = 0;
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    (window as Window & { __releasePublicBookingResponse?: () => void }).__releasePublicBookingResponse = release;
+    window.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      if (url.pathname !== '/api/bookings' || method !== 'POST') return originalFetch.call(window, input, init);
+      const first = ++attempts === 1;
+      const response = await originalFetch.call(window, input, init);
+      if (!first) return response;
+      // The real server has already accepted the request. Hold the response while
+      // checking the submit lock, then model a lost response as a local failure.
+      // Drain its body first so Chromium completes the real network response.
+      await response.arrayBuffer();
+      await hold;
+      return new Response(JSON.stringify({ error: message }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+    };
+  }, errorMessage);
+  const firstResponse = page.waitForResponse(response => response.url().endsWith('/api/bookings') && response.request().method() === 'POST');
+  await page.locator('form').evaluate(form => {
+    for (let attempt = 0; attempt < 2; attempt++) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+  const accepted = await firstResponse;
+  expect(accepted.ok()).toBeTruthy();
+  const firstId = (await accepted.json() as { id: number }).id;
+  await expect(page.locator('form button[type="submit"]')).toBeDisabled();
+  expect(posts, 'Two simultaneous submit events must cause only one in-flight POST').toHaveLength(1);
+  expect(posts[0].key).toMatch(/^[A-Za-z0-9._:-]{8,128}$/);
+  await page.evaluate(() => (window as Window & { __releasePublicBookingResponse?: () => void }).__releasePublicBookingResponse?.());
+  await expect(page.getByRole('alert')).toContainText(errorMessage);
+  await expectPublicStep(page, 'კონტაქტი');
+  await expect(page.getByLabel('სახელი და გვარი', { exact: true })).toHaveValue(name);
+  await expect(page.getByRole('button', { name: 'ჯავშნის გაგზავნა', exact: true })).toBeEnabled();
+  const retriedId = await submitPublicForm(page);
+  expect(retriedId).toBe(firstId);
+  expect(posts).toHaveLength(2);
+  expect(posts[1].key).toBe(posts[0].key);
+  expect(posts[1].payload).toEqual(posts[0].payload);
+  const incoming = await adminApi.get(`/api/admin/bookings?${new URLSearchParams({ scope: 'incoming', search: name })}`);
+  expect(incoming.ok()).toBeTruthy();
+  expect((await incoming.json() as { bookings: Booking[] }).bookings).toEqual([
+    expect.objectContaining({ id: firstId, name, status: 'waiting', seats: 2, phone: '555000123' }),
+  ]);
+});
 
 test('staff login persists across reload and logout closes access', async ({ page }) => {
   await login(page);
@@ -626,17 +773,27 @@ test('public booking stays within a mobile viewport in both directions', async (
   await page.goto('/');
   await page.getByLabel('მგზავრობის თარიღი', { exact: true }).fill(futureDate());
   await expect(page.getByRole('group', { name: 'მგზავრობის დრო', exact: true }).getByRole('button')).toHaveCount(18);
+  async function expectMobileWidth() {
+    const dimensions = await page.evaluate(() => ({ viewport: window.innerWidth, html: document.documentElement.scrollWidth, body: document.body.scrollWidth }));
+    expect(dimensions.html).toBeLessThanOrEqual(dimensions.viewport);
+    expect(dimensions.body).toBeLessThanOrEqual(dimensions.viewport);
+  }
   for (const direction of Object.keys(DIRECTION_LABELS) as Direction[]) {
     await page.getByRole('button', { name: DIRECTION_LABELS[direction], exact: true }).click();
     await expect(page.getByRole('group', { name: 'მგზავრობის დრო', exact: true }).getByRole('button')).toHaveCount(18);
-    const dimensions = await page.evaluate(() => ({
-      viewport: window.innerWidth,
-      html: document.documentElement.scrollWidth,
-      body: document.body.scrollWidth,
-    }));
-    expect(dimensions.html).toBeLessThanOrEqual(dimensions.viewport);
-    expect(dimensions.body).toBeLessThanOrEqual(dimensions.viewport);
+    await expectPublicStep(page, 'მგზავრობა');
+    await expectMobileWidth();
+    await page.getByRole('button', { name: '08:30', exact: true }).click();
+    await continuePublicBooking(page, 'მისამართი');
+    await expectMobileWidth();
+    await page.getByLabel(direction === 'gori-tbilisi' ? 'ჩასხდომის მისამართი გორში' : 'ჩამოსვლის მისამართი გორში', { exact: true }).fill('გორი, მობილური სატესტო მისამართი');
+    if (direction === 'tbilisi-gori') await page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true }).selectOption(String(publicConfig.stops[0].id));
+    await continuePublicBooking(page, 'კონტაქტი');
+    await expectMobileWidth();
     await expect(page.getByRole('button', { name: 'ჯავშნის გაგზავნა', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'უკან', exact: true }).click();
+    await expectPublicStep(page, 'მისამართი');
+    await page.getByRole('button', { name: 'უკან', exact: true }).click();
   }
   await page.getByRole('button', { name: DIRECTION_LABELS['gori-tbilisi'], exact: true }).click();
   await expect(page.getByRole('group', { name: 'მგზავრობის დრო', exact: true }).getByRole('button')).toHaveCount(18);
@@ -955,24 +1112,32 @@ test('public phone entry never looks up or fills trusted passenger details and c
   await page.clock.install();
   await page.goto('/');
   await page.getByRole('button', { name: DIRECTION_LABELS['tbilisi-gori'], exact: true }).click();
+  await page.getByLabel('მგზავრობის თარიღი', { exact: true }).fill(futureDate());
   await expect(page.getByRole('group', { name: 'მგზავრობის დრო', exact: true }).getByRole('button')).toHaveCount(18);
+  await page.getByRole('button', { name: '08:30', exact: true }).click();
+  await continuePublicBooking(page, 'მისამართი');
+  await expect(page.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true })).toHaveValue('');
+  const manualName = 'სატესტო საჯარო განაცხადის სახელი';
+  const manualAddress = 'გორი, საჯარო განაცხადის მისამართი 506';
+  await page.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true }).fill(manualAddress);
+  await page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true }).selectOption(String(publicConfig.stops[0].id));
+  await continuePublicBooking(page, 'კონტაქტი');
   await page.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(`+995 ${phone}`);
   await page.getByLabel('ტელეფონის ნომერი', { exact: true }).blur();
   // Run past the admin lookup debounce to catch accidental reuse on the public form.
   await page.clock.runFor(1_000);
   await expect(page.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue('555 01 05 05');
   await expect(page.getByLabel('სახელი და გვარი', { exact: true })).toHaveValue('');
-  await expect(page.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue('');
-  await expect(page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true })).toHaveValue('');
   expect(profileRequests, 'The public form must not request a protected passenger profile').toEqual([]);
-  const manualName = 'სატესტო საჯარო განაცხადის სახელი';
-  const manualAddress = 'გორი, საჯარო განაცხადის მისამართი 506';
+  await page.getByRole('button', { name: 'უკან', exact: true }).click();
+  await expectPublicStep(page, 'მისამართი');
+  await expect(page.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue(manualAddress);
+  await expect(page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true })).toHaveValue(String(publicConfig.stops[0].id));
+  await continuePublicBooking(page, 'კონტაქტი');
+  await expect(page.getByLabel('სახელი და გვარი', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue('555 01 05 05');
   await page.getByLabel('სახელი და გვარი', { exact: true }).fill(manualName);
-  await page.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true }).fill(manualAddress);
-  await page.getByLabel('ჩასხდომის ადგილი თბილისში', { exact: true }).selectOption(String(publicConfig.stops[0].id));
-  await page.getByLabel('მგზავრობის თარიღი', { exact: true }).fill(futureDate());
-  await expect(page.getByRole('group', { name: 'მგზავრობის დრო', exact: true }).getByRole('button')).toHaveCount(18);
-  await page.getByRole('button', { name: '08:30', exact: true }).click();
   const id = await submitPublicForm(page);
   const incoming = await adminApi.get('/api/admin/bookings?scope=incoming');
   expect(incoming.ok()).toBeTruthy();
