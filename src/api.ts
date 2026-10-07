@@ -30,6 +30,7 @@ export type CallDevice = { id: number; name: string; active: boolean; createdAt:
 export type CallInquiry = {
   id: number; phone: string | null; occurredAt: string; durationSeconds: number;
   deviceName: string; createdAt: string; deletedAt: string | null; bookingId: number | null;
+  phase: 'answered' | 'completed'; passengerProfile: PassengerProfile | null;
 };
 export class ApiError extends Error {
   constructor(message: string, public status: number, public code?: string) { super(message); }

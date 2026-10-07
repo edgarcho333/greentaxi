@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { request, type PassengerProfile } from '../../api';
+import { normalizePhone } from '../../../shared/phone';
 
 export function canonicalPassengerPhone(value: string): string | null {
-  let digits = value.replace(/\D/g, '');
-  if (digits.length >= 11 && digits.startsWith('00')) digits = digits.slice(2);
-  if (digits.length === 9) return `+995${digits}`;
-  if (digits.length >= 9 && digits.length <= 15) return `+${digits}`;
-  return null;
+  return normalizePhone(value);
 }
 
 type Lookup = { phone: string | null; status: 'idle' | 'loading' | 'found' | 'missing' | 'error'; profile: PassengerProfile | null; error: string };

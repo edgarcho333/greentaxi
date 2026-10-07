@@ -7,13 +7,13 @@ import type { Server } from 'node:http';
 import { createApp } from '../server/index.js';
 import { createDatabase, postgresPoolOptions } from '../server/database.js';
 import pg from 'pg';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 const DAY = '2030-01-02';
 const PASSWORD = 'test-password-long';
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function fixture(options: { production?: boolean; setupToken?: string; now?: () => Date; setup?: boolean } = {}) {
+async function fixture(options: { production?: boolean; setupToken?: string; now?: () => Date; setup?: boolean; deferPhoneMigration?: boolean } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'greentaxi-api-'));
   const path = join(directory, 'test.sqlite');
   let schema: string | undefined;
@@ -30,7 +30,7 @@ async function fixture(options: { production?: boolean; setupToken?: string; now
   // The injected SQLite database lets transport-security tests exercise production cookies
   // without permitting a production deployment to silently fall back to a local file.
   const database = await createDatabase({ dbPath: path, databaseUrl, production: false });
-  const service = await createApp({ database, now: () => new Date('2030-01-01T00:00:00Z'), ...options });
+  const service = await createApp({ database, now: () => new Date('2030-01-01T00:00:00Z'), deferPhoneMigration: false, ...options });
   const server = await new Promise<Server>(resolve => {
     const listener = service.app.listen(0, '127.0.0.1', () => resolve(listener));
   });
@@ -80,7 +80,7 @@ test('a public request remains unassigned until confirmation and repeated confir
   assert.equal(waiting.status, 'waiting');
   assert.equal(waiting.assignedDate, null);
   assert.equal(waiting.requestedTime, '08:30');
-  assert.equal(waiting.phone, '+995599123456');
+  assert.equal(waiting.phone, '599123456');
   const selected = { date: DAY, time: '09:30' };
   const confirmed = await successful(f, `/admin/bookings/${id}/confirm`, 'POST', selected);
   assert.equal(confirmed.status, 'confirmed');
@@ -337,7 +337,7 @@ test('persistent database data survives reopening and analytics and passenger qu
   } finally { await fresh.close(); }
 });
 
-function callEvent(overrides: Record<string, unknown> = {}) {
+function callEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return { eventId: 'android-call-1001', phone: '+995599123456', occurredAt: '2030-01-01T10:20:30+04:00', durationSeconds: 15, kind: 'incoming', ...overrides };
 }
 
@@ -429,7 +429,7 @@ test('only answered incoming calls become inquiries, including subsecond calls; 
     assert.equal(other.status, 201);
     const calls = (await successful(fresh, '/admin/calls')).calls;
     assert.equal(calls.length, 3);
-    assert.equal(calls.find((row: any) => row.id === created.data.id).phone, '+995599123456');
+    assert.equal(calls.find((row: any) => row.id === created.data.id).phone, '599123456');
     assert.equal(calls.find((row: any) => row.id === created.data.id).durationSeconds, 0);
     assert.equal(calls.find((row: any) => row.id === created.data.id).occurredAt, '2030-01-01T06:20:30.000Z');
   } finally { await fresh.close(); }
@@ -473,7 +473,7 @@ test('call deletion retains metadata, blocks conversion until restoration, and n
     const id = received.data.id;
     const deleted = await successful(fresh, `/admin/calls/${id}/delete`, 'POST', {});
     assert.ok(deleted.deletedAt);
-    assert.equal(deleted.phone, '+995599123456');
+    assert.equal(deleted.phone, '599123456');
     assert.equal(deleted.durationSeconds, 15);
     assert.equal((await successful(fresh, '/admin/calls')).calls.length, 0);
     assert.equal((await successful(fresh, '/admin/calls?scope=deleted')).calls[0].id, id);
@@ -503,15 +503,193 @@ test('Android ingestion validates metadata and accepts explicitly supplied offli
   } finally { await fresh.close(); }
 });
 
+test('an answered call appears before completion, and late completion preserves its converted booking, profile, and deletion', async () => {
+  const fresh = await fixture();
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'მიმდინარე ზარის ტესტი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const answered = callEvent({ phase: 'answered', durationSeconds: 0 });
+    const received = await fresh.request('/integrations/android/calls', 'POST', answered, bearer, false);
+    assert.equal(received.status, 201);
+    const inquiryId = received.data.id;
+    let inquiry = (await successful(fresh, '/admin/calls')).calls[0];
+    assert.equal(inquiry.phase, 'answered');
+    assert.equal(inquiry.durationSeconds, 0);
+    assert.equal(inquiry.passengerProfile, null);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', answered, bearer, false)).data.id, inquiryId);
+    const converted = await successful(fresh, `/admin/calls/${inquiryId}/convert`, 'POST', input({ name: 'ოპერატორის მგზავრი', goriAddress: 'გორი, ოპერატორის მისამართი' }));
+    const deleted = await successful(fresh, `/admin/calls/${inquiryId}/delete`, 'POST', {});
+    const profileBefore = await successful(fresh, '/admin/passengers/profile?phone=599123456');
+    const completion = callEvent({ phase: 'completed', durationSeconds: 35 });
+    const results = await Promise.all(Array.from({ length: 4 }, () => fresh.request('/integrations/android/calls', 'POST', completion, bearer, false)));
+    assert.ok(results.every(result => result.status === 200 && result.data.id === inquiryId && result.data.duplicate === true));
+    inquiry = (await successful(fresh, '/admin/calls?scope=deleted')).calls[0];
+    assert.equal(inquiry.phase, 'completed');
+    assert.equal(inquiry.durationSeconds, 35);
+    assert.equal(inquiry.deletedAt, deleted.deletedAt);
+    assert.equal(inquiry.bookingId, converted.id);
+    assert.deepEqual((await successful(fresh, '/admin/bookings?scope=scheduled')).bookings[0], converted);
+    assert.deepEqual(await successful(fresh, '/admin/passengers/profile?phone=599123456'), profileBefore);
+    assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='call.complete'").get())?.count, 1);
+    const delayed = await fresh.request('/integrations/android/calls', 'POST', answered, bearer, false);
+    assert.equal(delayed.status, 200);
+    assert.equal((await successful(fresh, '/admin/calls?scope=deleted')).calls[0].durationSeconds, 35);
+  } finally { await fresh.close(); }
+});
+
+test('call phases handle hidden-number enrichment and out-of-order retries while rejecting identity and duration conflicts', async () => {
+  const fresh = await fixture();
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'ზარის ეტაპების ტესტი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    for (const phase of [null, 'ringing', 1]) {
+      assert.equal((await fresh.request('/integrations/android/calls', 'POST', callEvent({ phase }), bearer, false)).status, 400);
+    }
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', callEvent({ phase: 'answered', durationSeconds: 1 }), bearer, false)).status, 400);
+    const answered = callEvent({ phone: null, phase: 'answered', durationSeconds: 0 });
+    const created = await fresh.request('/integrations/android/calls', 'POST', answered, bearer, false);
+    const completed = callEvent({ phone: '599123456', phase: 'completed', durationSeconds: 10 });
+    const ended = await fresh.request('/integrations/android/calls', 'POST', completed, bearer, false);
+    assert.equal(ended.status, 200);
+    assert.equal(ended.data.id, created.data.id);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', answered, bearer, false)).status, 200);
+    for (const overrides of [{ durationSeconds: 11 }, { phone: null }, { phone: '599123457' }, { occurredAt: '2030-01-01T10:20:31+04:00' }]) {
+      const conflict = await fresh.request('/integrations/android/calls', 'POST', { ...completed, ...overrides }, bearer, false);
+      assert.equal(conflict.status, 409);
+      assert.equal(conflict.data.code, 'IDEMPOTENCY_CONFLICT');
+    }
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...answered, phone: '599123457' }, bearer, false)).status, 409);
+    const { phase: _completedPhase, ...legacyCompletion } = completed;
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', legacyCompletion, bearer, false)).status, 200);
+    const { phase: _answeredPhase, ...legacyAnswer } = answered;
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', legacyAnswer, bearer, false)).status, 409);
+    const completedFirst = callEvent({ eventId: 'completed-first', phase: 'completed', durationSeconds: 20 });
+    const first = await fresh.request('/integrations/android/calls', 'POST', completedFirst, bearer, false);
+    const delayed = await fresh.request('/integrations/android/calls', 'POST', { ...completedFirst, phase: 'answered', durationSeconds: 0 }, bearer, false);
+    assert.equal(delayed.status, 200);
+    assert.equal(delayed.data.id, first.data.id);
+    const zeroAnswer = callEvent({ eventId: 'zero-duration-completion', phase: 'answered', durationSeconds: 0 });
+    const zero = await fresh.request('/integrations/android/calls', 'POST', zeroAnswer, bearer, false);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...zeroAnswer, phase: 'completed' }, bearer, false)).status, 200);
+    const calls = (await successful(fresh, '/admin/calls')).calls;
+    assert.equal(calls.find((call: any) => call.id === zero.data.id).phase, 'completed');
+    assert.equal(calls.find((call: any) => call.id === first.data.id).durationSeconds, 20);
+    const raceAnswer = callEvent({ eventId: 'competing-completions', phase: 'answered', durationSeconds: 0 });
+    await fresh.request('/integrations/android/calls', 'POST', raceAnswer, bearer, false);
+    const raced = await Promise.all([12, 13].map(durationSeconds => fresh.request('/integrations/android/calls', 'POST', { ...raceAnswer, phase: 'completed', durationSeconds }, bearer, false)));
+    assert.deepEqual(raced.map(result => result.status).sort(), [200, 409]);
+  } finally { await fresh.close(); }
+});
+
+test('incoming calls enrich only from trusted profiles, read legacy aliases, and search national or international phones and names', async () => {
+  const fresh = await fixture({ deferPhoneMigration: true });
+  try {
+    const stop = (await successful(fresh, '/admin/stops')).stops[0];
+    const booking = await successful(fresh, '/admin/bookings', 'POST', input({ phone: '568694879', name: 'ცნობილი მგზავრი', direction: 'tbilisi-gori', pickupStopId: stop.id }));
+    await successful(fresh, `/admin/bookings/${booking.id}/delete`, 'POST', {});
+    await fresh.db.prepare('UPDATE passenger_profiles SET phone=? WHERE phone=?').run('+995568694879', '568694879');
+    await fresh.request('/bookings', 'POST', input({ phone: '568694879', name: 'შეუმოწმებელი სახელი' }), {}, false);
+    await fresh.request('/bookings', 'POST', input({ phone: '568694880', name: 'მხოლოდ საჯარო მგზავრი' }), {}, false);
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'პროფილის ზარის ტესტი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    for (const [index, number] of ['+995568694879', '568694880', null].entries()) {
+      await fresh.request('/integrations/android/calls', 'POST', callEvent({ eventId: `profile-call-${index}`, phone: number, phase: 'answered', durationSeconds: 0 }), bearer, false);
+    }
+    const calls = (await successful(fresh, '/admin/calls')).calls;
+    const known = calls.find((call: any) => call.phone === '568694879');
+    assert.equal(known.passengerProfile.name, 'ცნობილი მგზავრი');
+    assert.equal(known.passengerProfile.pickupStopId, stop.id);
+    assert.equal(calls.find((call: any) => call.phone === '568694880').passengerProfile, null);
+    assert.equal(calls.find((call: any) => call.phone === null).passengerProfile, null);
+    assert.equal((await fresh.request('/admin/calls', 'GET', undefined, {}, false)).status, 401);
+    for (const search of ['568694879', '+995568694879', '995568694879', '00995568694879', '568 69 48 79', 'ცნობილი მგზავრი']) {
+      const found = await successful(fresh, '/admin/calls?search=' + encodeURIComponent(search));
+      assert.equal(found.calls.length, 1);
+      assert.equal(found.calls[0].id, known.id);
+    }
+    await successful(fresh, `/admin/stops/${stop.id}`, 'PATCH', { active: false });
+    const inactive = (await successful(fresh, '/admin/calls?search=568694879')).calls[0].passengerProfile;
+    assert.equal(inactive.pickupStopId, null);
+    assert.equal(inactive.pickupStopName, null);
+    assert.equal(inactive.name, 'ცნობილი მგზავრი');
+  } finally { await fresh.close(); }
+});
+
+test('deferred bridge reads aliases and the later national migration preserves history, hashes, cached retries, and profile collisions', async () => {
+  const fresh = await fixture({ deferPhoneMigration: true });
+  const reopened: Awaited<ReturnType<typeof createApp>>[] = [];
+  try {
+    assert.ok(await fresh.db.prepare("SELECT value FROM settings WHERE key='passengerProfilesBackfilled'").get());
+    assert.equal(await fresh.db.prepare("SELECT value FROM settings WHERE key='georgianPhoneStorageV2'").get(), undefined);
+    const selected = (await successful(fresh, '/admin/stops')).stops[0];
+    const originalInput = input({ phone: '+995568694879', direction: 'tbilisi-gori', pickupStopId: selected.id });
+    const key = 'legacy-booking-retry';
+    const original = await successful(fresh, '/admin/bookings', 'POST', originalInput, { 'Idempotency-Key': key });
+    await successful(fresh, `/admin/bookings/${original.id}/delete`, 'POST', {});
+    const waiting = await fresh.request('/bookings', 'POST', input({ phone: '568694879', name: 'შეუმოწმებელი საჯარო სახელი' }), {}, false);
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'მიგრაციის სატესტო ტელეფონი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const legacyEvent = callEvent({ phone: '+995568694879' });
+    const received = await fresh.request('/integrations/android/calls', 'POST', legacyEvent, bearer, false);
+    const hashBefore = (await fresh.db.prepare('SELECT request_hash FROM call_inquiries WHERE id=?').get(received.data.id))!.request_hash;
+    const expectedLegacyHash = createHash('sha256').update(JSON.stringify({ phone: '+995568694879', occurredAt: '2030-01-01T06:20:30.000Z', durationSeconds: 15, kind: 'incoming' })).digest('hex');
+    assert.equal(hashBefore, expectedLegacyHash);
+    await fresh.db.prepare('UPDATE bookings SET phone=? WHERE id=?').run('+995568694879', original.id);
+    await fresh.db.prepare('UPDATE bookings SET phone=? WHERE id=?').run('995568694879', waiting.data.id);
+    await fresh.db.prepare('UPDATE call_inquiries SET phone=? WHERE id=?').run('+995568694879', received.data.id);
+    await fresh.db.prepare('INSERT INTO passenger_profiles(phone,name,gori_address,pickup_stop_id,pickup_stop_name,updated_at) VALUES (?,?,?,?,?,?)')
+      .run('+995568694879', 'უახლესი სანდო სახელი', 'გორი, უახლესი სანდო მისამართი', null, null, '2030-01-01T00:01:00Z');
+    await fresh.db.prepare('UPDATE idempotency SET response=? WHERE key=?').run(JSON.stringify({ ...original, phone: '+995568694879' }), key);
+    const recordBefore = await fresh.db.prepare('SELECT * FROM bookings WHERE id=?').get(original.id);
+    const auditBefore = await fresh.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get();
+    const bridge = await successful(fresh, '/admin/passengers/profile?phone=568694879');
+    assert.equal(bridge.profile.phone, '568694879');
+    assert.equal(bridge.profile.name, 'უახლესი სანდო სახელი');
+    assert.equal(bridge.profile.pickupStopId, selected.id);
+    assert.equal((await successful(fresh, '/admin/passengers?search=' + encodeURIComponent('+995568694879'))).passengers.length, 1);
+    const start = () => createApp({ dbPath: fresh.path, databaseUrl: fresh.databaseUrl, deferPhoneMigration: false });
+    if (fresh.databaseUrl) reopened.push(...await Promise.all([start(), start()]));
+    else reopened.push(await start());
+    assert.ok(await fresh.db.prepare("SELECT value FROM settings WHERE key='georgianPhoneStorageV2'").get());
+    const recordAfter = await fresh.db.prepare('SELECT * FROM bookings WHERE id=?').get(original.id);
+    assert.deepEqual({ ...recordAfter }, { ...recordBefore, phone: '568694879' });
+    assert.equal((await fresh.db.prepare('SELECT request_hash,phone FROM call_inquiries WHERE id=?').get(received.data.id))?.request_hash, hashBefore);
+    assert.equal((await fresh.db.prepare('SELECT request_hash,phone FROM call_inquiries WHERE id=?').get(received.data.id))?.phone, '568694879');
+    const profiles = await fresh.db.prepare('SELECT * FROM passenger_profiles').all();
+    assert.equal(profiles.length, 1);
+    assert.equal(profiles[0].phone, '568694879');
+    assert.equal(profiles[0].name, 'უახლესი სანდო სახელი');
+    assert.equal(profiles[0].pickup_stop_id, selected.id);
+    assert.deepEqual(await fresh.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get(), auditBefore);
+    for (const number of ['+995568694879', '568694879']) {
+      const retry = await fresh.request('/integrations/android/calls', 'POST', { ...legacyEvent, phone: number }, bearer, false);
+      assert.equal(retry.status, 200);
+      assert.equal(retry.data.id, received.data.id);
+    }
+    const cached = await successful(fresh, '/admin/bookings', 'POST', originalInput, { 'Idempotency-Key': key });
+    assert.equal(cached.id, original.id);
+    assert.equal(cached.phone, '568694879');
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...legacyEvent, durationSeconds: 16 }, bearer, false)).status, 409);
+    const second = await start();
+    reopened.push(second);
+    assert.deepEqual(await fresh.db.prepare('SELECT * FROM passenger_profiles').all(), profiles);
+    const foreign = await successful(fresh, '/admin/bookings', 'POST', input({ phone: '+447911123456' }));
+    assert.equal(foreign.phone, '+447911123456');
+  } finally {
+    await Promise.all(reopened.map(service => service.close()));
+    await fresh.close();
+  }
+});
+
 test('trusted passenger profiles use one Georgian canonical phone and persist through deletion and database restart', async () => {
   const fresh = await fixture();
   try {
     assert.deepEqual(await successful(fresh, '/admin/passengers/profile?phone=599112233'), { profile: null });
     const created = await successful(fresh, '/admin/bookings', 'POST', input({ phone: '995599112233', name: 'განმეორებითი მგზავრი', goriAddress: 'გორი, შენახული მისამართი 4' }));
-    assert.equal(created.phone, '+995599112233');
+    assert.equal(created.phone, '599112233');
     for (const value of ['599112233', '995599112233', '+995599112233', '599 11 22 33', '00995599112233']) {
       const result = await successful(fresh, '/admin/passengers/profile?phone=' + encodeURIComponent(value));
-      assert.equal(result.profile.phone, '+995599112233');
+      assert.equal(result.profile.phone, '599112233');
       assert.equal(result.profile.name, 'განმეორებითი მგზავრი');
       assert.equal(result.profile.goriAddress, 'გორი, შენახული მისამართი 4');
       assert.equal(result.profile.pickupStopId, null);
@@ -523,7 +701,7 @@ test('trusted passenger profiles use one Georgian canonical phone and persist th
     assert.equal((await successful(fresh, '/admin/passengers/profile?phone=599112233')).profile.name, 'განმეორებითი მგზავრი');
     const reopened = await createApp({ dbPath: fresh.path, databaseUrl: fresh.databaseUrl });
     try {
-      const persisted = await reopened.db.prepare('SELECT * FROM passenger_profiles WHERE phone=?').get('+995599112233');
+      const persisted = await reopened.db.prepare('SELECT * FROM passenger_profiles WHERE phone=?').get('599112233');
       assert.equal(persisted?.gori_address, 'გორი, შენახული მისამართი 4');
       assert.equal(persisted?.name, 'განმეორებითი მგზავრი');
     } finally { await reopened.close(); }
@@ -581,13 +759,14 @@ test('legacy confirmed history backfills canonical profiles once; unconfirmed hi
     await fresh.request('/bookings', 'POST', input({ phone: '599444556', name: 'დაუდასტურებელი მგზავრი' }), {}, false);
     await fresh.db.prepare('DELETE FROM passenger_profiles').run();
     await fresh.db.prepare("DELETE FROM settings WHERE key='passengerProfilesBackfilled'").run();
-    await fresh.db.prepare('UPDATE bookings SET phone=? WHERE phone=?').run('995599444555', '+995599444555');
+    await fresh.db.prepare("DELETE FROM settings WHERE key='georgianPhoneStorageV2'").run();
+    await fresh.db.prepare('UPDATE bookings SET phone=? WHERE phone=?').run('995599444555', '599444555');
     const reopened = await createApp({ dbPath: fresh.path, databaseUrl: fresh.databaseUrl });
     try {
-      const trusted = await reopened.db.prepare('SELECT * FROM passenger_profiles WHERE phone=?').get('+995599444555');
+      const trusted = await reopened.db.prepare('SELECT * FROM passenger_profiles WHERE phone=?').get('599444555');
       assert.equal(trusted?.name, 'ისტორიული მგზავრი');
-      assert.equal(await reopened.db.prepare('SELECT * FROM passenger_profiles WHERE phone=?').get('+995599444556'), undefined);
-      assert.equal((await reopened.db.prepare('SELECT phone FROM bookings WHERE name=?').get('ისტორიული მგზავრი'))?.phone, '+995599444555');
+      assert.equal(await reopened.db.prepare('SELECT * FROM passenger_profiles WHERE phone=?').get('599444556'), undefined);
+      assert.equal((await reopened.db.prepare('SELECT phone FROM bookings WHERE name=?').get('ისტორიული მგზავრი'))?.phone, '599444555');
     } finally { await reopened.close(); }
   } finally { await fresh.close(); }
 });
@@ -626,8 +805,8 @@ test('concurrent confirmations and Android conversions update one profile and cr
     }));
     assert.ok(converted.every(response => response.status === 200));
     assert.equal(new Set(converted.map(response => response.data.id)).size, 1);
-    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM bookings WHERE phone=?').get('+995599555667'))?.count, 1);
-    assert.equal((await successful(fresh, '/admin/passengers/profile?phone=599555667')).profile.phone, '+995599555667');
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM bookings WHERE phone=?').get('599555667'))?.count, 1);
+    assert.equal((await successful(fresh, '/admin/passengers/profile?phone=599555667')).profile.phone, '599555667');
     assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='call.convert'").get())?.count, 1);
   } finally {
     if (secondServer) await new Promise<void>((resolve, reject) => secondServer!.close(error => error ? reject(error) : resolve()));

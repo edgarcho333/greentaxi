@@ -3,6 +3,8 @@ import { createDatabase, type Database } from './database.js';
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { Analytics, Booking, CallDevice, CallInquiry, Direction, PassengerProfile, Schedule, Slot, User } from '../src/api.js';
+import { normalizePhone, legacyPhoneKey } from '../shared/phone.js';
+import { migratePhoneStorage, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from './passenger-profiles.js';
 
 const scrypt = promisify(scryptCallback);
 const DIRECTIONS: Direction[] = ['gori-tbilisi', 'tbilisi-gori'];
@@ -10,7 +12,7 @@ const SESSION_LIFETIME = 7 * 24 * 60 * 60 * 1000;
 const SESSION_COOKIE = 'greentaxi_session';
 type Row = Record<string, any>;
 type ContextRequest = Request & { employee?: User };
-type Options = { database?: Database; databaseUrl?: string; dbPath?: string; production?: boolean; setupToken?: string; now?: () => Date };
+type Options = { database?: Database; databaseUrl?: string; dbPath?: string; production?: boolean; setupToken?: string; now?: () => Date; deferPhoneMigration?: boolean };
 
 class HttpError extends Error {
   constructor(public status: number, message: string, public code?: string) { super(message); }
@@ -45,11 +47,9 @@ function numberId(value: unknown): number {
 }
 function phone(value: unknown): string {
   const input = text(value, 'ტელეფონი', 9, 30);
-  if (!/^[+\d\s()-]+$/.test(input)) reject(400, 'მიუთითეთ სწორი ტელეფონის ნომერი.', 'VALIDATION');
-  let digits = input.replace(/\D/g, '');
-  if (digits.startsWith('00') && digits.length >= 11) digits = digits.slice(2);
-  if (digits.length < 9 || digits.length > 15) reject(400, 'მიუთითეთ სწორი ტელეფონის ნომერი.', 'VALIDATION');
-  return digits.length === 9 ? `+995${digits}` : `+${digits}`;
+  const normalized = normalizePhone(input);
+  if (!normalized) reject(400, 'მიუთითეთ სწორი ტელეფონის ნომერი.', 'VALIDATION');
+  return normalized;
 }
 function seatCount(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 4) reject(400, 'ადგილების რაოდენობა უნდა იყოს 1-დან 4-მდე.', 'VALIDATION');
@@ -86,8 +86,8 @@ function stop(row: Row) { return { id: row.id, name: row.name, address: row.addr
 function callDevice(row: Row): CallDevice {
   return { id: row.id, name: row.name, active: Boolean(row.active), createdAt: row.created_at, lastSeenAt: row.last_seen_at };
 }
-function callInquiry(row: Row): CallInquiry {
-  return { id: row.id, phone: row.phone, occurredAt: row.occurred_at, durationSeconds: row.duration_seconds, deviceName: row.device_name, createdAt: row.created_at, deletedAt: row.deleted_at, bookingId: row.booking_id };
+function callInquiry(row: Row, passengerProfile: PassengerProfile | null = null): CallInquiry {
+  return { id: row.id, phone: row.phone === null ? null : normalizePhone(row.phone) ?? row.phone, occurredAt: row.occurred_at, durationSeconds: row.duration_seconds, phase: row.phase ?? 'completed', passengerProfile, deviceName: row.device_name, createdAt: row.created_at, deletedAt: row.deleted_at, bookingId: row.booking_id };
 }
 function occurredAt(value: unknown): string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value)) reject(400, 'მიუთითეთ ზარის სწორი დრო საათობრივი სარტყლით.', 'VALIDATION');
@@ -98,7 +98,7 @@ function occurredAt(value: unknown): string {
 }
 function booking(row: Row): Booking {
   return {
-    id: row.id, name: row.name, phone: row.phone, seats: row.seats, direction: row.direction,
+    id: row.id, name: row.name, phone: normalizePhone(row.phone) ?? row.phone, seats: row.seats, direction: row.direction,
     goriAddress: row.gori_address, pickupStopId: row.pickup_stop_id, pickupStopName: row.pickup_stop_name,
     didubeName: row.didube_name, didubeAddress: row.didube_address,
     requestedDate: row.requested_date, requestedTime: row.requested_time,
@@ -231,24 +231,10 @@ export async function createApp(options: Options = {}) {
     return { direction: d, name, phone: number, seats, goriAddress: address, pickupStopId: stopId, pickupStopName: stopName };
   }
   async function saveProfile(row: Row) {
-    if (row.status !== 'confirmed') return;
-    const canonical = phone(row.phone);
-    const selected = row.pickup_stop_id ? await db.prepare('SELECT id,name FROM stops WHERE id=? AND active=1').get(row.pickup_stop_id) : undefined;
-    const previous = await db.prepare('SELECT passenger_profiles.*,stops.active AS stop_active FROM passenger_profiles LEFT JOIN stops ON stops.id=passenger_profiles.pickup_stop_id WHERE phone=?').get(canonical);
-    const selectedId = selected?.id ?? (previous?.stop_active ? previous.pickup_stop_id : null);
-    const selectedName = selected?.name ?? (previous?.stop_active ? previous.pickup_stop_name : null);
-    await db.prepare(`INSERT INTO passenger_profiles(phone,name,gori_address,pickup_stop_id,pickup_stop_name,updated_at) VALUES (?,?,?,?,?,?)
-      ON CONFLICT(phone) DO UPDATE SET name=excluded.name,gori_address=excluded.gori_address,
-      pickup_stop_id=excluded.pickup_stop_id,pickup_stop_name=excluded.pickup_stop_name,updated_at=excluded.updated_at
-      WHERE excluded.updated_at>=passenger_profiles.updated_at`).run(canonical, row.name, row.gori_address, selectedId, selectedName, row.updated_at);
+    await savePassengerProfile(db, row);
   }
   async function profile(number: string): Promise<PassengerProfile | null> {
-    const row = await db.prepare(`SELECT passenger_profiles.*,stops.active AS stop_active,stops.name AS current_stop_name
-      FROM passenger_profiles LEFT JOIN stops ON stops.id=passenger_profiles.pickup_stop_id WHERE phone=?`).get(number);
-    if (!row) return null;
-    return { phone: row.phone, name: row.name, goriAddress: row.gori_address,
-      pickupStopId: row.stop_active ? row.pickup_stop_id : null, pickupStopName: row.stop_active ? row.current_stop_name : null,
-      updatedAt: row.updated_at };
+    return readPassengerProfile(db, number);
   }
   async function createBooking(body: Row, employee?: User, source: 'public' | 'employee' | 'android' = employee ? 'employee' : 'public') {
     const input = (await inputBooking(body));
@@ -280,7 +266,10 @@ export async function createApp(options: Options = {}) {
       (await db.prepare('INSERT INTO idempotency(scope,key,request_hash,status,response,created_at) VALUES (?,?,?,?,?,?)').run(scope, key, requestHash, status, JSON.stringify(response), now().getTime()));
       return { status, response };
     });
-    res.status(output.status).json(output.response);
+    const response = output.response;
+    // Preserve the original raw-body idempotency hash while presenting legacy booking snapshots consistently.
+    res.status(output.status).json(response && typeof response === 'object' && 'phone' in response && typeof response.phone === 'string'
+      ? { ...response, phone: normalizePhone(response.phone) ?? response.phone } : response);
   }
 
   app.get('/api/auth/session', async (req, res) => {
@@ -362,15 +351,37 @@ export async function createApp(options: Options = {}) {
     const timestamp = occurredAt(req.body.occurredAt);
     const duration = req.body.durationSeconds;
     if (typeof duration !== 'number' || !Number.isSafeInteger(duration) || duration < 0) reject(400, 'ზარის ხანგრძლივობა არასწორია.', 'VALIDATION');
-    const hash = digest(JSON.stringify({ phone: caller, occurredAt: timestamp, durationSeconds: duration, kind }));
+    const explicitPhase = req.body.phase !== undefined;
+    const phase = explicitPhase ? req.body.phase : 'completed';
+    if (!['answered', 'completed'].includes(phase) || (phase === 'answered' && duration !== 0)) reject(400, 'ზარის ეტაპი არასწორია.', 'VALIDATION');
+    // The legacy E164 identity keeps retries from existing Android installations valid after national-number migration.
+    const hash = digest(JSON.stringify({ phone: caller === null ? null : legacyPhoneKey(caller), occurredAt: timestamp, durationSeconds: duration, kind }));
     const result = await transaction(async () => {
       (await db.prepare('UPDATE call_devices SET last_seen_at=? WHERE id=?').run(now().toISOString(), device.id));
-      const existing = (await db.prepare('SELECT id,request_hash FROM call_inquiries WHERE device_id=? AND event_id=?').get(device.id, eventId)) as Row | undefined;
+      const existing = (await db.prepare('SELECT * FROM call_inquiries WHERE device_id=? AND event_id=?').get(device.id, eventId)) as Row | undefined;
       if (existing) {
-        if (existing.request_hash !== hash) reject(409, 'ზარის იდენტიფიკატორი უკვე გამოყენებულია სხვა მონაცემებით.', 'IDEMPOTENCY_CONFLICT');
+        const conflict = () => reject(409, 'ზარის იდენტიფიკატორი უკვე გამოყენებულია სხვა მონაცემებით.', 'IDEMPOTENCY_CONFLICT');
+        const previousPhone = existing.phone === null ? null : normalizePhone(existing.phone) ?? existing.phone;
+        const sameIdentity = previousPhone === caller && existing.occurred_at === timestamp;
+        if (!explicitPhase) {
+          // Payloads from old applications retain strict idempotency, without permitting a phase transition.
+          if (existing.request_hash !== hash) conflict();
+        } else if (phase === 'answered') {
+          if (existing.phase === 'answered') {
+            if (existing.request_hash !== hash || !sameIdentity) conflict();
+          } else if (existing.answered_hash ? existing.answered_hash !== hash : !sameIdentity) conflict();
+          // A delayed answered event never downgrades a completed call or its duration/number.
+        } else if (existing.phase === 'completed') {
+          if (existing.request_hash !== hash) conflict();
+        } else {
+          if (existing.occurred_at !== timestamp || (previousPhone !== null && previousPhone !== caller)) conflict();
+          await db.prepare("UPDATE call_inquiries SET phone=?,duration_seconds=?,phase='completed',request_hash=? WHERE id=?")
+            .run(caller, duration, hash, existing.id);
+          await audit('call.complete', undefined, undefined, { callId: existing.id, deviceId: device.id });
+        }
         return { id: existing.id as number, duplicate: true };
       }
-      const created = (await db.prepare('INSERT INTO call_inquiries(device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at) VALUES (?,?,?,?,?,?,?)').run(device.id, eventId, hash, caller, timestamp, duration, now().toISOString()));
+      const created = (await db.prepare('INSERT INTO call_inquiries(device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at,phase,answered_hash) VALUES (?,?,?,?,?,?,?,?,?)').run(device.id, eventId, hash, caller, timestamp, duration, now().toISOString(), phase, phase === 'answered' ? hash : null));
       const id = Number(created.lastInsertRowid);
       (await audit('call.receive', undefined, undefined, { callId: id, deviceId: device.id }));
       return { id, duplicate: false };
@@ -388,6 +399,10 @@ export async function createApp(options: Options = {}) {
     const row = (await db.prepare('SELECT call_inquiries.*,call_devices.name AS device_name FROM call_inquiries JOIN call_devices ON call_devices.id=call_inquiries.device_id WHERE call_inquiries.id=?').get(id)) as Row | undefined;
     if (!row) reject(404, 'ზარი ვერ მოიძებნა.', 'NOT_FOUND');
     return row;
+  }
+  async function enrichedCalls(rows: Row[]): Promise<CallInquiry[]> {
+    const profiles = await readPassengerProfiles(db, rows.flatMap(row => row.phone === null ? [] : [row.phone]));
+    return rows.map(row => callInquiry(row, row.phone === null ? null : profiles.get(normalizePhone(row.phone) ?? row.phone) ?? null));
   }
   app.get('/api/admin/devices', async (_req, res) => {
     res.json({ devices: ((await db.prepare('SELECT id,name,active,created_at,last_seen_at FROM call_devices ORDER BY id DESC').all()) as Row[]).map(callDevice) });
@@ -420,14 +435,16 @@ export async function createApp(options: Options = {}) {
     const conditions = [scope === 'deleted' ? 'call_inquiries.deleted_at IS NOT NULL' : 'call_inquiries.deleted_at IS NULL'];
     if (scope === 'incoming') conditions.push('booking_id IS NULL');
     if (scope === 'converted') conditions.push('booking_id IS NOT NULL');
-    const values: string[] = [];
+    const rows = (await db.prepare(`SELECT call_inquiries.*,call_devices.name AS device_name FROM call_inquiries JOIN call_devices ON call_devices.id=call_inquiries.device_id WHERE ${conditions.join(' AND ')} ORDER BY occurred_at DESC,call_inquiries.id DESC`).all()) as Row[];
+    let calls = await enrichedCalls(rows);
     if (req.query.search) {
-      const search = text(req.query.search, 'ძიება', 1, 100).replace(/[\\%_]/g, character => `\\${character}`);
-      conditions.push("(phone LIKE ? ESCAPE '\\' OR call_devices.name LIKE ? ESCAPE '\\')");
-      values.push(`%${search.replace(/[^\d]/g, '') || search}%`, `%${search}%`);
+      const search = text(req.query.search, 'ძიება', 1, 100).toLocaleLowerCase('ka-GE');
+      const phoneSearch = normalizePhone(search) ?? search.replace(/\D/g, '');
+      calls = calls.filter(call => Boolean(phoneSearch && call.phone?.includes(phoneSearch))
+        || call.deviceName.toLocaleLowerCase('ka-GE').includes(search)
+        || Boolean(call.passengerProfile?.name.toLocaleLowerCase('ka-GE').includes(search)));
     }
-    const rows = (await db.prepare(`SELECT call_inquiries.*,call_devices.name AS device_name FROM call_inquiries JOIN call_devices ON call_devices.id=call_inquiries.device_id WHERE ${conditions.join(' AND ')} ORDER BY occurred_at DESC,call_inquiries.id DESC`).all(...values)) as Row[];
-    res.json({ calls: rows.map(callInquiry) });
+    res.json({ calls });
   });
   app.post('/api/admin/calls/:id/convert', async (req: ContextRequest, res) => {
     const result = await transaction(async () => {
@@ -448,7 +465,7 @@ export async function createApp(options: Options = {}) {
         (await db.prepare('UPDATE call_inquiries SET deleted_at=? WHERE id=?').run(now().toISOString(), inquiry.id));
         (await audit('call.delete', req.employee, inquiry.booking_id ?? undefined, { callId: inquiry.id }));
       }
-      return callInquiry((await getCall(inquiry.id)));
+      return (await enrichedCalls([await getCall(inquiry.id)]))[0];
     });
     res.json(result);
   });
@@ -459,7 +476,7 @@ export async function createApp(options: Options = {}) {
         (await db.prepare('UPDATE call_inquiries SET deleted_at=NULL WHERE id=?').run(inquiry.id));
         (await audit('call.restore', req.employee, inquiry.booking_id ?? undefined, { callId: inquiry.id }));
       }
-      return callInquiry((await getCall(inquiry.id)));
+      return (await enrichedCalls([await getCall(inquiry.id)]))[0];
     });
     res.json(result);
   });
@@ -475,7 +492,7 @@ export async function createApp(options: Options = {}) {
     if (req.query.time) { conditions.push(`${scope === 'scheduled' ? 'assigned_time' : 'COALESCE(assigned_time,requested_time)'}=?`); values.push(time(req.query.time)); }
     if (req.query.search) {
       const search = text(req.query.search, 'ძიება', 1, 100).replace(/[\\%_]/g, character => `\\${character}`);
-      const digits = search.replace(/[^\d]/g, '');
+      const digits = normalizePhone(search) ?? search.replace(/[^\d]/g, '');
       conditions.push("(name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')"); values.push(`%${search}%`, `%${digits || search}%`);
     }
     const rows = (await db.prepare(`SELECT * FROM bookings WHERE ${conditions.join(' AND ')} ORDER BY COALESCE(assigned_date,requested_date),COALESCE(assigned_time,requested_time),id DESC`).all(...values)) as Row[];
@@ -629,17 +646,27 @@ export async function createApp(options: Options = {}) {
     res.json({ profile: await profile(phone(req.query.phone)) });
   });
   app.get('/api/admin/passengers', async (req, res) => {
-    const values: string[] = [];
-    let search = '';
-    if (req.query.search) {
-      const value = text(req.query.search, 'ძიება', 1, 100).replace(/[\\%_]/g, character => `\\${character}`);
-      search = " AND (name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')";
-      values.push(`%${value}%`, `%${value.replace(/[^\d]/g, '') || value}%`);
+    const rows = await db.prepare('SELECT * FROM bookings WHERE deleted_at IS NULL ORDER BY updated_at DESC,id DESC').all();
+    const grouped = new Map<string, { name: string; phone: string; orderCount: number; seats: number; latestDate: string }>();
+    for (const row of rows) {
+      const canonical = normalizePhone(row.phone) ?? row.phone;
+      const day = row.assigned_date ?? row.requested_date;
+      const previous = grouped.get(canonical);
+      if (previous) {
+        previous.orderCount++;
+        previous.seats += row.seats;
+        if (day > previous.latestDate) previous.latestDate = day;
+      } else grouped.set(canonical, { name: row.name, phone: canonical, orderCount: 1, seats: row.seats, latestDate: day });
     }
-    const rows = (await db.prepare(`SELECT phone, COUNT(*) AS orderCount, SUM(seats) AS seats, MAX(COALESCE(assigned_date,requested_date)) AS latestDate,
-      (SELECT latest.name FROM bookings latest WHERE latest.phone=bookings.phone AND latest.deleted_at IS NULL ORDER BY latest.updated_at DESC,latest.id DESC LIMIT 1) AS name
-      FROM bookings WHERE deleted_at IS NULL${search} GROUP BY phone ORDER BY "latestDate" DESC,phone`).all(...values)) as Row[];
-    res.json({ passengers: rows.map(row => ({ name: row.name, phone: row.phone, orderCount: row.orderCount, seats: row.seats, latestDate: row.latestDate })) });
+    let passengers = [...grouped.values()];
+    if (req.query.search) {
+      const search = text(req.query.search, 'ძიება', 1, 100).toLocaleLowerCase('ka-GE');
+      const phoneSearch = normalizePhone(search) ?? search.replace(/\D/g, '');
+      passengers = passengers.filter(passenger => passenger.name.toLocaleLowerCase('ka-GE').includes(search)
+        || Boolean(phoneSearch && passenger.phone.includes(phoneSearch)));
+    }
+    passengers.sort((first, second) => second.latestDate.localeCompare(first.latestDate) || first.phone.localeCompare(second.phone));
+    res.json({ passengers });
   });
   app.get('/api/admin/analytics', async (req, res) => {
     const from = req.query.from ? date(req.query.from) : '0001-01-01';
@@ -693,20 +720,13 @@ export async function createApp(options: Options = {}) {
     for (const row of existing) {
       try {
         const canonical = phone(row.phone);
-        if (canonical !== row.phone) await db.prepare('UPDATE bookings SET phone=? WHERE id=?').run(canonical, row.id);
         await saveProfile({ ...row, phone: canonical });
       } catch (error) { if (!(error instanceof HttpError)) throw error; }
     }
-    const calls = await db.prepare('SELECT * FROM call_inquiries WHERE phone IS NOT NULL').all();
-    for (const row of calls) {
-      try {
-        const canonical = phone(row.phone);
-        const hash = digest(JSON.stringify({ phone: canonical, occurredAt: row.occurred_at, durationSeconds: row.duration_seconds, kind: 'incoming' }));
-        await db.prepare('UPDATE call_inquiries SET phone=?,request_hash=? WHERE id=?').run(canonical, hash, row.id);
-      } catch (error) { if (!(error instanceof HttpError)) throw error; }
-    }
     await db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO NOTHING').run('passengerProfilesBackfilled', '1');
-  }); } catch (error) {
+  });
+    if (!(options.deferPhoneMigration ?? process.env.PHONE_MIGRATION_DEFERRED === '1')) await migratePhoneStorage(db);
+  } catch (error) {
     await db.close().catch(() => {});
     throw error;
   }

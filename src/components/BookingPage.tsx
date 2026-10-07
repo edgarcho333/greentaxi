@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowDown, ArrowRight, ArrowUpRight, CalendarDays, Check, CheckCircle2, ChevronRight, Clock3, Leaf, LoaderCircle, LockKeyhole, MapPin, Navigation, Phone, Users } from 'lucide-react';
 import { directions, request, today, type Direction, type PublicConfig, type Slot } from '../api';
+import { formatPhone, normalizePhone } from '../../shared/phone';
 import './public.css';
 
 type Field = 'date' | 'time' | 'name' | 'phone' | 'goriAddress' | 'stop';
@@ -94,8 +95,8 @@ export default function BookingPage() {
     if (!date || date < today()) nextErrors.date = 'აირჩიეთ დღევანდელი ან მომავალი თარიღი.';
     if (!time || loadingSlots || !currentSlots.some(slot => slot.time === time)) nextErrors.time = 'აირჩიეთ მგზავრობის დრო.';
     if (name.trim().length < 2) nextErrors.name = 'მიუთითეთ თქვენი სახელი.';
-    const phoneDigits = phone.replace(/\D/g, '');
-    if (!/^[+\d\s()-]+$/.test(phone.trim()) || phoneDigits.length < 9 || phoneDigits.length > 15) nextErrors.phone = 'მიუთითეთ სწორი ტელეფონის ნომერი.';
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) nextErrors.phone = 'მიუთითეთ სწორი ტელეფონის ნომერი.';
     if (goriAddress.trim().length < 3) nextErrors.goriAddress = 'მიუთითეთ მისამართი გორში.';
     if (direction === 'tbilisi-gori' && !activeStops.some(stop => String(stop.id) === stopId)) nextErrors.stop = 'აირჩიეთ ჩასხდომის ადგილი.';
     setErrors(nextErrors);
@@ -105,7 +106,7 @@ export default function BookingPage() {
       return;
     }
     if (!config) { setSubmitError('მგზავრობის ინფორმაცია ჯერ არ ჩატვირთულა. სცადეთ ხელახლა.'); return; }
-    const payload = JSON.stringify({ name: name.trim(), phone: phone.trim(), seats, direction, requestedDate: date, requestedTime: time, goriAddress: goriAddress.trim(), ...(direction === 'tbilisi-gori' ? { pickupStopId: Number(stopId) } : {}) });
+    const payload = JSON.stringify({ name: name.trim(), phone: normalizedPhone, seats, direction, requestedDate: date, requestedTime: time, goriAddress: goriAddress.trim(), ...(direction === 'tbilisi-gori' ? { pickupStopId: Number(stopId) } : {}) });
     if (!submission.current || submission.current.payload !== payload) submission.current = { key: crypto.randomUUID(), payload };
     setSubmitting(true);
     try {
@@ -195,7 +196,7 @@ export default function BookingPage() {
 
             <fieldset className="booking-section booking-contact-section" disabled={submitting}>
               <legend className="booking-section-title"><span>03</span>თქვენი მონაცემები</legend>
-              <div className="booking-two-columns"><div className="booking-field"><label htmlFor="booking-name">სახელი და გვარი</label><input id="booking-name" autoComplete="name" value={name} required maxLength={100} placeholder="თქვენი სახელი" aria-invalid={!!errors.name} aria-describedby={errors.name ? 'booking-name-error' : undefined} onChange={event => { setName(event.target.value); clearError('name'); }} />{fieldError('name')}</div><div className="booking-field"><label htmlFor="booking-phone">ტელეფონის ნომერი</label><div className="booking-input-icon"><Phone size={16} /><input id="booking-phone" type="tel" autoComplete="tel" inputMode="tel" value={phone} required maxLength={24} placeholder="5XX XX XX XX" aria-invalid={!!errors.phone} aria-describedby={errors.phone ? 'booking-phone-error' : undefined} onChange={event => { setPhone(event.target.value); clearError('phone'); }} /></div>{fieldError('phone')}</div></div>
+              <div className="booking-two-columns"><div className="booking-field"><label htmlFor="booking-name">სახელი და გვარი</label><input id="booking-name" autoComplete="name" value={name} required maxLength={100} placeholder="თქვენი სახელი" aria-invalid={!!errors.name} aria-describedby={errors.name ? 'booking-name-error' : undefined} onChange={event => { setName(event.target.value); clearError('name'); }} />{fieldError('name')}</div><div className="booking-field"><label htmlFor="booking-phone">ტელეფონის ნომერი</label><div className="booking-input-icon"><Phone size={16} /><input id="booking-phone" type="tel" autoComplete="tel-national" inputMode="tel" value={phone} required maxLength={24} placeholder="5XX XX XX XX" aria-invalid={!!errors.phone} aria-describedby={errors.phone ? 'booking-phone-error' : undefined} onChange={event => { setPhone(event.target.value); clearError('phone'); }} onBlur={event => setPhone(formatPhone(event.target.value))} /></div>{fieldError('phone')}</div></div>
             </fieldset>
 
             {(submitError || Object.values(errors).some(Boolean)) && <div className="booking-submit-error" ref={errorSummary} role="alert" tabIndex={-1}>{submitError || 'გთხოვთ, შეამოწმოთ მონიშნული ველები.'}</div>}

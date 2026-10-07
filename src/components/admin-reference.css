@@ -364,3 +364,13 @@
   .admin-booking-form input,.admin-booking-form textarea { font-size: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { .admin-time-strip { scroll-behavior: auto; } }
+
+/* Saved caller details share the compact staff table used throughout the panel. */
+.admin-reference-view .admin-calls-table { min-width: 1140px; }
+.admin-call-identity { white-space: nowrap; }
+.admin-call-identity > strong { display: block; font-weight: 500; }
+.admin-call-phone { display: block; margin-top: 2px; color: #617368; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.admin-call-location { min-width: 155px; max-width: 190px; }
+.admin-call-phase.completed { background: #f0f3f1; color: #718278; }
+.admin-call-phase.is-live::before { content: ''; display: inline-block; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: #08a864; vertical-align: 1px; }
+.admin-call-duration { font-size: 10px; font-variant-numeric: tabular-nums; }

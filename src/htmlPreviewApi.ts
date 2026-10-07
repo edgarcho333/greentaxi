@@ -1,4 +1,4 @@
-import { addDays, today, type Analytics, type Booking, type Direction, type Passenger, type PassengerProfile, type PublicConfig, type Schedule, type User } from './api';
+import { addDays, today, type Analytics, type Booking, type CallInquiry, type Direction, type Passenger, type PassengerProfile, type PublicConfig, type Schedule, type User } from './api';
 import { canonicalPassengerPhone } from './components/admin/usePassengerProfile';
 
 export const previewUser: User = { id: 1, login: 'preview', name: 'სატესტო ოპერატორი' };
@@ -28,7 +28,7 @@ function sampleBookings(day: string): Booking[] {
     const date = addDays(day, sample.offset ?? 0);
     const stop = config.stops[index % config.stops.length];
     return {
-      id: index + 1, name: `სატესტო ${names[index % names.length]}`, phone: `000 00 00 ${String(index + 1).padStart(2, '0')}`,
+      id: index + 1, name: `სატესტო ${names[index % names.length]}`, phone: `0000000${String(index + 1).padStart(2, '0')}`,
       seats: sample.seats, direction: sample.direction, goriAddress: `სატესტო ქ. №${index + 1}`,
       pickupStopId: sample.direction === 'tbilisi-gori' ? stop.id : null,
       pickupStopName: sample.direction === 'tbilisi-gori' ? stop.name : null,
@@ -122,7 +122,8 @@ function analytics(bookings: Booking[], params: URLSearchParams): Analytics {
 export function installPreviewApi(): void {
   const day = today();
   const bookings = sampleBookings(day);
-  const sampleCall = { id: 1, phone: '000 00 00 99', occurredAt: `${day}T08:00:00+04:00`, durationSeconds: 83, deviceName: 'სატესტო Redmi — რეალური ზარი არ არის', createdAt: `${day}T08:02:00+04:00`, deletedAt: null, bookingId: null };
+  const caller = bookings.find(booking => booking.direction === 'tbilisi-gori' && booking.status === 'confirmed')!;
+  const sampleCall: CallInquiry = { id: 1, phone: caller.phone, occurredAt: `${day}T08:00:00+04:00`, durationSeconds: 0, phase: 'answered', passengerProfile: passengerProfile(bookings, caller.phone), deviceName: 'სატესტო Redmi — რეალური ზარი არ არის', createdAt: `${day}T08:00:00+04:00`, deletedAt: null, bookingId: null };
   const reply = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
   window.fetch = async (input, init) => {
     const isRequest = input instanceof Request;
@@ -138,7 +139,7 @@ export function installPreviewApi(): void {
       case '/api/public/slots': return reply({ slots: schedule(bookings, params).slots.filter(slot => new Date(`${params.get('date') ?? day}T${slot.time}:00+04:00`).getTime() > Date.now()) });
       case '/api/admin/bookings': return reply({ bookings: filteredBookings(bookings, params) });
       case '/api/admin/schedule': return reply(schedule(bookings, params));
-      case '/api/admin/calls': return reply({ calls: (params.get('scope') ?? 'incoming') === 'incoming' && matchesSearch('', sampleCall.phone, params.get('search') ?? '') ? [sampleCall] : [] });
+      case '/api/admin/calls': return reply({ calls: (params.get('scope') ?? 'incoming') === 'incoming' && matchesSearch(sampleCall.passengerProfile?.name || '', sampleCall.phone || '', params.get('search') ?? '') ? [sampleCall] : [] });
       case '/api/admin/devices': return reply({ devices: [] });
       case '/api/admin/settings': return reply({ didubeName: config.didubeName, didubeAddress: config.didubeAddress });
       case '/api/admin/stops': return reply({ stops: config.stops });
