@@ -116,6 +116,70 @@ async function seedConfirmedProfile(input: {
   });
 }
 
+type PrintedDocument = { html: string; text: string; headings: string[]; rows: string[][] };
+type PrintBrowserWindow = Window & { __greenTaxiPrintedDocuments?: PrintedDocument[] };
+
+async function captureNativePrinting(page: Page) {
+  await page.addInitScript(() => {
+    const topWindow = window.top as PrintBrowserWindow;
+    topWindow.__greenTaxiPrintedDocuments ??= [];
+    // This script also runs in attached same-origin print frames. Capture the exact
+    // document at the native-print boundary without opening the OS print dialog.
+    window.print = () => {
+      topWindow.__greenTaxiPrintedDocuments!.push({
+        html: document.documentElement.outerHTML,
+        text: document.body?.innerText ?? '',
+        headings: Array.from(document.querySelectorAll('thead th'), cell => cell.textContent?.trim() ?? ''),
+        rows: Array.from(document.querySelectorAll('tbody tr'), row =>
+          Array.from(row.querySelectorAll('td'), cell => cell.textContent?.trim() ?? '')),
+      });
+    };
+  });
+}
+
+async function printedDocuments(page: Page): Promise<PrintedDocument[]> {
+  return page.evaluate(() => (window as PrintBrowserWindow).__greenTaxiPrintedDocuments ?? []);
+}
+
+type PrintableFixture = {
+  name: string; phone: string; displayedPhone: string; seats: number;
+  direction: Direction; time: string; goriAddress: string;
+};
+
+async function seedPrintableDay(day: string, phonePrefix: string, namePrefix: string) {
+  const expected: PrintableFixture[] = Array.from({ length: 20 }, (_, index) => {
+    const phone = `${phonePrefix}${String(index + 1).padStart(3, '0')}`;
+    return {
+      name: `${namePrefix} ${index === 0 ? 'პირველი მგზავრი' : String(index + 1).padStart(2, '0')}`,
+      phone, displayedPhone: `${phone.slice(0, 3)} ${phone.slice(3, 5)} ${phone.slice(5, 7)} ${phone.slice(7)}`,
+      seats: index < 18 ? index % 4 + 1 : index === 18 ? 2 : 3,
+      direction: index < 18 ? 'gori-tbilisi' : 'tbilisi-gori',
+      time: index < 6 || index === 18 ? '08:30' : index < 12 || index === 19 ? '09:30' : '10:00',
+      goriAddress: `გორი, ბეჭდვის სრული სატესტო მისამართი ${index + 1}, კორპუსი 7, სადარბაზო 2, სართული 3, ბინა 19; შეინარჩუნეთ მისამართის სრული ტექსტი${index === 0 ? '; ორიენტირი: <span>სატესტო ტექსტი</span>' : ''}`,
+    };
+  });
+  for (const row of expected) {
+    const response = await adminApi.post('/api/admin/bookings', { data: {
+      name: row.name, phone: row.phone, seats: row.seats, direction: row.direction,
+      goriAddress: row.goriAddress, requestedDate: day, requestedTime: row.time,
+      ...(row.direction === 'tbilisi-gori' ? { pickupStopId: publicConfig.stops[0].id } : {}),
+    } });
+    expect(response.ok()).toBeTruthy();
+  }
+  const excludedNames = [`${namePrefix} წაშლილი`, `${namePrefix} მოლოდინში`, `${namePrefix} სხვა თარიღი`];
+  const common = { direction: 'gori-tbilisi', seats: 4, goriAddress: 'გორი, ბეჭდვაში გამორიცხული მისამართი', requestedTime: '08:30' };
+  const deleted = await adminApi.post('/api/admin/bookings', { data: { ...common, name: excludedNames[0], phone: `${phonePrefix}900`, requestedDate: day } });
+  expect(deleted.ok()).toBeTruthy();
+  const { id } = await deleted.json() as { id: number };
+  expect((await adminApi.post(`/api/admin/bookings/${id}/delete`, { data: {} })).ok()).toBeTruthy();
+  expect((await adminApi.post('/api/bookings', { data: { ...common, name: excludedNames[1], phone: `${phonePrefix}901`, requestedDate: day } })).ok()).toBeTruthy();
+  const moved = await adminApi.post('/api/admin/bookings', { data: { ...common, name: excludedNames[2], phone: `${phonePrefix}902`, requestedDate: day } });
+  expect(moved.ok()).toBeTruthy();
+  const movedId = (await moved.json() as { id: number }).id;
+  expect((await adminApi.post(`/api/admin/bookings/${movedId}/move`, { data: { date: futureDate(30), time: '08:30' } })).ok()).toBeTruthy();
+  return { expected, excludedNames };
+}
+
 async function fillPublicForm(page: Page, input: {
   direction: Direction; seats: number; name: string; date?: string; time?: string;
 }) {
@@ -919,4 +983,146 @@ test('public phone entry never looks up or fills trusted passenger details and c
   expect((await trusted.json() as { profile: PassengerProfile | null }).profile)
     .toMatchObject({ phone, name: profileName, goriAddress: profileAddress, pickupStopId: profileStop.id });
   expect(profileRequests).toEqual([]);
+});
+
+test('printing all orders for a day includes every confirmed row beyond pagination and search with complete addresses and totals', async ({ page }) => {
+  const day = futureDate(14);
+  const { expected, excludedNames } = await seedPrintableDay(day, '555040', 'სატესტო მთელი დღის ბეჭდვა');
+  const selected = expected.filter(row => row.direction === 'gori-tbilisi');
+  await captureNativePrinting(page);
+  await openAuthenticatedAdmin(page);
+  await chooseAdminDate(page, day);
+  const visibleRows = page.locator('.admin-booking-table tbody tr');
+  await expect(visibleRows).toHaveCount(15);
+  await page.getByRole('button', { name: 'შემდეგი გვერდი', exact: true }).click();
+  await expect(visibleRows).toHaveCount(3);
+  await page.getByRole('textbox', { name: 'მგზავრის სახელი ან ტელეფონი', exact: true }).fill(selected[0].name);
+  await expect(visibleRows).toHaveCount(1);
+  await chooseAdminTime(page, '09:30');
+  await expect(visibleRows).toHaveCount(0);
+  await page.getByRole('button', { name: 'ჯავშნების ბეჭდვა', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'ჯავშნების ბეჭდვა', exact: true });
+  await expect(dialog.getByLabel('საბეჭდი თარიღი', { exact: true })).toHaveValue(day);
+  await expect(dialog.getByLabel('საბეჭდი მიმართულება', { exact: true })).toHaveValue('gori-tbilisi');
+  await expect(dialog.getByLabel('ბეჭდვის რეჟიმი', { exact: true })).toHaveValue('selected');
+  await expect(dialog.getByLabel('საბეჭდი დრო', { exact: true })).toHaveValue('09:30');
+  await dialog.getByLabel('ბეჭდვის რეჟიმი', { exact: true }).selectOption('all');
+  const print = dialog.getByRole('button', { name: 'ბეჭდვა / PDF', exact: true });
+  await expect(print).toBeEnabled();
+  await print.click();
+  await expect.poll(async () => (await printedDocuments(page)).length).toBe(1);
+  const [document] = await printedDocuments(page);
+  expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'მიმართულება', 'ადგილები', 'ჩასხდომის მისამართი', 'ჩამოსვლის მისამართი']);
+  expect(document.rows).toHaveLength(18);
+  for (const row of selected) {
+    const printed = document.rows.find(cells => cells.includes(row.name));
+    expect(printed, `Every selected-day order must print, including ${row.name}`).toBeDefined();
+    expect(printed).toEqual(expect.arrayContaining([row.time, row.displayedPhone, DIRECTION_LABELS[row.direction], String(row.seats)]));
+    expect(printed!.join(' ')).toContain(row.goriAddress);
+    expect(printed!.join(' ')).toContain(publicConfig.didubeName);
+    expect(printed!.join(' ')).toContain(publicConfig.didubeAddress);
+  }
+  for (const name of [...excludedNames, ...expected.filter(row => row.direction === 'tbilisi-gori').map(row => row.name)]) {
+    expect(document.text).not.toContain(name);
+  }
+  const text = document.text.replace(/\s+/g, ' ');
+  const humanDate = day.split('-').reverse().join('/');
+  expect(text).toContain(humanDate);
+  expect(text).toContain('ყველა დრო');
+  expect(text).toContain('სულ ჯავშნები: 18');
+  expect(text).toContain('სულ ადგილები: 43');
+  // Export the exact captured print document with its copied styles for visual review.
+  const paper = await page.context().newPage();
+  try {
+    await paper.setViewportSize({ width: 1123, height: 794 });
+    await paper.setContent(document.html, { waitUntil: 'load' });
+    await paper.emulateMedia({ media: 'print' });
+    await expect(paper.getByRole('table', { name: 'მგზავრებისა და მისამართების სია', exact: true }).getByRole('row')).toHaveCount(19);
+    await paper.pdf({ path: '/tmp/greentaxi-booking-report.pdf', printBackground: true, preferCSSPageSize: true });
+    await paper.screenshot({ path: '/tmp/greentaxi-booking-report-print.png', fullPage: true });
+  } finally { await paper.close(); }
+});
+
+test('printing a selected half-hour slot includes both directions while excluding other times and dates', async ({ page }) => {
+  const day = futureDate(18);
+  const { expected, excludedNames } = await seedPrintableDay(day, '555041', 'სატესტო არჩეული დროის ბეჭდვა');
+  await captureNativePrinting(page);
+  await openAuthenticatedAdmin(page);
+  await chooseAdminDate(page, day);
+  await chooseAdminTime(page, '08:30');
+  await page.getByRole('button', { name: 'ჯავშნების ბეჭდვა', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'ჯავშნების ბეჭდვა', exact: true });
+  await expect(dialog.getByLabel('ბეჭდვის რეჟიმი', { exact: true })).toHaveValue('selected');
+  await expect(dialog.getByLabel('საბეჭდი დრო', { exact: true })).toHaveValue('08:30');
+  await dialog.getByLabel('საბეჭდი მიმართულება', { exact: true }).selectOption('both');
+  for (const [index, time] of ['08:30', '09:30'].entries()) {
+    await dialog.getByLabel('საბეჭდი დრო', { exact: true }).fill(time);
+    const print = dialog.getByRole('button', { name: 'ბეჭდვა / PDF', exact: true });
+    await expect(print).toBeEnabled();
+    await print.click();
+    await expect.poll(async () => (await printedDocuments(page)).length).toBe(index + 1);
+    const document = (await printedDocuments(page))[index];
+    const selected = expected.filter(row => row.time === time);
+    expect(selected).toHaveLength(7);
+    expect(document.rows).toHaveLength(7);
+    for (const row of selected) {
+      const printed = document.rows.find(cells => cells.includes(row.name));
+      expect(printed).toEqual(expect.arrayContaining([time, row.displayedPhone, DIRECTION_LABELS[row.direction], String(row.seats)]));
+      expect(printed!.join(' ')).toContain(row.goriAddress);
+      if (row.direction === 'tbilisi-gori') {
+        expect(printed!.join(' ')).toContain(publicConfig.stops[0].name);
+        expect(printed!.join(' ')).toContain(publicConfig.stops[0].address);
+      }
+    }
+    for (const name of [...excludedNames, ...expected.filter(row => row.time !== time).map(row => row.name)]) expect(document.text).not.toContain(name);
+    const text = document.text.replace(/\s+/g, ' ');
+    expect(text).toContain('ორივე მიმართულება');
+    expect(text).toContain('სულ ჯავშნები: 7');
+    expect(text).toContain(`სულ ადგილები: ${selected.reduce((sum, row) => sum + row.seats, 0)}`);
+  }
+});
+
+test('printing stays blocked for an empty day or a failed fresh report and recovers without opening native print', async ({ page }) => {
+  const emptyDay = futureDate(22);
+  const reportDay = futureDate(26);
+  const created = await adminApi.post('/api/admin/bookings', { data: {
+    name: 'სატესტო შეცდომამდე საბეჭდი ჯავშანი', phone: '555042001', seats: 1,
+    direction: 'gori-tbilisi', requestedDate: reportDay, requestedTime: '08:30', goriAddress: 'გორი, ბეჭდვის შეცდომის სატესტო მისამართი',
+  } });
+  expect(created.ok()).toBeTruthy();
+  await captureNativePrinting(page);
+  await openAuthenticatedAdmin(page);
+  await chooseAdminDate(page, emptyDay);
+  await page.getByRole('button', { name: 'ჯავშნების ბეჭდვა', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'ჯავშნების ბეჭდვა', exact: true });
+  const print = dialog.getByRole('button', { name: 'ბეჭდვა / PDF', exact: true });
+  await expect(dialog.getByRole('heading', { name: 'არჩეული პირობებით ჯავშნები არ არის', exact: true })).toBeVisible();
+  await expect(print).toBeDisabled();
+  expect(await printedDocuments(page)).toHaveLength(0);
+  await dialog.getByLabel('საბეჭდი თარიღი', { exact: true }).fill(reportDay);
+  await expect(print).toBeEnabled();
+  const errorMessage = 'სატესტო შეცდომა — საბეჭდი ანგარიში ვერ ჩაიტვირთა';
+  await page.evaluate(({ day, message }) => {
+    const originalFetch = window.fetch;
+    (window as Window & { __restorePrintFetch?: () => void }).__restorePrintFetch = () => { window.fetch = originalFetch; };
+    // Return a real HTTP-error Response to the application's existing request handler.
+    // Keeping this local avoids unrelated browser resource-error logs for the intentional fault.
+    window.fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+      if (url.pathname === '/api/admin/bookings' && url.searchParams.get('scope') === 'scheduled' && url.searchParams.get('date') === day) {
+        return Promise.resolve(new Response(JSON.stringify({ error: message }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return originalFetch.call(window, input, init);
+    };
+  }, { day: reportDay, message: errorMessage });
+  await print.click();
+  await expect(dialog.getByRole('alert')).toContainText(errorMessage);
+  await expect(print).toBeDisabled();
+  expect(await printedDocuments(page)).toHaveLength(0);
+  await expect(page.locator('#greentaxi-print-frame')).toHaveCount(0);
+  await page.evaluate(() => (window as Window & { __restorePrintFetch?: () => void }).__restorePrintFetch?.());
+  await dialog.getByRole('alert').getByRole('button', { name: 'საბეჭდი მონაცემების განახლება', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await expect(print).toBeEnabled();
+  expect(await printedDocuments(page)).toHaveLength(0);
 });

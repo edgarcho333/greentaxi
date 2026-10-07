@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowRightLeft, BarChart3, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock3, Edit3, History, Inbox, Leaf, Loader2, LogOut, MapPin, Menu, MoreHorizontal, Phone, Plus, RefreshCw, Search, Settings, Trash2, Users, X } from 'lucide-react';
+import { ArrowRightLeft, BarChart3, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock3, Edit3, History, Inbox, Leaf, Loader2, LogOut, MapPin, Menu, MoreHorizontal, Phone, Plus, Printer, RefreshCw, Search, Settings, Trash2, Users, X } from 'lucide-react';
 import { ApiError, addDays, directions, request, today, type Analytics, type Booking, type CallInquiry, type Direction, type Passenger, type PublicConfig, type Schedule, type User } from '../api';
 import AdminSettings from './admin/AdminSettings';
 import CallQueue from './admin/CallQueue';
+import BookingPrint from './admin/BookingPrint';
 import usePassengerProfile, { canonicalPassengerPhone } from './admin/usePassengerProfile';
 import sidebarNight from '../assets/sidebar-night.webp';
 import { formatPhone, normalizePhone, phoneDialNumber } from '../../shared/phone';
@@ -45,6 +46,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
   const [error, setError] = useState('');
   const [scheduleError, setScheduleError] = useState('');
   const [modal, setModal] = useState<Modal | null>(null);
+  const [printOpen, setPrintOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [mobileNav, setMobileNav] = useState(false);
   const [menuId, setMenuId] = useState<number | null>(null);
@@ -122,7 +124,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
           <button className={`admin-incoming-button ${view === 'incoming' ? 'active' : ''}`} aria-label="შემოსული განაცხადები" onClick={() => changeView('incoming')}><span>შემოსული განაცხადები</span><b>{incomingCount}</b></button>
           <label className="admin-filter"><MapPin size={23} /><span><small>მიმართულება</small><select value={direction} onChange={event => { setDirection(event.target.value as Direction); setTime(''); }}>{Object.entries(directions).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></span></label>
           <label className="admin-filter"><ClipboardList size={26} /><span><small>სტატუსი</small><select value={view} onChange={event => changeView(event.target.value as View)}><option value="scheduled">დადასტურებული</option><option value="incoming">ელოდება დადასტურებას</option><option value="history">წაშლილი</option></select></span></label>
-          <div className="admin-filter admin-toolbar-actions"><button className="admin-toolbar-create" aria-label="ახალი ჯავშანი" onClick={() => setModal({ kind: 'create' })}><Plus size={25} /><span><small>ახალი ჯავშანი</small><strong>შექმნა</strong></span></button><button className="admin-icon-button admin-toolbar-refresh" onClick={reload} disabled={loading} aria-label="განახლება" title="განახლება"><RefreshCw size={16} /></button></div>
+          <div className="admin-filter admin-toolbar-actions"><button className="admin-toolbar-create" aria-label="ახალი ჯავშანი" onClick={() => setModal({ kind: 'create' })}><Plus size={25} /><span><small>ახალი ჯავშანი</small><strong>შექმნა</strong></span></button><div className="admin-toolbar-utilities"><button className="admin-icon-button admin-toolbar-refresh" onClick={reload} disabled={loading} aria-label="განახლება" title="განახლება"><RefreshCw size={16} /></button>{view === 'scheduled' && <button className="admin-icon-button admin-toolbar-print" onClick={() => setPrintOpen(true)} aria-label="ჯავშნების ბეჭდვა" title="ჯავშნების ბეჭდვა"><Printer size={16} /></button>}</div></div>
           <label className="admin-filter admin-search"><span><small className="admin-search-label"><Search size={21} />მგზავრის სახელი ან ტელეფონი</small><span className="admin-search-field"><Search size={20} /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="ძებნა…" aria-label="მგზავრის სახელი ან ტელეფონი" /></span></span></label>
         </section>
         {view === 'scheduled' && <>
@@ -145,6 +147,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
       {view === 'settings' && <AdminSettings onChange={reload} />}
       <footer className="admin-footer"><span><span className="admin-live-dot" /> Green Taxi</span><span>გორი ↔ თბილისი</span></footer>
     </main>
+    {printOpen && <BookingPrint date={date} direction={direction} time={time} onClose={() => setPrintOpen(false)} />}
     {modal && <BookingModal modal={modal} config={config} defaultDirection={direction} defaultDate={date} defaultTime={time} onClose={() => setModal(null)} onComplete={completed} />}
     {toast && <div className="admin-toast" role="status"><CheckCircle2 size={19} />{toast}<button onClick={() => setToast('')} aria-label="შეტყობინების დახურვა"><X size={16} /></button></div>}
   </div>;
