@@ -2,8 +2,8 @@
 .admin-settings .admin-config-card { background: #fff; border: 1px solid var(--border, #e8eeeb); border-radius: 18px; padding: 26px; box-shadow: 0 3px 18px #12342803; }
 .admin-settings .admin-config-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
 .admin-settings .admin-config-icon { display: grid; place-items: center; width: 48px; height: 48px; flex: 0 0 48px; border-radius: 14px; color: var(--green, #079d68); background: #edf9f3; }
-.admin-settings h2 { color: var(--ink, #18332b); font-size: 19px; line-height: 1.5; margin: 0 0 4px; font-weight: 700; }
-.admin-settings h3 { color: var(--ink, #18332b); font-size: 15px; line-height: 1.5; margin: 0 0 13px; font-weight: 700; }
+.admin-settings h2 { color: var(--ink, #18332b); font-size: 19px; line-height: 1.5; margin: 0 0 4px; font-weight:400; }
+.admin-settings h3 { color: var(--ink, #18332b); font-size: 15px; line-height: 1.5; margin: 0 0 13px; font-weight:400; }
 .admin-settings p { color: var(--muted, #77847f); margin: 0; font-size: 12px; line-height: 1.8; }
 .admin-settings label { display: flex; flex-direction: column; gap: 8px; color: #54665e; font-size: 12px; font-weight: 600; }
 .admin-settings input, .admin-settings select, .admin-settings textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 11px 13px; min-height: 44px; font: inherit; font-size: 13px; font-weight: 400; color: var(--ink, #18332b); border: 1px solid #dfe8e2; border-radius: 9px; background: #fff; outline: none; transition: border-color .16s, box-shadow .16s; }
@@ -17,7 +17,8 @@
 .admin-settings .admin-config-schedule-columns > .admin-config-subsection + .admin-config-subsection { border-left: 1px solid var(--border, #e8eeeb); padding-left: 26px; }
 .admin-settings .admin-config-section-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .admin-settings .admin-config-section-label > strong { font-size: 13px; color: var(--ink, #18332b); }
-.admin-settings .admin-config-eyebrow { color: var(--ink, #18332b); font-size: 13px; font-weight: 700; }
+.admin-settings .admin-config-eyebrow { color: var(--ink, #18332b); font-family: var(--font-heading); font-size: 13px; font-weight: 400; }
+.admin-settings .admin-config-stop-form .admin-config-section-label > strong, .admin-settings .admin-config-pairing .admin-config-section-label > strong, .admin-settings .admin-config-access-note strong { font-family: var(--font-heading); font-weight: 400; }
 .admin-settings .admin-config-counter { color: var(--muted, #77847f); font-size: 11px; white-space: nowrap; }
 .admin-settings .admin-config-status { background: #eef7f1; color: #248553; font-size: 10px; line-height: 1.4; border-radius: 6px; padding: 5px 8px; white-space: nowrap; }
 .admin-settings .admin-config-status.custom { background: #f0f4fb; color: #59729d; }
@@ -105,14 +106,14 @@
 .admin-settings .admin-config-device-setup > p { margin-bottom: 16px; }
 .admin-settings .admin-config-endpoint { display: grid; gap: 9px; margin-bottom: 19px; }
 .admin-settings .admin-config-endpoint > span { color: #54665e; font-size: 11px; font-weight: 600; }
-.admin-settings .admin-config-endpoint > code { padding: 12px; background: #fff; border: 1px solid #e2e9e3; border-radius: 8px; color: #577360; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; user-select: all; }
+.admin-settings .admin-config-endpoint > code { padding: 12px; background: #fff; border: 1px solid #e2e9e3; border-radius: 8px; color: #577360; font-family: var(--font-body); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; user-select: all; }
 .admin-settings .admin-config-device-form { display: grid; gap: 15px; }
 .admin-settings .admin-config-device-form > button { justify-self: start; }
 .admin-settings .admin-config-pairing { margin-top: 20px; padding: 16px; background: #edf8f1; border: 1px solid #cfe8d9; border-radius: 10px; }
 .admin-settings .admin-config-pairing .admin-config-section-label { margin-bottom: 6px; }
 .admin-settings .admin-config-pairing .admin-config-section-label > strong { font-size: 11px; }
 .admin-settings .admin-config-pairing p { font-size: 11px; color: #6e937a; }
-.admin-settings .admin-config-token { display: block; padding: 12px; margin: 14px 0; border: 1px solid #cfe2d5; border-radius: 7px; background: #fff; color: #3a6448; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; user-select: all; }
+.admin-settings .admin-config-token { display: block; padding: 12px; margin: 14px 0; border: 1px solid #cfe2d5; border-radius: 7px; background: #fff; color: #3a6448; font-family: var(--font-body); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; user-select: all; }
 .admin-settings .admin-config-empty, .admin-settings .admin-config-empty-time { font-size: 12px; color: #92a095; line-height: 1.8; }
 .admin-settings .admin-config-empty { padding: 20px 0; }
 .admin-settings .admin-config-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }

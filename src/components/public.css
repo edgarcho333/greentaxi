@@ -17,19 +17,20 @@
 .public-intro { padding-top: 18px; position: relative; }
 .public-route-badge { display: inline-flex; align-items: center; gap: 8px; color: #c4ddce; padding: 7px 11px; border: 1px solid #b0d4bd23; border-radius: 999px; font-size: 11px; letter-spacing: .3px; }
 .public-route-badge > span { background: #72e29d; width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 0 3px #6de29c0e; }
-.public-intro h1 { font-size: clamp(60px, 5.9vw, 88px); font-weight: 700; letter-spacing: -3.5px; line-height: 1.16; margin: 29px 0 23px; }
+.public-intro h1 { font-size: clamp(60px, 5.9vw, 88px); font-weight:400; letter-spacing: -3.5px; line-height: 1.16; margin: 29px 0 23px; }
 .public-intro h1 > span:last-child { color: #82e5a7; }
-.public-title-arrow { font-size: .54em; font-weight: 400; vertical-align: 8%; padding-left: 15px; color: #8aa697; }
+.public-title-arrow { font-family: var(--font-body); font-size: .54em; font-weight: 400; vertical-align: 8%; padding-left: 15px; color: #8aa697; }
 .public-lead { margin: 0; font-size: 15px; line-height: 1.9; color: #c3d2c9; max-width: 370px; }
 .public-artwork { margin: 13px -28px 34px; position: relative; }
 .public-landscape { width: 100%; color: #90b09b50; display: block; }
 .public-artwork-labels { display: flex; justify-content: space-between; position: absolute; bottom: 0; left: 13.5%; right: 15.7%; font-size: 11px; color: #abc8b8; }
 .public-route-guide { border-top: 1px solid #ffffff14; padding-top: 24px; }
 .public-route-guide-heading { display: flex; gap: 9px; align-items: center; color: #8feaab; font-size: 12px; margin-bottom: 23px; }
+.public-route-guide-heading > span { font-family: var(--font-heading); font-weight: 400; }
 .public-route-explanation { display: flex; align-items: flex-start; gap: 14px; margin: 0 0 22px; }
 .public-guide-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #8feaab; margin-top: 8px; }
 .public-guide-dot-outline { border: 1.5px solid #8feaab; background: transparent; }
-.public-route-explanation h2 { display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 550; margin: 0 0 8px; }
+.public-route-explanation h2 { display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight:400; margin: 0 0 8px; }
 .public-route-explanation h2 svg { color: #8ba99a; }
 .public-route-explanation p { font-size: 12px; line-height: 1.9; color: #a5beaf; margin: 0; max-width: 350px; }
 .public-schedule-note { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; color: #bcd0c4; font-size: 10px; margin-top: 28px; padding: 15px 0; border-top: 1px solid #ffffff14; }
@@ -38,12 +39,12 @@
 .booking-card { background: #fcfcf8; color: #17362c; border: 1px solid #ffffffb3; border-radius: 24px; padding: 33px; box-shadow: 0 18px 70px #031e2533; scroll-margin-top: 22px; position: relative; }
 .booking-card-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .booking-eyebrow { display: block; font-size: 10px; color: #768c7d; letter-spacing: .7px; margin-bottom: 9px; }
-.booking-card h2 { margin: 0; font-size: 26px; font-weight: 650; line-height: 1.35; letter-spacing: -.8px; }
+.booking-card h2 { margin: 0; font-size: 26px; font-weight:400; line-height: 1.35; letter-spacing: -.8px; }
 .booking-top-icon { display: grid; place-items: center; color: #168859; border: 1px solid #dce9dd; border-radius: 50%; width: 43px; height: 43px; flex: none; }
 .booking-card-description { font-size: 11px; line-height: 1.7; color: #7a887e; margin: 11px 0 26px; }
 .booking-section { margin: 0 0 23px; padding: 0; border: 0; min-width: 0; }
-.booking-section-title { width: 100%; display: flex; align-items: center; gap: 9px; padding: 0 0 15px; font-size: 12px; font-weight: 600; }
-.booking-section-title > span { font-size: 10px; font-weight: 500; color: #438967; background: #e9f2e9; border-radius: 6px; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; }
+.booking-section-title { width: 100%; display: flex; align-items: center; gap: 9px; padding: 0 0 15px; font-family: var(--font-heading); font-size: 12px; font-weight: 400; }
+.booking-section-title > span { font-family: var(--font-body); font-size: 10px; font-weight: 500; color: #438967; background: #e9f2e9; border-radius: 6px; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; }
 .booking-direction { display: grid; grid-template-columns: 1fr 1fr; background: #edf0e8; padding: 4px; border-radius: 11px; gap: 4px; margin-bottom: 18px; }
 .booking-direction button { min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 9px; border: 1px solid transparent; color: #6b7e70; background: transparent; border-radius: 8px; font-size: 11px; cursor: pointer; transition: all .15s; }
 .booking-direction button:hover { background: #ffffff8c; }
@@ -112,3 +113,5 @@
 @media (max-width: 880px) { .public-main { grid-template-columns: 1fr; gap: 34px; max-width: 650px; padding-top: 24px; } .public-intro { padding-top: 5px; } .public-intro h1 { font-size: 61px; margin: 20px 0 15px; } .public-intro h1 br { display: none; } .public-intro h1 > span:last-child { margin-left: 14px; } .public-title-arrow { padding-left: 3px; } .public-lead { max-width: 450px; } .public-artwork { max-width: 430px; margin: 3px auto 23px; } .public-route-guide { padding-top: 18px; display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; } .public-route-guide-heading { grid-column: 1 / -1; margin-bottom: 17px; } .public-route-explanation { gap: 10px; margin-bottom: 8px; } .public-route-explanation h2 { font-size: 13px; gap: 8px; } .public-route-explanation p { font-size: 11px; } .public-schedule-note { margin-top: 17px; font-size: 10px; padding: 13px 0 0; } .booking-card { padding: 30px; } .public-footer { flex-wrap: wrap; padding: 22px 0; } .public-footer > a { display: none; } }
 @media (max-width: 540px) { .public-header { padding: 19px 21px; gap: 12px; } .public-brand strong { font-size: 23px; } .public-brand-icon { height: 37px; width: 37px; border-radius: 12px 12px 12px 3px; } .public-brand small { font-size: 8px; letter-spacing: 1.7px; } .public-header-nav { gap: 10px; } .public-booking-link { display: none !important; } .public-admin-link { font-size: 9px; gap: 5px !important; } .public-admin-link svg { width: 13px; } .public-main { padding: 24px 20px 35px; gap: 26px; } .public-route-badge { font-size: 10px; } .public-intro h1 { font-size: clamp(34px, 10vw, 54px); letter-spacing: -1.8px; margin: 22px 0 13px; white-space: nowrap; } .public-intro h1 > span:last-child { margin-left: 8px; } .public-title-arrow { padding-left: 0; } .public-lead { font-size: 12px; max-width: 340px; } .public-artwork { margin: -7px 0 22px; } .public-route-guide { column-gap: 15px; } .public-route-guide-heading { font-size: 11px; } .public-route-explanation h2 { font-size: 11px; gap: 6px; white-space: nowrap; } .public-route-explanation h2 svg { width: 12px; } .public-route-explanation p { font-size: 10px; line-height: 1.8; } .public-guide-dot { width: 6px; height: 6px; margin-top: 6px; } .public-route-explanation { gap: 8px; } .public-schedule-note { font-size: 9px; gap: 7px; } .public-schedule-note > svg { width: 14px; } .public-note-divider { margin: 0; } .booking-card { padding: 25px 20px; border-radius: 19px; margin: 0 -3px; } .booking-card h2 { font-size: 24px; } .booking-eyebrow { font-size: 9px; } .booking-top-icon { height: 36px; width: 36px; } .booking-top-icon svg { width: 21px; } .booking-card-description { font-size: 10px; margin-bottom: 23px; } .booking-section-title { font-size: 11px; } .booking-direction button { font-size: 10px; gap: 5px; min-height: 41px; } .booking-two-columns { gap: 11px; } .booking-field label { font-size: 9px; } .booking-field input, .booking-field select { font-size: 10px; height: 43px; } .booking-input-icon input, .booking-input-icon select { padding-left: 30px; } .booking-input-icon > svg { width: 14px; left: 10px; } .booking-input-icon input[type="date"] { font-size: 11px; padding-right: 6px; } .booking-times { gap: 6px; } .booking-times button { font-size: 10px; padding: 10px 0; } .booking-field input::placeholder { font-size: 9px; } .booking-contact-section .booking-two-columns { grid-template-columns: 1fr; gap: 13px; } .public-footer { margin: 0 20px; font-size: 9px; gap: 13px; } .public-footer > span:nth-child(2) { gap: 4px; } .public-footer-dot { margin: 0 3px; } .booking-success { padding: 15px 0 8px; } .booking-success h2 { font-size: 26px; } }
 @media (prefers-reduced-motion: reduce) { .public-page *, .public-page *::before, .public-page *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+@media (max-width: 880px) { .public-main { grid-template-columns: minmax(0, 1fr); } .public-intro, .booking-card { min-width: 0; } }
+@media (max-width: 540px) { .public-intro h1 { white-space: normal; } }

@@ -65,7 +65,13 @@ function preparePrintFrame(report: Report): { frame: PrintFrame; ready: Promise<
   const ready = Promise.all(styles).then(async () => {
     if (disposed) return;
     target.documentElement.getBoundingClientRect();
-    if (target.fonts) { await target.fonts.load('12px "Noto Sans Georgian"'); await target.fonts.ready; }
+    if (target.fonts) {
+      await Promise.all([
+        target.fonts.load('400 12px "Dachi The Lynx"', 'ჯავშნების სია'),
+        ...[400, 600, 700, 800].map(weight => target.fonts.load(`${weight} 12px "FiraGO"`, 'მგზავრი 568 69 48 79')),
+      ]);
+      await target.fonts.ready;
+    }
     await Promise.all(Array.from(target.images).map(img => img.complete ? Promise.resolve() : new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = () => reject(new Error('საბეჭდი სურათის ჩატვირთვა ვერ მოხერხდა.')); })));
     await new Promise<void>(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
   });

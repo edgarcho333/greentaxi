@@ -16,7 +16,7 @@ const result = await build({
   minify: true,
   charset: 'utf8',
   define: { 'process.env.NODE_ENV': '"production"' },
-  loader: { '.webp': 'dataurl', '.ttf': 'dataurl' },
+  loader: { '.webp': 'dataurl', '.ttf': 'dataurl', '.otf': 'dataurl', '.woff2': 'dataurl' },
   legalComments: 'none',
 });
 const javascript = result.outputFiles.find(file => file.path.endsWith('.js'));

@@ -1,0 +1,52 @@
+@font-face {
+  font-family: 'Dachi The Lynx';
+  src: url('./assets/fonts/DachiTheLynx-Regular.otf') format('opentype');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'FiraGO';
+  src: url('./assets/fonts/FiraGO-400.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'FiraGO';
+  src: url('./assets/fonts/FiraGO-500.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'FiraGO';
+  src: url('./assets/fonts/FiraGO-600.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'FiraGO';
+  src: url('./assets/fonts/FiraGO-700.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'FiraGO';
+  src: url('./assets/fonts/FiraGO-800.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+}
+
+:root {
+  --font-body: 'FiraGO', system-ui, sans-serif;
+  --font-heading: 'Dachi The Lynx', 'FiraGO', system-ui, sans-serif;
+}

@@ -1,13 +1,5 @@
-@font-face {
-  font-family: 'GreenTaxi Georgian';
-  src: url('../assets/NotoSansGeorgian.ttf') format('truetype');
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-}
-
 .admin-shell {
-  font-family: 'GreenTaxi Georgian', Arial, sans-serif;
+  font-family: var(--font-body);
   color: #111a1b;
   background: linear-gradient(105deg, #f5f5f5, #f9f9f9);
   font-size: 14px;
@@ -26,7 +18,7 @@
   height: 94px;
   padding: 29px 14px 0;
   margin: 0 0 16px;
-  font-family: Arial, sans-serif;
+  font-family: var(--font-body);
   font-size: 40px;
   font-weight: 800;
   line-height: 1.05;
@@ -88,7 +80,7 @@
 .admin-sidebar-progress>span { width: 34px; border-radius: 4px; background: #00db81; box-shadow: 0 0 8px #02db8255; }
 .admin-sidebar-progress>span+span { width: 15px; background: #458c7d; }
 .admin-sidebar-signature { margin-top: 7px; }
-.admin-sidebar-signature strong { display: block; color: #f5fbf7; font-family: Arial, sans-serif; font-size: 14px; }
+.admin-sidebar-signature strong { display: block; color: #f5fbf7; font-family: var(--font-body); font-size: 14px; }
 .admin-sidebar-signature small { display: block; color: #bfcbc7; font-size: 11px; margin-top: 2px; }
 .admin-sidebar-user { display: none; }
 
@@ -172,7 +164,7 @@
 .admin-date-arrow>svg,.admin-time-arrow>svg { width: 24px; height: 24px; stroke-width: 2.5; }
 .admin-date-strip { display: grid; grid-template-columns: repeat(8, minmax(72px, 1fr)); flex: 1; min-width: 0; gap: 11px; }
 .admin-date-chip { min-height: 62px; height: 62px; padding: 6px; border-color: #eef0f2; border-radius: 10px; color: #11191b; gap: 5px; }
-.admin-date-chip strong { font-family: Arial, sans-serif; font-size: 16px; font-weight: 700; }
+.admin-date-chip strong { font-family: var(--font-body); font-size: 16px; font-weight: 700; }
 .admin-date-chip span { color: #464a4b; font-size: 12px; }
 .admin-date-chip.selected,.admin-time-chip.selected { border-color: #00bd59; background: linear-gradient(140deg, #00b74f, #009c42 70%, #00bb59); box-shadow: inset 0 1px 4px #6bff9970, 0 0 9px #00b34b22; color: #fff; }
 .admin-date-chip.selected span,.admin-time-chip.selected>span { color: #cdeed0; }
@@ -180,7 +172,7 @@
 .admin-time-strip { gap: 6px; padding: 0 1px; scrollbar-width: none; scroll-behavior: smooth; }
 .admin-time-strip::-webkit-scrollbar { display: none; }
 .admin-time-chip { flex: 1 0 50px; min-width: 50px; min-height: 56px; height: 56px; padding: 5px 3px; border: 0; border-radius: 8px; box-shadow: 0 3px 12px #273b3208; color: #11191b; gap: 5px; }
-.admin-time-chip strong { font-family: Arial, sans-serif; font-size: 13px; font-weight: 700; }
+.admin-time-chip strong { font-family: var(--font-body); font-size: 13px; font-weight: 700; }
 .admin-time-chip>span { color: #161c1d; font-size: 13px; }
 .admin-time-all { flex-basis: 53px; min-width: 53px; }
 .admin-time-all strong { font-family: inherit; font-size: 12px; }
@@ -202,7 +194,7 @@
 .admin-reference-view .admin-booking-table td:last-child { overflow: visible; padding: 0 7px; }
 .admin-time-column-heading { display: flex; align-items: center; gap: 17px; }
 .admin-row-time { display: flex; align-items: center; justify-content: space-between; width: 78px; max-width: 100%; height: 29px; padding: 3px 8px; margin-left: -8px; gap: 8px; border: 0; border-radius: 6px; background: #fff; box-shadow: 0 2px 8px #233b2c08; }
-.admin-time-value { color: #090f10; font-family: Arial, sans-serif; font-size: 14px; font-weight: 700; }
+.admin-time-value { color: #090f10; font-family: var(--font-body); font-size: 14px; font-weight: 700; }
 .admin-passenger-name { font-size: 14px; font-weight: 400; color: #232727; }
 .admin-reference-view .admin-direction-cell { font-size: inherit; }
 .admin-seat-badge { min-width: 0; height: auto; padding: 0; border: 0; border-radius: 0; color: #151c1d; background: transparent; font-size: 14px; }
@@ -219,11 +211,11 @@
 .admin-reference-view:not(:has(.admin-section-note)) .admin-table-scroll { flex: 1; }
 .admin-page-buttons { gap: 4px; }
 .admin-page-buttons>.admin-icon-button { width: 43px; height: 39px; border: 0; box-shadow: 0 2px 8px #253b2b0a; }
-.admin-page-buttons>button:not(.admin-icon-button) { width: 44px; height: 39px; border-radius: 8px; color: #11191b; font-family: Arial, sans-serif; font-size: 16px; font-weight: 700; }
+.admin-page-buttons>button:not(.admin-icon-button) { width: 44px; height: 39px; border-radius: 8px; color: #11191b; font-family: var(--font-body); font-size: 16px; font-weight: 700; }
 .admin-page-buttons>button.selected { color: #fff; background: linear-gradient(135deg, #00b957, #009f48); box-shadow: inset 0 1px 3px #6cff9980; }
 .admin-page-buttons>span { color: #85908b; font-size: 11px; }
 .admin-pagination>label { color: #141a1b; font-size: 12px; font-weight: 500; gap: 17px; }
-.admin-pagination select { width: 79px; height: 39px; border-color: #f0f1f1; border-radius: 8px; color: #101719; font-family: Arial, sans-serif; font-size: 15px; font-weight: 700; padding: 7px 12px; }
+.admin-pagination select { width: 79px; height: 39px; border-color: #f0f1f1; border-radius: 8px; color: #101719; font-family: var(--font-body); font-size: 15px; font-weight: 700; padding: 7px 12px; }
 .admin-reference-view .admin-footer { display: none; }
 .admin-section-note { font-size: 13px; }
 .admin-reference-view .admin-cell-subtitle { font-size: 10px; }
@@ -369,6 +361,7 @@
 .admin-reference-view .admin-calls-table { min-width: 1140px; }
 .admin-call-identity { white-space: nowrap; }
 .admin-call-identity > strong { display: block; font-weight: 500; }
+.admin-call-count { font-family: var(--font-body); }
 .admin-call-phone { display: block; margin-top: 2px; color: #617368; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .admin-call-location { min-width: 155px; max-width: 190px; }
 .admin-call-phase.completed { background: #f0f3f1; color: #718278; }
