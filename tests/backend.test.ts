@@ -681,6 +681,55 @@ test('deferred bridge reads aliases and the later national migration preserves h
   }
 });
 
+test('only legacy completed calls accept the original parser hash before and after migration; new calls retain strict identity', async () => {
+  const fresh = await fixture({ deferPhoneMigration: true });
+  let migrated: Awaited<ReturnType<typeof createApp>> | undefined;
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'ძველი ნომრის გამეორების ტესტი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const payload = callEvent({ eventId: 'old-foreign-nine-digits', phone: '+298555123' });
+    const originalHash = createHash('sha256').update(JSON.stringify({ phone: '+995298555123', occurredAt: '2030-01-01T06:20:30.000Z', durationSeconds: 15, kind: 'incoming' })).digest('hex');
+    // Old warm instances omit the new column, so its migration default must mark their inserts as legacy.
+    const inserted = await fresh.db.prepare('INSERT INTO call_inquiries(device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at) VALUES (?,?,?,?,?,?,?)')
+      .run(paired.device.id, payload.eventId, originalHash, '+995298555123', '2030-01-01T06:20:30.000Z', 15, '2030-01-01T00:00:00.000Z');
+    const id = Number(inserted.lastInsertRowid);
+    const before = await fresh.db.prepare('SELECT * FROM call_inquiries WHERE id=?').get(id);
+    assert.equal(before?.legacy_hash, 1);
+    assert.equal(before?.phase, 'completed');
+    const first = await fresh.request('/integrations/android/calls', 'POST', payload, bearer, false);
+    assert.equal(first.status, 200);
+    assert.deepEqual(first.data, { id, duplicate: true });
+    assert.deepEqual(await fresh.db.prepare('SELECT * FROM call_inquiries WHERE id=?').get(id), before);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...payload, phase: 'completed' }, bearer, false)).status, 409);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...payload, phase: 'answered', durationSeconds: 0 }, bearer, false)).status, 409);
+    migrated = await createApp({ dbPath: fresh.path, databaseUrl: fresh.databaseUrl, deferPhoneMigration: false });
+    const afterMigration = await fresh.db.prepare('SELECT * FROM call_inquiries WHERE id=?').get(id);
+    assert.equal(afterMigration?.phone, '298555123');
+    assert.equal(afterMigration?.request_hash, originalHash);
+    const repeated = await fresh.request('/integrations/android/calls', 'POST', payload, bearer, false);
+    assert.equal(repeated.status, 200);
+    assert.equal(repeated.data.id, id);
+    assert.deepEqual(await fresh.db.prepare('SELECT * FROM call_inquiries WHERE id=?').get(id), afterMigration);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...payload, durationSeconds: 16 }, bearer, false)).status, 409);
+    const national = callEvent({ eventId: 'new-national-nine-digits', phone: '298555123' });
+    const created = await fresh.request('/integrations/android/calls', 'POST', national, bearer, false);
+    assert.equal(created.status, 201);
+    const newBefore = await fresh.db.prepare('SELECT * FROM call_inquiries WHERE id=?').get(created.data.id);
+    assert.equal(newBefore?.legacy_hash, 0);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...national, phone: '+298555123' }, bearer, false)).status, 409);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...national, phone: '+298555123', phase: 'completed' }, bearer, false)).status, 409);
+    assert.deepEqual(await fresh.db.prepare('SELECT * FROM call_inquiries WHERE id=?').get(created.data.id), newBefore);
+    const answered = callEvent({ eventId: 'new-answered-nine-digits', phone: '298555123', phase: 'answered', durationSeconds: 0 });
+    const active = await fresh.request('/integrations/android/calls', 'POST', answered, bearer, false);
+    const { phase: _phase, ...withoutPhase } = answered;
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...withoutPhase, phone: '+298555123' }, bearer, false)).status, 409);
+    assert.equal((await fresh.db.prepare('SELECT phase FROM call_inquiries WHERE id=?').get(active.data.id))?.phase, 'answered');
+  } finally {
+    if (migrated) await migrated.close();
+    await fresh.close();
+  }
+});
+
 test('trusted passenger profiles use one Georgian canonical phone and persist through deletion and database restart', async () => {
   const fresh = await fixture();
   try {

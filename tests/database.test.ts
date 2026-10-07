@@ -34,7 +34,7 @@ test('production refuses an absent DATABASE_URL', async () => {
 });
 
 async function verifySchemaAndTransactions(first: Database, second: Database = first) {
-  assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 3);
+  assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 4);
   assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM stops').get())?.count, 3);
   assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM base_schedule').get())?.count, 2);
   const user = await first.prepare('INSERT INTO users(login,name,password_hash,created_at) VALUES (?,?,?,?)').run('adapter', 'Operator', 'test-hash', new Date().toISOString());
@@ -81,10 +81,14 @@ async function verifySchemaAndTransactions(first: Database, second: Database = f
   const device = await first.prepare('INSERT INTO call_devices(name,token_hash,created_at) VALUES (?,?,?)').run('Phase test', 'phase-device-test', new Date().toISOString());
   const inquiry = await first.prepare('INSERT INTO call_inquiries(device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at) VALUES (?,?,?,?,?,?,?)')
     .run(device.lastInsertRowid, 'phase-event', 'original-hash', '568694879', new Date().toISOString(), 12, new Date().toISOString());
-  assert.deepEqual({ ...(await first.prepare('SELECT phase,answered_hash FROM call_inquiries WHERE id=?').get(inquiry.lastInsertRowid)) }, { phase: 'completed', answered_hash: null });
+  assert.deepEqual({ ...(await first.prepare('SELECT phase,answered_hash,legacy_hash FROM call_inquiries WHERE id=?').get(inquiry.lastInsertRowid)) }, { phase: 'completed', answered_hash: null, legacy_hash: 1 });
   await first.prepare('UPDATE call_inquiries SET phase=? WHERE id=?').run('answered', inquiry.lastInsertRowid);
   await assert.rejects(first.prepare('UPDATE call_inquiries SET phase=? WHERE id=?').run('invalid', inquiry.lastInsertRowid));
   assert.equal((await first.prepare('SELECT phase FROM call_inquiries WHERE id=?').get(inquiry.lastInsertRowid))?.phase, 'answered');
+  await first.prepare('UPDATE call_inquiries SET legacy_hash=? WHERE id=?').run(0, inquiry.lastInsertRowid);
+  await assert.rejects(first.prepare('UPDATE call_inquiries SET legacy_hash=? WHERE id=?').run(2, inquiry.lastInsertRowid));
+  await assert.rejects(first.prepare('UPDATE call_inquiries SET legacy_hash=NULL WHERE id=?').run(inquiry.lastInsertRowid));
+  assert.equal((await first.prepare('SELECT legacy_hash FROM call_inquiries WHERE id=?').get(inquiry.lastInsertRowid))?.legacy_hash, 0);
 }
 
 test('SQLite migrations and asynchronous transactions preserve isolation and rollback', async () => {
@@ -106,7 +110,7 @@ test('SQLite migration preserves existing data and runs once', async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const database = await createDatabase({ dbPath, databaseUrl: '', production: false });
       try {
-        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 3);
+        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 4);
         assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM stops').get())?.count, 1);
         assert.equal((await database.prepare('SELECT value FROM settings WHERE key=?').get('didubeName'))?.value, 'Existing Didube');
       } finally { await database.close(); }

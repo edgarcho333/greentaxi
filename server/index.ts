@@ -51,6 +51,17 @@ function phone(value: unknown): string {
   if (!normalized) reject(400, 'მიუთითეთ სწორი ტელეფონის ნომერი.', 'VALIDATION');
   return normalized;
 }
+// This parser is intentionally frozen to the original intake behavior, and is used only for old completed-call retries.
+function originalPhoneForRetry(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const input = value.trim();
+  if (input.length < 9 || input.length > 30 || !/^[+\d\s()-]+$/.test(input)) return undefined;
+  let digits = input.replace(/\D/g, '');
+  if (digits.startsWith('00') && digits.length >= 11) digits = digits.slice(2);
+  if (digits.length < 9 || digits.length > 15) return undefined;
+  return digits.length === 9 ? `+995${digits}` : `+${digits}`;
+}
 function seatCount(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 4) reject(400, 'ადგილების რაოდენობა უნდა იყოს 1-დან 4-მდე.', 'VALIDATION');
   return value;
@@ -365,7 +376,12 @@ export async function createApp(options: Options = {}) {
         const sameIdentity = previousPhone === caller && existing.occurred_at === timestamp;
         if (!explicitPhase) {
           // Payloads from old applications retain strict idempotency, without permitting a phase transition.
-          if (existing.request_hash !== hash) conflict();
+          if (existing.request_hash !== hash) {
+            const originalCaller = existing.phase === 'completed' && existing.legacy_hash === 1 ? originalPhoneForRetry(req.body.phone) : undefined;
+            const originalHash = originalCaller === undefined ? undefined
+              : digest(JSON.stringify({ phone: originalCaller, occurredAt: timestamp, durationSeconds: duration, kind }));
+            if (existing.request_hash !== originalHash) conflict();
+          }
         } else if (phase === 'answered') {
           if (existing.phase === 'answered') {
             if (existing.request_hash !== hash || !sameIdentity) conflict();
@@ -381,7 +397,7 @@ export async function createApp(options: Options = {}) {
         }
         return { id: existing.id as number, duplicate: true };
       }
-      const created = (await db.prepare('INSERT INTO call_inquiries(device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at,phase,answered_hash) VALUES (?,?,?,?,?,?,?,?,?)').run(device.id, eventId, hash, caller, timestamp, duration, now().toISOString(), phase, phase === 'answered' ? hash : null));
+      const created = (await db.prepare('INSERT INTO call_inquiries(device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at,phase,answered_hash,legacy_hash) VALUES (?,?,?,?,?,?,?,?,?,?)').run(device.id, eventId, hash, caller, timestamp, duration, now().toISOString(), phase, phase === 'answered' ? hash : null, 0));
       const id = Number(created.lastInsertRowid);
       (await audit('call.receive', undefined, undefined, { callId: id, deviceId: device.id }));
       return { id, duplicate: false };
