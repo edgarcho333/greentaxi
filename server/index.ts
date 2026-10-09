@@ -6,6 +6,8 @@ import type { Analytics, Booking, CallDevice, CallInquiry, Direction, PassengerP
 import { normalizePhone, legacyPhoneKey } from '../shared/phone.js';
 import { migratePassengerAddresses, migratePhoneStorage, migratePickupMemory, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from './passenger-profiles.js';
 import { comparePassengerTrips, listPassengers, passengerBookings, passengerSummary } from './passengers.js';
+import { readDriverSchedule } from './drivers.js';
+import { DRIVER_DIRECTION } from '../shared/driver-rotation.js';
 
 const scrypt = promisify(scryptCallback);
 const DIRECTIONS: Direction[] = ['gori-tbilisi', 'tbilisi-gori'];
@@ -606,6 +608,49 @@ export async function createApp(options: Options = {}) {
   });
   app.get('/api/admin/schedule', async (req, res) => {
     res.json((await schedule(direction(req.query.direction), date(req.query.date))));
+  });
+  function driverDirection(value: unknown) {
+    if (value !== DRIVER_DIRECTION) reject(400, 'მძღოლების რიგი ამ ეტაპზე მხოლოდ გორი → თბილისი მიმართულებისთვის არის.', 'DRIVER_DIRECTION');
+    return DRIVER_DIRECTION;
+  }
+  app.get('/api/admin/drivers/schedule', async (req, res) => {
+    const d = driverDirection(req.query.direction);
+    const day = date(req.query.date);
+    const result = await transaction(async () => readDriverSchedule(db, day, (await configuredTimes(d, day)).effective));
+    res.json(result);
+  });
+  app.patch('/api/admin/drivers/:id/day', async (req: ContextRequest, res) => {
+    const d = driverDirection(req.body.direction);
+    const day = date(req.body.date);
+    const id = numberId(req.params.id);
+    const hasDeclined = Object.hasOwn(req.body, 'declined');
+    const hasAssignment = Object.hasOwn(req.body, 'assignment');
+    if (!hasDeclined && !hasAssignment) reject(400, 'აირჩიეთ მძღოლის ცვლილება.', 'VALIDATION');
+    if (hasDeclined && typeof req.body.declined !== 'boolean') reject(400, 'მძღოლის სტატუსი არასწორია.', 'VALIDATION');
+    let assignment: { mode: 'auto' | 'manual'; time: string | null } | undefined;
+    if (hasAssignment) {
+      const input = req.body.assignment;
+      if (!input || typeof input !== 'object' || Array.isArray(input) || !['auto', 'manual'].includes(input.mode)) reject(400, 'მძღოლის დროის არჩევანი არასწორია.', 'VALIDATION');
+      if (input.mode === 'auto') {
+        if (Object.hasOwn(input, 'time')) reject(400, 'ავტომატურ დროს ხელით დრო არ სჭირდება.', 'VALIDATION');
+        assignment = { mode: 'auto', time: null };
+      } else assignment = { mode: 'manual', time: input.time === null ? null : time(input.time) };
+    }
+    const result = await transaction(async () => {
+      if (!await db.prepare('SELECT id FROM drivers WHERE id=?').get(id)) reject(404, 'მძღოლი ვერ მოიძებნა.', 'NOT_FOUND');
+      const effective = (await configuredTimes(d, day)).effective;
+      if (assignment?.time !== null && assignment?.time !== undefined && !effective.includes(assignment.time)) reject(409, 'არჩეული დრო გამორთულია. აირჩიეთ მოქმედი დრო.', 'SLOT_INACTIVE');
+      const previous = await db.prepare('SELECT declined,assignment_mode,manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(id, day);
+      const declined = hasDeclined ? Number(req.body.declined) : previous?.declined ?? 0;
+      const mode = assignment?.mode ?? previous?.assignment_mode ?? 'auto';
+      const manualTime = assignment ? assignment.time : previous?.manual_time ?? null;
+      await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(driver_id,date) DO UPDATE SET declined=excluded.declined,assignment_mode=excluded.assignment_mode,manual_time=excluded.manual_time,updated_at=excluded.updated_at`)
+        .run(id, day, declined, mode, manualTime, now().toISOString());
+      await audit('driver.day', req.employee, undefined, { driverId: id, direction: d, date: day, ...(hasDeclined ? { declined: req.body.declined } : {}), ...(assignment ? { assignment: { mode: assignment.mode, ...(assignment.mode === 'manual' ? { time: assignment.time } : {}) } } : {}) });
+      return readDriverSchedule(db, day, effective);
+    });
+    res.json(result);
   });
   app.put('/api/admin/schedule/base', async (req: ContextRequest, res) => {
     const d = direction(req.body.direction);

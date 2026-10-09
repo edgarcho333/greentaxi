@@ -16,6 +16,15 @@ export type Booking = {
   deletedAt: string | null; createdAt: string; updatedAt: string;
 };
 export type Schedule = { direction: Direction; date: string; baseTimes: string[]; overrideTimes: string[] | null; slots: Slot[] };
+export type DriverDay = {
+  id: number; name: string; capacity: number; order: number; queuePosition: number;
+  declined: boolean; assignmentMode: 'auto' | 'manual';
+  automaticTime: string | null; assignedTime: string | null; assignmentActive: boolean;
+};
+export type DriverSchedule = {
+  direction: 'gori-tbilisi'; date: string; anchorDate: string; firstDriverId: number;
+  times: string[]; drivers: DriverDay[];
+};
 export type Passenger = {
   name: string; phone: string; address: string; addressCity: 'gori' | 'tbilisi' | null;
   orderCount: number; seats: number; latestDate: string;

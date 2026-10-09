@@ -1,6 +1,7 @@
 import { addDays, today, type Analytics, type Booking, type CallInquiry, type Direction, type Passenger, type PassengerProfile, type PublicConfig, type Schedule, type User } from './api';
 import { canonicalPassengerPhone } from './components/admin/usePassengerProfile';
 import { passengerDepartureTimes } from '../shared/passenger-departure-times';
+import { buildDriverSchedule } from '../shared/driver-rotation';
 
 export const previewUser: User = { id: 1, login: 'preview', name: 'სატესტო ოპერატორი' };
 export const previewOnlyMessage = 'ამ HTML ფაილში მხოლოდ დიზაინის ნახვაა შესაძლებელი. რეალური მოქმედებებისთვის გაუშვით აპლიკაციის სერვერი.';
@@ -164,6 +165,11 @@ export function installPreviewApi(): void {
       case '/api/public/slots': return reply({ slots: schedule(bookings, params).slots.filter(slot => new Date(`${params.get('date') ?? day}T${slot.time}:00+04:00`).getTime() > Date.now()) });
       case '/api/admin/bookings': return reply({ bookings: filteredBookings(bookings, params) });
       case '/api/admin/schedule': return reply(schedule(bookings, params));
+      case '/api/admin/drivers/schedule': {
+        if (params.get('direction') !== 'gori-tbilisi') return reply({ error: 'მძღოლების რიგი მოქმედებს მხოლოდ გორი → თბილისი მიმართულებით.', code: 'DRIVER_DIRECTION' }, 400);
+        const saved = schedule(bookings, params);
+        return reply(buildDriverSchedule(saved.date, saved.overrideTimes ?? saved.baseTimes));
+      }
       case '/api/admin/calls': return reply({ calls: (params.get('scope') ?? 'incoming') === 'incoming' && matchesSearch(sampleCall.passengerProfile?.name || '', sampleCall.phone || '', params.get('search') ?? '') ? [sampleCall] : [] });
       case '/api/admin/devices': return reply({ devices: [] });
       case '/api/admin/settings': return reply({ didubeName: config.didubeName, didubeAddress: config.didubeAddress });

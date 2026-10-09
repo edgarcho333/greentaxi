@@ -1,0 +1,63 @@
+-- Permanent roster positions do not depend on any day's refusals or manual times.
+CREATE TABLE drivers (
+  id INTEGER PRIMARY KEY CHECK(id>0),
+  name TEXT NOT NULL,
+  capacity INTEGER NOT NULL CHECK(capacity BETWEEN 1 AND 8),
+  sort_order INTEGER NOT NULL UNIQUE CHECK(sort_order>0)
+);
+CREATE TABLE driver_day_overrides (
+  driver_id INTEGER NOT NULL REFERENCES drivers(id),
+  date TEXT NOT NULL CHECK(date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  declined INTEGER NOT NULL DEFAULT 0 CHECK(declined IN (0,1)),
+  assignment_mode TEXT NOT NULL DEFAULT 'auto' CHECK(assignment_mode IN ('auto','manual')),
+  manual_time TEXT CHECK(manual_time IS NULL OR (manual_time GLOB '[0-2][0-9]:[0-5][0-9]' AND manual_time<='23:59')),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(driver_id,date),
+  CHECK(assignment_mode='manual' OR manual_time IS NULL)
+);
+CREATE INDEX driver_day_overrides_date ON driver_day_overrides(date,driver_id);
+
+INSERT INTO drivers(id,name,capacity,sort_order) VALUES
+  (1,'რეზო',7,1),
+  (2,'კუდუხა',7,2),
+  (3,'გოჩა',8,3),
+  (4,'ვიქტორი',7,4),
+  (5,'ბიძინა',6,5),
+  (6,'დიმა',7,6),
+  (7,'გუგა',7,7),
+  (8,'ამიკო',6,8),
+  (9,'ნიკა',6,9),
+  (10,'გიგა',6,10),
+  (11,'ვანო',7,11),
+  (12,'გიორგი',7,12),
+  (13,'შოშია',7,13),
+  (14,'ლევანი',6,14),
+  (15,'დოლიმე',7,15),
+  (16,'კობა',6,16),
+  (17,'ბოლოთა',7,17),
+  (18,'ბუზა',7,18),
+  (19,'ზურა',7,19),
+  (20,'ედიკა',7,20),
+  (21,'კახა ახალი',7,21),
+  (22,'ბორა',7,22),
+  (23,'თემო ახალი',7,23),
+  (24,'ფურცელა',7,24),
+  (25,'ბადრი',6,25),
+  (26,'რამაზი',7,26),
+  (27,'ვალერი',7,27),
+  (28,'დათო ტინის ხიდი',7,28),
+  (29,'დათო ტინის ხიდი ახალი',7,29),
+  (30,'ერასტი',7,30),
+  (31,'გურამი',7,31),
+  (32,'სუხიტა',7,32),
+  (33,'გელა',6,33),
+  (34,'სოსო',8,34),
+  (35,'აჩიკო',7,35),
+  (36,'ირაკლი',7,36),
+  (37,'კევა',6,37),
+  (38,'ზვიადი',7,38),
+  (39,'სვანი',6,39),
+  (40,'დევი',6,40),
+  (41,'ილარიონო',7,41),
+  (42,'გია',8,42),
+  (43,'ლაშა / ვიქტორი',7,43);

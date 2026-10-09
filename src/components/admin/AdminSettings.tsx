@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, CalendarDays, Check, CheckCircle2, Clock3, Copy, LoaderCircle, MapPin, Pencil, Plus, RotateCcw, Save, ShieldCheck, Smartphone, UserRoundPlus, X } from 'lucide-react';
 import { directions, request, today, type CallDevice, type Direction, type Schedule, type Stop, type User } from '../../api';
+import DriverRoster from './DriverRoster';
 import './settings.css';
 
 type Feedback = { kind: 'success' | 'error'; message: string } | null;
@@ -43,6 +44,8 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
   const [scheduleLoading, setScheduleLoading] = useState(true);
   const [scheduleBusy, setScheduleBusy] = useState<'base' | 'date' | 'reset' | null>(null);
   const [scheduleFeedback, setScheduleFeedback] = useState<Feedback>(null);
+  const [driverRefresh, setDriverRefresh] = useState(0);
+  const [driverBusy, setDriverBusy] = useState(false);
   const [stops, setStops] = useState<Stop[]>([]);
   const [locations, setLocations] = useState<LocationSettings>({ didubeName: '', didubeAddress: '' });
   const [stopDraft, setStopDraft] = useState({ name: '', address: '' });
@@ -112,6 +115,7 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
       } else {
         await request(`/admin/schedule/${kind}`, { method: 'PUT', body: JSON.stringify(kind === 'base' ? { direction, times: baseTimes } : { direction, date, times: dateTimes }) });
       }
+      setDriverRefresh(value => value + 1);
       await fetchSchedule();
       onChange();
       setScheduleFeedback({ kind: 'success', message: kind === 'reset' ? 'ამ თარიღისთვის ყოველდღიური განრიგი აღდგენილია.' : 'განრიგი შენახულია.' });
@@ -243,16 +247,17 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
   return <div className="admin-settings">
     <section className="admin-config-card admin-config-schedule">
       <div className="admin-config-heading"><div className="admin-config-icon"><CalendarDays size={23} /></div><div><h2>მგზავრობის განრიგი</h2><p>ყოველდღიური დროები და გამონაკლისები კონკრეტული თარიღისთვის.</p></div></div>
-      <div className="admin-config-schedule-filters"><label>მიმართულება<select value={direction} onChange={event => setDirection(event.target.value as Direction)} disabled={!!scheduleBusy}>{Object.entries(directions).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label>თარიღი<input type="date" value={date} onChange={event => { if (event.target.value) setDate(event.target.value); }} disabled={!!scheduleBusy} /></label></div>
+      <div className="admin-config-schedule-filters"><label>მიმართულება<select aria-label="მიმართულება" value={direction} onChange={event => setDirection(event.target.value as Direction)} disabled={!!scheduleBusy}>{Object.entries(directions).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label>თარიღი<input type="date" aria-label="თარიღი" value={date} onChange={event => { if (event.target.value) setDate(event.target.value); }} disabled={!!scheduleBusy} /></label></div>
       <FeedbackMessage feedback={scheduleFeedback} />
       {scheduleLoading ? <div className="admin-config-loading">{loadingIcon}განრიგი იტვირთება…</div> : schedule ? <>
         <div className="admin-config-schedule-columns">
-          <div className="admin-config-subsection"><div className="admin-config-section-label"><span className="admin-config-eyebrow">ყოველდღიური განრიგი</span><span className="admin-config-counter">{baseTimes.length} დრო</span></div><p>მოქმედებს ყველა დღეზე, რომელსაც საკუთარი განრიგი არ აქვს.</p><TimeEditor times={baseTimes} onChange={setBaseTimes} id="base-new-time" disabled={!!scheduleBusy} />{changedBaseWithOrders && changedBaseWithOrders.length > 0 && <div className="admin-config-warning"><AlertCircle size={17} /><span>ამ დროებზე უკვე არის ჯავშნები: {changedBaseWithOrders.map(slot => slot.time).join(', ')}. ისინი შენარჩუნდება და გადატანა დასჭირდება.</span></div>}<button type="button" className="admin-config-button primary" disabled={!!scheduleBusy} onClick={() => saveSchedule('base')}>{scheduleBusy === 'base' ? loadingIcon : <Save size={16} />}ყოველდღიური განრიგის შენახვა</button></div>
-          <div className="admin-config-subsection"><div className="admin-config-section-label"><span className="admin-config-eyebrow">არჩეული თარიღი</span><span className={`admin-config-status ${schedule.overrideTimes ? 'custom' : ''}`}>{schedule.overrideTimes ? 'ინდივიდუალური' : 'ყოველდღიური'}</span></div><p>ცვლილება მხოლოდ {date} თარიღზე იმოქმედებს.</p><TimeEditor times={dateTimes} onChange={setDateTimes} id="date-new-time" disabled={!!scheduleBusy} />{proposedRemoved.length > 0 && <div className="admin-config-warning"><AlertCircle size={17} /><span>ამ დროებზე უკვე არის ჯავშნები: {proposedRemoved.map(slot => slot.time).join(', ')}. ისინი შენარჩუნდება და გადატანა დასჭირდება.</span></div>}<div className="admin-config-actions"><button type="button" className="admin-config-button primary" disabled={!!scheduleBusy} onClick={() => saveSchedule('date')}>{scheduleBusy === 'date' ? loadingIcon : <Save size={16} />}ამ დღის შენახვა</button><button type="button" className="admin-config-button secondary" disabled={!!scheduleBusy || schedule.overrideTimes === null} onClick={() => saveSchedule('reset')}>{scheduleBusy === 'reset' ? loadingIcon : <RotateCcw size={16} />}აღდგენა</button></div></div>
+          <div className="admin-config-subsection"><div className="admin-config-section-label"><span className="admin-config-eyebrow">ყოველდღიური განრიგი</span><span className="admin-config-counter">{baseTimes.length} დრო</span></div><p>მოქმედებს ყველა დღეზე, რომელსაც საკუთარი განრიგი არ აქვს.</p><TimeEditor times={baseTimes} onChange={setBaseTimes} id="base-new-time" disabled={!!scheduleBusy || driverBusy} />{changedBaseWithOrders && changedBaseWithOrders.length > 0 && <div className="admin-config-warning"><AlertCircle size={17} /><span>ამ დროებზე უკვე არის ჯავშნები: {changedBaseWithOrders.map(slot => slot.time).join(', ')}. ისინი შენარჩუნდება და გადატანა დასჭირდება.</span></div>}<button type="button" className="admin-config-button primary" disabled={!!scheduleBusy || driverBusy} onClick={() => saveSchedule('base')}>{scheduleBusy === 'base' ? loadingIcon : <Save size={16} />}ყოველდღიური განრიგის შენახვა</button></div>
+          <div className="admin-config-subsection"><div className="admin-config-section-label"><span className="admin-config-eyebrow">არჩეული თარიღი</span><span className={`admin-config-status ${schedule.overrideTimes ? 'custom' : ''}`}>{schedule.overrideTimes ? 'ინდივიდუალური' : 'ყოველდღიური'}</span></div><p>ცვლილება მხოლოდ {date} თარიღზე იმოქმედებს.</p><TimeEditor times={dateTimes} onChange={setDateTimes} id="date-new-time" disabled={!!scheduleBusy || driverBusy} />{proposedRemoved.length > 0 && <div className="admin-config-warning"><AlertCircle size={17} /><span>ამ დროებზე უკვე არის ჯავშნები: {proposedRemoved.map(slot => slot.time).join(', ')}. ისინი შენარჩუნდება და გადატანა დასჭირდება.</span></div>}<div className="admin-config-actions"><button type="button" className="admin-config-button primary" disabled={!!scheduleBusy || driverBusy} onClick={() => saveSchedule('date')}>{scheduleBusy === 'date' ? loadingIcon : <Save size={16} />}ამ დღის შენახვა</button><button type="button" className="admin-config-button secondary" disabled={!!scheduleBusy || driverBusy || schedule.overrideTimes === null} onClick={() => saveSchedule('reset')}>{scheduleBusy === 'reset' ? loadingIcon : <RotateCcw size={16} />}აღდგენა</button></div></div>
         </div>
         {disabledWithOrders.length > 0 && <div className="admin-config-warning"><AlertCircle size={18} /><span>გამორთულ დროებზე დარჩენილია ჯავშნები: {disabledWithOrders.map(slot => `${slot.time} (${slot.bookingCount})`).join(', ')}. გადაიტანეთ ისინი მოქმედ დროზე ჯავშნების გვერდიდან.</span></div>}
         <div className="admin-config-footnote"><ShieldCheck size={16} />განრიგის შეცვლა არსებულ ჯავშნებს არ წაშლის.</div>
       </> : null}
+      <DriverRoster direction={direction} date={date} refreshKey={driverRefresh} disabled={!!scheduleBusy} onBusyChange={setDriverBusy} onChange={onChange} />
     </section>
 
     <section className="admin-config-card admin-config-locations">
