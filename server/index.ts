@@ -255,7 +255,7 @@ export async function createApp(options: Options = {}) {
     await savePassengerProfile(db, row);
   }
   async function profile(number: string): Promise<PassengerProfile | null> {
-    return readPassengerProfile(db, number);
+    return readPassengerProfile(db, number, now());
   }
   async function createBooking(body: Row, employee?: User, source: 'public' | 'employee' | 'android' = employee ? 'employee' : 'public') {
     const input = (await inputBooking(body, undefined, Boolean(employee)));
@@ -428,7 +428,7 @@ export async function createApp(options: Options = {}) {
     return row;
   }
   async function enrichedCalls(rows: Row[]): Promise<CallInquiry[]> {
-    const profiles = await readPassengerProfiles(db, rows.flatMap(row => row.phone === null ? [] : [row.phone]));
+    const profiles = await readPassengerProfiles(db, rows.flatMap(row => row.phone === null ? [] : [row.phone]), now());
     return rows.map(row => callInquiry(row, row.phone === null ? null : profiles.get(normalizePhone(row.phone) ?? row.phone) ?? null));
   }
   app.get('/api/admin/devices', async (_req, res) => {
@@ -677,7 +677,7 @@ export async function createApp(options: Options = {}) {
     res.json({ profile: await profile(phone(req.query.phone)) });
   });
   app.get('/api/admin/passengers', async (req, res) => {
-    let passengers = await listPassengers(db);
+    let passengers = await listPassengers(db, now());
     if (req.query.search) {
       const search = text(req.query.search, 'ძიება', 1, 100).toLocaleLowerCase('ka-GE');
       const canonicalSearch = normalizePhone(search);

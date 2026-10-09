@@ -9,6 +9,7 @@ type Props = { scope: 'incoming' | 'deleted'; search: string; refresh: number; c
 type Draft = {
   phone: string; direction: Direction; goriPickupAddress: string; goriDestinationAddress: string;
   pickupStopId: string; date: string; time: string; seats: number;
+  departureTimes: PassengerProfile['departureTimes']; timeSource: 'empty' | 'profile' | 'manual';
   dirty: { phone: boolean; pickup: boolean; destination: boolean; stop: boolean };
 };
 type ScheduleEntry = { schedule?: Schedule; loading: boolean; loadedAt: number; error?: string };
@@ -26,6 +27,7 @@ function newDraft(call: CallInquiry): Draft {
     phone: call.phone ? formatPhone(call.phone) : '', direction: 'gori-tbilisi',
     goriPickupAddress: profile?.goriPickupAddress || '', goriDestinationAddress: profile?.goriAddress || '',
     pickupStopId: profile?.pickupStopId ? String(profile.pickupStopId) : '', date: today(), time: '', seats: 1,
+    departureTimes: profile?.departureTimes, timeSource: 'empty',
     dirty: { phone: false, pickup: false, destination: false, stop: false },
   };
 }
@@ -35,8 +37,25 @@ function withProfile(draft: Draft, profile: PassengerProfile | null): Draft {
     goriPickupAddress: draft.dirty.pickup ? draft.goriPickupAddress : profile?.goriPickupAddress || '',
     goriDestinationAddress: draft.dirty.destination ? draft.goriDestinationAddress : profile?.goriAddress || '',
     pickupStopId: draft.dirty.stop ? draft.pickupStopId : profile?.pickupStopId ? String(profile.pickupStopId) : '',
+    departureTimes: profile?.departureTimes,
   };
-  return next.goriPickupAddress === draft.goriPickupAddress && next.goriDestinationAddress === draft.goriDestinationAddress && next.pickupStopId === draft.pickupStopId ? draft : next;
+  const sameTimes = (['gori-tbilisi', 'tbilisi-gori'] as const).every(direction => (next.departureTimes?.[direction] || []).join(',') === (draft.departureTimes?.[direction] || []).join(','));
+  return next.goriPickupAddress === draft.goriPickupAddress && next.goriDestinationAddress === draft.goriDestinationAddress && next.pickupStopId === draft.pickupStopId && sameTimes ? draft : next;
+}
+function withPhone(draft: Draft, phone: string): Draft {
+  const previousPhone = normalizePhone(draft.phone);
+  const nextPhone = normalizePhone(phone);
+  if (nextPhone === previousPhone) return { ...draft, phone };
+  const keepManualTime = previousPhone === null && nextPhone !== null && draft.timeSource === 'manual';
+  return {
+    ...draft, phone, time: keepManualTime ? draft.time : '', timeSource: keepManualTime ? 'manual' : 'empty', departureTimes: undefined,
+    goriPickupAddress: draft.dirty.pickup ? draft.goriPickupAddress : '',
+    goriDestinationAddress: draft.dirty.destination ? draft.goriDestinationAddress : '',
+    pickupStopId: draft.dirty.stop ? draft.pickupStopId : '',
+  };
+}
+function withContext(draft: Draft, direction: Direction, date: string): Draft {
+  return draft.direction === direction && draft.date === date ? draft : { ...draft, direction, date, time: '', timeSource: 'empty' };
 }
 
 export default function CallQueue({ scope, search, refresh, config, onChange }: Props) {
@@ -100,7 +119,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
       const next = { ...previous };
       for (const call of visibleCalls) {
         const previousDraft = previous[call.id];
-        const existing = previousDraft && !previousDraft.dirty.phone && call.phone && normalizePhone(previousDraft.phone) !== normalizePhone(call.phone) ? { ...previousDraft, phone: formatPhone(call.phone) } : previousDraft;
+        const existing = previousDraft && !previousDraft.dirty.phone && call.phone && normalizePhone(previousDraft.phone) !== normalizePhone(call.phone) ? withPhone(previousDraft, formatPhone(call.phone)) : previousDraft;
         const profile = profileFor(call);
         const updated = existing && call.phone && normalizePhone(existing.phone) === normalizePhone(call.phone) ? withProfile(existing, profile) : existing || newDraft(call);
         if (updated !== previousDraft) { next[call.id] = updated; changed = true; }
@@ -146,14 +165,21 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
       const next = { ...previous };
       for (const [id, draft] of Object.entries(previous)) {
         if (lockedIds.current.has(Number(id))) continue;
-        if (draft.date < currentDay) { next[Number(id)] = { ...draft, date: currentDay, time: '' }; changed = true; }
-        else if (draft.time && (!futureTime(draft.date, draft.time, now) || (schedules[scheduleKey(draft.direction, draft.date)]?.schedule && !schedules[scheduleKey(draft.direction, draft.date)].schedule!.slots.some(slot => slot.active && slot.time === draft.time)))) {
-          next[Number(id)] = { ...draft, time: '' }; changed = true;
+        let updated = draft;
+        if (draft.date < currentDay) updated = { ...draft, date: currentDay, time: '', timeSource: 'empty' };
+        const entry = schedules[scheduleKey(updated.direction, updated.date)];
+        if (updated.time && (!futureTime(updated.date, updated.time, now) || (entry?.schedule && !entry.schedule.slots.some(slot => slot.active && slot.time === updated.time)))) {
+          updated = { ...updated, time: '', timeSource: updated.timeSource === 'manual' ? 'manual' : 'empty' };
         }
+        if (!updated.time && updated.timeSource !== 'manual' && entry?.schedule && !entry.loading && !entry.error) {
+          const preferred = updated.departureTimes?.[updated.direction]?.find(time => futureTime(updated.date, time, now) && entry.schedule!.slots.some(slot => slot.active && slot.time === time));
+          if (preferred) updated = { ...updated, time: preferred, timeSource: 'profile' };
+        }
+        if (updated !== draft) { next[Number(id)] = updated; changed = true; }
       }
       return changed ? next : previous;
     });
-  }, [now, schedules, scope]);
+  }, [now, schedules, scope, drafts]);
 
   const updateDraft = useCallback((id: number, update: (draft: Draft) => Draft) => {
     if (lockedIds.current.has(id)) return;
@@ -186,7 +212,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
       if (action === 'restore') setRestoreError(message(cause));
       else setRowErrors(previous => ({ ...previous, [call.id]: message(cause) }));
       if (action === 'convert' && draft && cause instanceof ApiError && ['SLOT_PAST', 'SLOT_INACTIVE', 'DATE_OUT_OF_RANGE'].includes(cause.code || '')) {
-        setDrafts(previous => previous[call.id] ? { ...previous, [call.id]: { ...previous[call.id], time: '' } } : previous);
+        setDrafts(previous => previous[call.id] ? { ...previous, [call.id]: { ...previous[call.id], time: '', timeSource: 'manual' } } : previous);
         loadSchedule(draft.direction, draft.date, true);
       }
     } finally { lockedIds.current.delete(call.id); if (mounted.current) setBusy(call.id, false); }
@@ -203,7 +229,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
     <div className="admin-table-heading"><div><h2><Smartphone size={17} />{scope === 'incoming' ? 'სატელეფონო განაცხადები' : 'წაშლილი სატელეფონო განაცხადები'}<span className="admin-call-count">{calls.length}</span></h2><span>{scope === 'incoming' ? 'აირჩიეთ მისამართი, დღე და დრო · ჯავშანი ავტომატურად დადასტურდება' : 'ზარის აღდგენა მას შემოსულ განაცხადებში დააბრუნებს'}</span></div><button className="admin-text-button" onClick={() => setVersion(value => value + 1)} disabled={loading}>განახლება</button></div>
     {error && <div className="admin-error" role="alert">{error}<button onClick={() => setVersion(value => value + 1)}>ხელახლა ცდა</button></div>}
     {(loading || (waitingForScope && !error)) && !calls.length ? <div className="admin-call-empty"><Loader2 size={18} className="admin-spin" />ზარები იტვირთება…</div> : !calls.length ? <div className="admin-call-empty"><Phone size={17} /><span>{scope === 'incoming' ? 'სატელეფონო განაცხადები ჯერ არ არის. ტელეფონის დაკავშირება შეგიძლიათ პარამეტრებში.' : 'წაშლილი სატელეფონო განაცხადები არ არის.'}</span></div> : <>
-      <div className="admin-table-scroll admin-call-table-scroll"><table className={`admin-booking-table admin-calls-table admin-calls-inline-table ${scope === 'deleted' ? 'is-history' : ''}`}><thead><tr><th>ქალაქი</th><th>ტელეფონი</th><th>მისამართი</th><th>ჯავშანი</th><th>ზარი</th><th>მოწყობილობა</th></tr></thead><tbody>{visibleCalls.map(call => {
+      <div className="admin-table-scroll admin-call-table-scroll"><table className={`admin-booking-table admin-calls-table admin-calls-inline-table ${scope === 'deleted' ? 'is-history' : ''}`}><thead><tr><th>ქალაქი</th><th>ტელეფონი</th><th>მისამართი</th><th>ჯავშანი</th></tr></thead><tbody>{visibleCalls.map(call => {
         const draft = drafts[call.id] || newDraft(call);
         return scope === 'incoming' ? <IncomingCallRow key={call.id} call={call} draft={draft} initialized={!!drafts[call.id]} entry={schedules[scheduleKey(draft.direction, draft.date)]} config={config} now={now} busy={busyIds.has(call.id)} error={rowErrors[call.id] || ''} update={update => updateDraft(call.id, update)} retry={() => { const current = draftsRef.current[call.id]; if (current) loadSchedule(current.direction, current.date, true); }} onConfirm={() => void act(call, 'convert')} onReject={() => void act(call, 'delete')} /> : <HistoryCallRow key={call.id} call={call} busy={busyIds.has(call.id)} onRestore={() => { setPendingRestore(call); setRestoreError(''); }} />;
       })}</tbody></table></div>
@@ -222,6 +248,9 @@ function validDraft(draft: Draft, entry: ScheduleEntry | undefined, config: Publ
 
 function CallDetails({ call }: { call: CallInquiry }) {
   return <div className={`admin-call-details ${call.phase === 'answered' ? 'is-live' : ''}`}><time dateTime={call.occurredAt}>{callDate(call.occurredAt)}</time><span><i />{call.phase === 'answered' ? 'მიმდინარეობს' : 'დასრულებულია'}{call.phase === 'completed' && <small>{duration(call.durationSeconds)}</small>}</span></div>;
+}
+function CallMetadata({ call }: { call: CallInquiry }) {
+  return <div className="admin-call-metadata"><CallDetails call={call} /><span className="admin-call-device"><Smartphone size={12} aria-hidden="true" />{call.deviceName}</span></div>;
 }
 
 function IncomingCallRow({ call, draft, initialized, entry, config, now, busy, error, update, retry, onConfirm, onReject }: {
@@ -261,30 +290,28 @@ function IncomingCallRow({ call, draft, initialized, entry, config, now, busy, e
       const strip = timeStrip.current;
       if (selected.offsetLeft < strip.scrollLeft || selected.offsetLeft + selected.offsetWidth > strip.scrollLeft + strip.clientWidth) strip.scrollTo({ left: Math.max(0, selected.offsetLeft - strip.clientWidth / 2 + selected.offsetWidth / 2), behavior: 'smooth' });
     }
-  }, [draft.direction, draft.date, draft.time]);
+  }, [draft.direction, draft.date, draft.time, entry?.loadedAt]);
   const changePhone = (value: string) => update(previous => {
-    const differs = normalizePhone(value) !== normalizePhone(previous.phone);
-    return { ...previous, phone: value, dirty: { ...previous.dirty, phone: true }, ...(differs ? {
-      goriPickupAddress: previous.dirty.pickup ? previous.goriPickupAddress : '',
-      goriDestinationAddress: previous.dirty.destination ? previous.goriDestinationAddress : '',
-      pickupStopId: previous.dirty.stop ? previous.pickupStopId : '',
-    } : {}) };
+    const next = { ...withPhone(previous, value), dirty: { ...previous.dirty, phone: true } };
+    const phone = normalizePhone(value);
+    return phone && phone === normalizePhone(call.phone || '') ? withProfile(next, profileFor(call)) : next;
   });
   return <tr data-call-id={call.id} data-call-phase={call.phase} aria-busy={busy}>
-    <td data-label="ქალაქი" className="admin-call-city"><select aria-label="გამგზავრების ქალაქი" value={draft.direction} disabled={busy || !initialized} onChange={event => update(previous => ({ ...previous, direction: event.target.value as Direction, time: '' }))}><option value="gori-tbilisi">გორი</option><option value="tbilisi-gori">თბილისი</option></select><small>{draft.direction === 'gori-tbilisi' ? '→ თბილისი' : '→ გორი'}</small></td>
+    <td data-label="ქალაქი" className="admin-call-city"><select aria-label="გამგზავრების ქალაქი" value={draft.direction} disabled={busy || !initialized} onChange={event => update(previous => withContext(previous, event.target.value as Direction, previous.date))}><option value="gori-tbilisi">გორი</option><option value="tbilisi-gori">თბილისი</option></select><small>{draft.direction === 'gori-tbilisi' ? '→ თბილისი' : '→ გორი'}</small></td>
     <td data-label="ტელეფონი" className="admin-call-phone-cell"><input aria-label="ტელეფონის ნომერი" type="tel" inputMode="tel" placeholder="568 69 48 79" value={draft.phone} disabled={busy || !initialized} onChange={event => changePhone(event.target.value)} onBlur={() => update(previous => ({ ...previous, phone: normalizePhone(previous.phone) ? formatPhone(previous.phone) : previous.phone }))} /><small>{profileLoading ? 'მისამართი იტვირთება…' : profile ? 'მისამართი შენახულია' : call.phone ? 'SIM ზარი' : 'დამალული ნომერი'}</small>{normalizedPhone && <a className="admin-call-dial" href={`tel:${phoneDialNumber(normalizedPhone) || normalizedPhone}`} aria-label={`${formatPhone(normalizedPhone)}: დარეკვა`}><Phone size={11} />დარეკვა</a>}</td>
     <td data-label="მისამართი" className="admin-call-address-cell">{draft.direction === 'gori-tbilisi' ? <><SavedAddressPicker addresses={savedAddresses} value={draft.goriPickupAddress} disabled={busy || !initialized} onChoose={address => update(previous => ({ ...previous, goriPickupAddress: address, dirty: { ...previous.dirty, pickup: true } }))} /><textarea aria-label="აყვანის მისამართი გორში" placeholder="ქუჩა, სახლის ნომერი…" maxLength={500} value={draft.goriPickupAddress} disabled={busy || !initialized} onChange={event => update(previous => ({ ...previous, goriPickupAddress: event.target.value, dirty: { ...previous.dirty, pickup: true } }))} /></> : <><select aria-label="აყვანის გაჩერება თბილისში" value={draft.pickupStopId} disabled={busy || !initialized} onChange={event => update(previous => ({ ...previous, pickupStopId: event.target.value, dirty: { ...previous.dirty, stop: true } }))}><option value="">აირჩიეთ გაჩერება</option>{stops.map(stop => <option key={stop.id} value={stop.id}>{stop.name}{stop.address ? ` — ${stop.address}` : ''}{savedStopIds.has(stop.id) ? ' · შენახული' : ''}</option>)}</select><div className="admin-call-destination"><SavedAddressPicker addresses={savedAddresses} value={draft.goriDestinationAddress} disabled={busy || !initialized} onChoose={address => update(previous => ({ ...previous, goriDestinationAddress: address, dirty: { ...previous.dirty, destination: true } }))} /><label>ჩამოსვლის მისამართი გორში<textarea aria-label="ჩამოსვლის მისამართი გორში" placeholder="ქუჩა, სახლის ნომერი…" maxLength={500} value={draft.goriDestinationAddress} disabled={busy || !initialized} onChange={event => update(previous => ({ ...previous, goriDestinationAddress: event.target.value, dirty: { ...previous.dirty, destination: true } }))} /></label></div></>}</td>
     <td data-label="ჯავშანი" className="admin-call-booking-cell"><div className="admin-call-booking-controls">
-      <div className="admin-call-day-row" role="group" aria-label="დღე"><button type="button" aria-pressed={draft.date === currentDay} disabled={busy || !initialized} onClick={() => update(previous => ({ ...previous, date: currentDay, time: '' }))}>დღეს<small>{shortDate(currentDay)}</small></button><button type="button" aria-pressed={draft.date === tomorrow} disabled={busy || !initialized} onClick={() => update(previous => ({ ...previous, date: tomorrow, time: '' }))}>ხვალ<small>{shortDate(tomorrow)}</small></button><label className={`admin-call-custom-date ${draft.date !== currentDay && draft.date !== tomorrow ? 'is-selected' : ''}`} title="აირჩიეთ სხვა თარიღი"><CalendarDays size={16} />{draft.date !== currentDay && draft.date !== tomorrow && <span>{shortDate(draft.date)}</span>}<input aria-label="აირჩიეთ სხვა თარიღი" type="date" min={currentDay} value={draft.date} disabled={busy || !initialized} onChange={event => { if (event.target.value >= today()) update(previous => ({ ...previous, date: event.target.value, time: '' })); }} /></label></div>
-      <div className="admin-call-time-row"><button type="button" className="admin-call-carousel-arrow" aria-label="წინა საათები" disabled={busy || !times.length} onClick={() => timeStrip.current?.scrollBy({ left: -Math.max(150, timeStrip.current.clientWidth * .8), behavior: 'smooth' })}><ChevronLeft size={15} /></button><div className="admin-call-time-carousel" role="group" aria-label="დრო" ref={timeStrip}>{entry?.error ? <button type="button" className="admin-call-schedule-retry" disabled={busy} onClick={retry}>ხელახლა ცდა</button> : entry?.loading && !entry.schedule ? <span><Loader2 size={13} className="admin-spin" />დრო იტვირთება…</span> : !times.length ? <span>ამ დღისთვის დრო არ არის</span> : times.map(slot => <button type="button" key={slot.time} aria-pressed={draft.time === slot.time} disabled={busy || !initialized || entry?.loading} onClick={() => update(previous => ({ ...previous, time: slot.time }))}>{slot.time}</button>)}</div><button type="button" className="admin-call-carousel-arrow" aria-label="შემდეგი საათები" disabled={busy || !times.length} onClick={() => timeStrip.current?.scrollBy({ left: Math.max(150, timeStrip.current.clientWidth * .8), behavior: 'smooth' })}><ChevronRight size={15} /></button></div>
+      <CallMetadata call={call} />
+      <div className="admin-call-day-row" role="group" aria-label="დღე"><button type="button" aria-pressed={draft.date === currentDay} disabled={busy || !initialized} onClick={() => update(previous => withContext(previous, previous.direction, currentDay))}>დღეს<small>{shortDate(currentDay)}</small></button><button type="button" aria-pressed={draft.date === tomorrow} disabled={busy || !initialized} onClick={() => update(previous => withContext(previous, previous.direction, tomorrow))}>ხვალ<small>{shortDate(tomorrow)}</small></button><label className={`admin-call-custom-date ${draft.date !== currentDay && draft.date !== tomorrow ? 'is-selected' : ''}`} title="აირჩიეთ სხვა თარიღი"><CalendarDays size={16} />{draft.date !== currentDay && draft.date !== tomorrow && <span>{shortDate(draft.date)}</span>}<input aria-label="აირჩიეთ სხვა თარიღი" type="date" min={currentDay} value={draft.date} disabled={busy || !initialized} onChange={event => { if (event.target.value >= today()) update(previous => withContext(previous, previous.direction, event.target.value)); }} /></label></div>
+      <div className="admin-call-time-row"><button type="button" className="admin-call-carousel-arrow" aria-label="წინა საათები" disabled={busy || !times.length} onClick={() => timeStrip.current?.scrollBy({ left: -Math.max(150, timeStrip.current.clientWidth * .8), behavior: 'smooth' })}><ChevronLeft size={15} /></button><div className="admin-call-time-carousel" role="group" aria-label="დრო" ref={timeStrip}>{entry?.error ? <button type="button" className="admin-call-schedule-retry" disabled={busy} onClick={retry}>ხელახლა ცდა</button> : entry?.loading && !entry.schedule ? <span><Loader2 size={13} className="admin-spin" />დრო იტვირთება…</span> : !times.length ? <span>ამ დღისთვის დრო არ არის</span> : times.map(slot => <button type="button" key={slot.time} aria-pressed={draft.time === slot.time} disabled={busy || !initialized || entry?.loading} onClick={() => update(previous => ({ ...previous, time: slot.time, timeSource: 'manual' }))}>{slot.time}</button>)}</div><button type="button" className="admin-call-carousel-arrow" aria-label="შემდეგი საათები" disabled={busy || !times.length} onClick={() => timeStrip.current?.scrollBy({ left: Math.max(150, timeStrip.current.clientWidth * .8), behavior: 'smooth' })}><ChevronRight size={15} /></button></div>
+      {draft.time && draft.timeSource === 'profile' && <small className="admin-call-time-note">დრო წინა მგზავრობებიდან</small>}
       <div className="admin-call-bottom-row"><div className="admin-call-seat-group" role="group" aria-label="ადგილების რაოდენობა"><span>ადგილები</span><div>{Array.from({ length: 8 }, (_, index) => index + 1).map(value => <button key={value} type="button" aria-pressed={draft.seats === value} disabled={busy || !initialized} onClick={() => update(previous => ({ ...previous, seats: value }))}>{value}</button>)}</div></div><div className="admin-call-decision"><button type="button" className="admin-call-accept" disabled={busy || !initialized || profileLoading || !validDraft(draft, entry, config, now)} onClick={onConfirm}>{busy ? <Loader2 size={14} className="admin-spin" /> : <Check size={14} />}დადასტურება</button><button type="button" className="admin-call-reject" disabled={busy} onClick={onReject}><X size={14} />უარი</button></div></div>
       {entry?.error && <div className="admin-call-row-error" role="alert">{entry.error}</div>}{error && <div className="admin-call-row-error" role="alert">{error}</div>}
     </div></td>
-    <td data-label="ზარი"><CallDetails call={call} /></td><td data-label="მოწყობილობა" className="admin-call-device">{call.deviceName}</td>
   </tr>;
 }
 
 function HistoryCallRow({ call, busy, onRestore }: { call: CallInquiry; busy: boolean; onRestore: () => void }) {
   const profile = profileFor(call);
-  return <tr data-call-id={call.id} data-call-phase={call.phase}><td data-label="ქალაქი">—</td><td data-label="ტელეფონი" className="admin-call-phone-cell"><strong>{call.phone ? formatPhone(call.phone) : 'დამალული ნომერი'}</strong></td><td data-label="მისამართი" className="admin-call-history-address">{profile?.goriPickupAddress || '—'}{profile?.pickupStopName && <small>თბილისი: {profile.pickupStopName}</small>}</td><td data-label="ჯავშანი"><button className="admin-restore-button" disabled={busy} onClick={onRestore}><History size={14} />აღდგენა</button></td><td data-label="ზარი"><CallDetails call={call} /></td><td data-label="მოწყობილობა" className="admin-call-device">{call.deviceName}</td></tr>;
+  return <tr data-call-id={call.id} data-call-phase={call.phase}><td data-label="ქალაქი">—</td><td data-label="ტელეფონი" className="admin-call-phone-cell"><strong>{call.phone ? formatPhone(call.phone) : 'დამალული ნომერი'}</strong></td><td data-label="მისამართი" className="admin-call-history-address">{profile?.goriPickupAddress || '—'}{profile?.pickupStopName && <small>თბილისი: {profile.pickupStopName}</small>}</td><td data-label="ჯავშანი" className="admin-call-booking-cell"><div className="admin-call-booking-controls"><CallMetadata call={call} /><button className="admin-restore-button" disabled={busy} onClick={onRestore}><History size={14} />აღდგენა</button></div></td></tr>;
 }

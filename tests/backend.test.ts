@@ -1177,6 +1177,66 @@ test('confirmed order creation, edits and confirmation accumulate saved addresse
   } finally { await fresh.close(); }
 });
 
+test('staff profile and live-call suggestions rank only this canonical passenger past active confirmed departures without changing stored data', async () => {
+  let clock = new Date('2030-01-01T00:00:00Z');
+  const fresh = await fixture({ now: () => clock });
+  try {
+    const number = '599887766';
+    await successful(fresh, '/admin/bookings', 'POST', input({ phone: number, goriAddress: 'Trusted operator pickup' }));
+    const seed = async (date: string, time: string, options: { phone?: string; direction?: 'gori-tbilisi' | 'tbilisi-gori'; status?: 'waiting' | 'confirmed'; deleted?: boolean; seats?: number; requestedTime?: string } = {}) => {
+      const status = options.status ?? 'confirmed';
+      await fresh.db.prepare(`INSERT INTO bookings(name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,didube_name,didube_address,
+        requested_date,requested_time,assigned_date,assigned_time,status,deleted_at,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run('', options.phone ?? number, options.seats ?? 1, options.direction ?? 'gori-tbilisi', 'Historical trusted pickup',
+          options.direction === 'tbilisi-gori' ? 1 : null, options.direction === 'tbilisi-gori' ? 'Historical configured stop' : null,
+          'დიდუბე', 'Didube snapshot', date, options.requestedTime ?? time, status === 'confirmed' ? date : null,
+          status === 'confirmed' ? time : null, status, options.deleted ? '2029-12-31T00:00:00.000Z' : null, 'employee',
+          '2029-12-31T00:00:00.000Z', '2029-12-31T00:00:00.000Z');
+    };
+    await seed('2026-10-07', '08:30'); // Historical imports join the preference calculation automatically.
+    await seed('2029-12-28', '08:30', { phone: '+995' + number });
+    await seed('2029-12-30', '08:30', { phone: '00995' + number });
+    await seed('2029-12-29', '10:00', { seats: 8 });
+    await seed('2029-12-31', '10:00', { seats: 8 });
+    await seed('2029-12-30', '12:00');
+    await seed('2029-12-31', '09:30', { requestedTime: '18:00' });
+    await seed('2029-12-31', '17:45');
+    await seed('2030-01-01', '03:59');
+    await seed('2030-01-01', '04:00');
+    await seed('2030-01-01', '04:01');
+    await seed('2030-01-02', '19:00');
+    await seed('2029-12-31', '20:00', { status: 'waiting' });
+    await seed('2029-12-31', '21:00', { deleted: true });
+    await seed('2029-02-30', '11:00');
+    await seed('2029-12-31', '24:00');
+    await seed('2029-12-31', '9:00');
+    for (let index = 0; index < 4; index++) await seed('2029-12-31', '07:00', { phone: '+441' + number });
+    await seed('2029-12-25', '14:00', { direction: 'tbilisi-gori' });
+    await seed('2029-12-29', '14:00', { direction: 'tbilisi-gori', phone: '995' + number });
+    await seed('2029-12-31', '08:30', { direction: 'tbilisi-gori' });
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'Departure preference synthetic Redmi' });
+    const received = await fresh.request('/integrations/android/calls', 'POST', callEvent({ eventId: 'departure-preferences', phone: number, phase: 'answered', durationSeconds: 0 }), { Authorization: `Bearer ${paired.token}` }, false);
+    assert.equal(received.status, 201);
+    const snapshots = new Map<string, string>();
+    for (const table of ['bookings', 'passenger_profiles', 'passenger_addresses', 'audit_log', 'call_inquiries']) snapshots.set(table, JSON.stringify(await fresh.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()));
+    const expected = { 'gori-tbilisi': ['08:30', '10:00', '03:59', '17:45', '09:30', '12:00'], 'tbilisi-gori': ['14:00', '08:30'] };
+    for (const alias of [number, '+995' + number, '995' + number, '00995' + number, '599 88 77 66']) {
+      const profile = (await successful(fresh, '/admin/passengers/profile?phone=' + encodeURIComponent(alias))).profile;
+      assert.equal(profile.phone, number);
+      assert.equal(profile.goriPickupAddress, 'Trusted operator pickup');
+      assert.deepEqual(profile.departureTimes, expected);
+    }
+    assert.deepEqual((await successful(fresh, '/admin/passengers/' + number)).profile.departureTimes, expected);
+    assert.deepEqual((await successful(fresh, '/admin/calls')).calls.find((row: any) => row.id === received.data.id).passengerProfile.departureTimes, expected);
+    await successful(fresh, '/admin/passengers');
+    for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await fresh.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()), snapshot);
+    assert.equal((await fresh.request('/admin/passengers/profile?phone=' + number, 'GET', undefined, {}, false)).status, 401);
+    clock = new Date('2030-01-01T00:02:00Z');
+    const afterCutoff = (await successful(fresh, '/admin/passengers/profile?phone=' + number)).profile.departureTimes['gori-tbilisi'];
+    assert.deepEqual(afterCutoff, ['08:30', '10:00', '04:01', '04:00', '03:59', '17:45', '09:30', '12:00']);
+  } finally { await fresh.close(); }
+});
+
 test('passenger profiles remember the last active Tbilisi stop and exclude a disabled stop from autofill', async () => {
   const fresh = await fixture();
   try {

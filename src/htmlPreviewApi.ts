@@ -1,5 +1,6 @@
 import { addDays, today, type Analytics, type Booking, type CallInquiry, type Direction, type Passenger, type PassengerProfile, type PublicConfig, type Schedule, type User } from './api';
 import { canonicalPassengerPhone } from './components/admin/usePassengerProfile';
+import { passengerDepartureTimes } from '../shared/passenger-departure-times';
 
 export const previewUser: User = { id: 1, login: 'preview', name: 'სატესტო ოპერატორი' };
 export const previewOnlyMessage = 'ამ HTML ფაილში მხოლოდ დიზაინის ნახვაა შესაძლებელი. რეალური მოქმედებებისთვის გაუშვით აპლიკაციის სერვერი.';
@@ -116,6 +117,7 @@ function passengerProfile(bookings: Booking[], phone: string): PassengerProfile 
     phone: canonicalPhone, name: booking.name, goriAddress: booking.goriAddress,
     goriPickupAddress: trusted.find(row => row.direction === 'gori-tbilisi')?.goriAddress ?? '',
     pickupStopId: savedStop?.id ?? null, pickupStopName: savedStop?.name ?? null, updatedAt: booking.updatedAt, addresses,
+    departureTimes: passengerDepartureTimes(trusted),
   } : null;
 }
 

@@ -28,6 +28,7 @@ export type PassengerProfile = {
   phone: string; name: string; goriAddress: string; goriPickupAddress: string;
   pickupStopId: number | null; pickupStopName: string | null; updatedAt: string;
   addresses?: SavedPassengerAddress[];
+  departureTimes?: Partial<Record<Direction, string[]>>;
 };
 export type PassengerDetail = { passenger: Passenger; profile: PassengerProfile | null; bookings: Booking[] };
 export type Analytics = {

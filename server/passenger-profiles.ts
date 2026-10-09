@@ -1,6 +1,7 @@
 import type { Database, DatabaseRow } from './database.js';
 import type { PassengerProfile, SavedPassengerAddress } from '../src/api.js';
 import { normalizePhone, phoneAliases } from '../shared/phone.js';
+import { passengerDepartureTimes } from '../shared/passenger-departure-times.js';
 
 const PHONE_STORAGE_MARKER = 'georgianPhoneStorageV2';
 const PICKUP_MEMORY_MARKER = 'goriPickupMemoryV1';
@@ -87,15 +88,40 @@ async function profileCandidates(db: Database, phones: string[]): Promise<Map<st
 }
 
 /** Read aliases without repairing storage, so an operator lookup cannot change passenger data. */
-export async function readPassengerProfiles(db: Database, phones: string[]): Promise<Map<string, PassengerProfile>> {
+export async function readPassengerProfiles(db: Database, phones: string[], now: Date = new Date()): Promise<Map<string, PassengerProfile>> {
   const groups = await profileCandidates(db, phones);
-  const addresses = await readSavedAddresses(db, [...groups.keys()]);
+  const canonicalPhones = [...groups.keys()];
+  const [addresses, departureTimes] = await Promise.all([
+    readSavedAddresses(db, canonicalPhones), readDepartureTimes(db, canonicalPhones, now),
+  ]);
   const result = new Map<string, PassengerProfile>();
   for (const [canonical, candidates] of groups) {
     const profile = mergeProfile(canonical, candidates);
-    if (profile) result.set(canonical, { ...profile, addresses: addresses.get(canonical) ?? [] });
+    if (profile) result.set(canonical, { ...profile, addresses: addresses.get(canonical) ?? [],
+      departureTimes: departureTimes.get(canonical) ?? { 'gori-tbilisi': [], 'tbilisi-gori': [] } });
   }
   return result;
+}
+
+/** The phone index and bounded alias batches avoid scanning unrelated customers or per-row requests. */
+async function readDepartureTimes(db: Database, phones: string[], now: Date): Promise<Map<string, NonNullable<PassengerProfile['departureTimes']>>> {
+  const aliases = [...new Set(phones.flatMap(phone => phoneAliases(phone)))];
+  const wanted = new Set(phones);
+  const groups = new Map<string, Parameters<typeof passengerDepartureTimes>[0][number][]>();
+  for (let offset = 0; offset < aliases.length; offset += PHONE_QUERY_SIZE) {
+    const batch = aliases.slice(offset, offset + PHONE_QUERY_SIZE);
+    const rows = await db.prepare(`SELECT phone,direction,status,deleted_at,requested_date,requested_time,assigned_date,assigned_time
+      FROM bookings WHERE status='confirmed' AND deleted_at IS NULL AND phone IN (${batch.map(() => '?').join(',')})`).all(...batch);
+    for (const row of rows) {
+      const canonical = canonicalPhone(row.phone);
+      if (!canonical || !wanted.has(canonical)) continue;
+      const group = groups.get(canonical) ?? [];
+      group.push({ direction: row.direction, status: row.status, deletedAt: row.deleted_at,
+        requestedDate: row.requested_date, requestedTime: row.requested_time, assignedDate: row.assigned_date, assignedTime: row.assigned_time });
+      groups.set(canonical, group);
+    }
+  }
+  return new Map([...groups].map(([phone, history]) => [phone, passengerDepartureTimes(history, now)]));
 }
 
 /** Read saved suggestions in bounded batches; inactive fixed stops stay in storage and history. */
@@ -142,10 +168,10 @@ async function saveAddress(db: Database, phone: string, city: SavedPassengerAddr
     .run(phone, city, key, address, city === 'tbilisi' ? Number(stop!.id) : null,
       city === 'tbilisi' ? String(snapshotName ?? stop!.name ?? '') : null, addressStamp(updatedAt));
 }
-export async function readPassengerProfile(db: Database, phone: string): Promise<PassengerProfile | null> {
+export async function readPassengerProfile(db: Database, phone: string, now: Date = new Date()): Promise<PassengerProfile | null> {
   const canonical = canonicalPhone(phone);
   if (!canonical) return null;
-  return (await readPassengerProfiles(db, [canonical])).get(canonical) ?? null;
+  return (await readPassengerProfiles(db, [canonical], now)).get(canonical) ?? null;
 }
 
 async function writeProfile(db: Database, profile: PassengerProfile, candidates: Candidate[]): Promise<void> {

@@ -417,6 +417,7 @@ test('alias profile reads merge newest contact details and active stop memory wi
     assert.deepEqual(profiles.get('568694879'), {
       phone: '568694879', name: 'Latest contact', goriAddress: 'გორი — Latest contact', goriPickupAddress: '',
       pickupStopId: 1, pickupStopName: 'Current active stop name', updatedAt: '2030-01-03T00:00:00.000Z', addresses: [],
+      departureTimes: { 'gori-tbilisi': [], 'tbilisi-gori': [] },
     });
     assert.equal((await readPassengerProfile(database, '995568694879'))?.name, 'Latest contact');
     assert.equal(await readPassengerProfile(database, 'invalid'), null);
@@ -430,7 +431,10 @@ test('batch profile lookup bounds alias parameters without per-passenger queries
   try {
     const phones = Array.from({ length: 205 }, (_, index) => `568${String(index).padStart(6, '0')}`);
     await database.transaction(async () => {
-      for (const phone of phones) await insertProfile(database, phone, `Passenger ${phone}`, '2030-01-01T00:00:00.000Z');
+      for (const phone of phones) {
+        await insertProfile(database, phone, `Passenger ${phone}`, '2030-01-01T00:00:00.000Z');
+        await insertHistoryBooking(database, phone, 'Past trip', '2030-01-01T00:00:00.000Z', 'confirmed');
+      }
     });
     let queries = 0;
     const observed: Database = {
@@ -447,8 +451,14 @@ test('batch profile lookup bounds alias parameters without per-passenger queries
         };
       },
     };
-    assert.equal((await readPassengerProfiles(observed, phones)).size, 205);
-    assert.ok(queries <= 10, `Expected at most 10 bounded profile/address batch queries, received ${queries}`);
+    const profiles = await readPassengerProfiles(observed, phones, new Date('2030-01-02T00:00:00Z'));
+    assert.equal(profiles.size, 205);
+    assert.equal([...profiles.values()].filter(profile => profile.departureTimes?.['gori-tbilisi']?.[0] === '08:30').length, 205);
+    assert.ok(queries <= 15, `Expected at most 15 bounded profile/address/history batch queries, received ${queries}`);
+    queries = 0;
+    await insertHistoryBooking(database, '568999998', 'History without cached trusted profile', '2030-01-01T00:00:00.000Z', 'confirmed');
+    assert.equal((await readPassengerProfiles(observed, ['568999998', '568999999'], new Date('2030-01-02T00:00:00Z'))).size, 0);
+    assert.equal(queries, 1, 'Unknown profiles require no address/history lookup and do not create fallback profiles');
   } finally { await database.close(); }
 });
 

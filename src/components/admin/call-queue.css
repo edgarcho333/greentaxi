@@ -1,15 +1,15 @@
 .admin-reference-view .admin-calls-card .admin-calls-inline-table { min-width: 1050px; table-layout: fixed; font-size: 11px; }
 .admin-reference-view .admin-calls-card .admin-calls-inline-table th { padding: 11px 12px; font-size: 11px; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(1) { width: 10%; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(2) { width: 13%; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(3) { width: 22%; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(4) { width: 36%; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(5) { width: 11%; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(6) { width: 8%; }
+.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(1) { width: 118px; }
+.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(2) { width: 158px; }
+.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(3) { width: 270px; }
+.admin-reference-view .admin-calls-card .admin-calls-inline-table th:nth-child(4) { width: auto; }
 .admin-reference-view .admin-calls-card .admin-calls-inline-table tbody td { height: auto; padding: 12px; max-width: none; vertical-align: top; white-space: normal; overflow: hidden; text-overflow: clip; }
 .admin-reference-view .admin-calls-card .admin-calls-inline-table td:last-child { padding: 12px; overflow: hidden; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table tbody tr + tr { border-top: 1px solid #edf2ee; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table tbody tr:focus-within { background: #f8fcf9; }
+.admin-reference-view .admin-calls-card .admin-calls-inline-table tbody tr { border-top: 3px solid #20995b; background: #fff; }
+.admin-reference-view .admin-calls-card .admin-calls-inline-table tbody tr:nth-child(even) { background: #f3f9f5; }
+.admin-reference-view .admin-calls-card .admin-calls-inline-table tbody td { border-top: 3px solid #20995b; background: inherit; }
+.admin-reference-view .admin-calls-card .admin-calls-inline-table tbody tr:focus-within { background: #edf8f1; }
 .admin-reference-view .admin-calls-card .admin-calls-inline-table input, .admin-reference-view .admin-calls-card .admin-calls-inline-table select, .admin-reference-view .admin-calls-card .admin-calls-inline-table textarea { width: 100%; min-width: 0; border: 1px solid #dce7df; border-radius: 7px; background: #fff; color: #233e2e; padding: 8px 9px; font-size: 12px; line-height: 1.55; outline: none; }
 .admin-reference-view .admin-calls-card .admin-calls-inline-table input:focus, .admin-reference-view .admin-calls-card .admin-calls-inline-table select:focus, .admin-reference-view .admin-calls-card .admin-calls-inline-table textarea:focus { border-color: #46b778; box-shadow: 0 0 0 2px #07864315; }
 .admin-reference-view .admin-calls-card .admin-calls-inline-table textarea { display: block; min-height: 75px; height: 75px; resize: vertical; }
@@ -23,6 +23,12 @@
 .admin-call-destination .admin-saved-address-picker { margin-bottom: 2px; }
 .admin-calls-card .admin-call-destination textarea { min-height: 54px; height: 54px; }
 .admin-call-booking-controls { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.admin-call-metadata { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; min-width: 0; padding-bottom: 3px; }
+.admin-call-metadata .admin-call-details { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.admin-call-metadata .admin-call-details > span { margin-top: 0; }
+.admin-call-metadata .admin-call-device { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.admin-call-metadata .admin-call-device svg { flex-shrink: 0; }
+.admin-call-time-note { display: block; color: #588165; font-size: 9px; line-height: 1.5; overflow-wrap: anywhere; margin-top: -4px; }
 .admin-call-day-row { display: flex; align-items: stretch; gap: 5px; }
 .admin-call-day-row > button, .admin-call-custom-date { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 31px; border: 1px solid #dce8df; border-radius: 6px; background: #fff; padding: 5px 10px; color: #42634d; cursor: pointer; font-size: 11px; }
 .admin-call-day-row > button small { color: #92a096; font-size: 9px; font-variant-numeric: tabular-nums; }
@@ -62,9 +68,7 @@
 .admin-call-history-address { overflow-wrap: anywhere; }
 .admin-call-history-address > small { display: block; margin-top: 4px; color: #8b9d90; }
 .admin-call-pagination .admin-page-buttons > span { margin-left: 0; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table.is-history th:nth-child(4) { width: 18%; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table.is-history th:nth-child(3) { width: 32%; }
-.admin-reference-view .admin-calls-card .admin-calls-inline-table.is-history th:nth-child(5) { width: 21%; }
+.admin-call-booking-controls > .admin-restore-button { align-self: flex-start; }
 @media (min-width: 1361px) {
   .admin-reference-view .admin-calls-card .admin-calls-inline-table .admin-call-city select { padding-inline: 4px; font-size: 11px; }
 }
@@ -85,6 +89,7 @@
   .admin-call-decision button { min-height: 36px; }
 }
 @media (max-width: 500px) {
+  .admin-call-booking-controls > .admin-restore-button { min-height: 44px; }
   .admin-calls-card .admin-table-heading { padding: 14px; align-items: flex-start; }
   .admin-calls-card .admin-table-heading h2 { font-size: 15px; flex-wrap: wrap; line-height: 1.5; }
   .admin-calls-card .admin-table-heading > div > span { line-height: 1.7; display: block; font-size: 9px; }

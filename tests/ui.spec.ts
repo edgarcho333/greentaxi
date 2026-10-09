@@ -241,6 +241,28 @@ async function seedAnsweredCall(phone: string | null, eventId: string, deviceNam
   return { id: (await response.json() as { id: number }).id, event, headers };
 }
 
+function usualTimeProfile(phone: string, departureTimes: Partial<Record<Direction, string[]>>): PassengerProfile & { departureTimes: Partial<Record<Direction, string[]>> } {
+  return {
+    phone, name: '', goriAddress: 'გორი, საათების სატესტო ჩამოსვლის მისამართი',
+    goriPickupAddress: 'გორი, საათების სატესტო აყვანის მისამართი',
+    pickupStopId: publicConfig.stops[0].id, pickupStopName: publicConfig.stops[0].name,
+    updatedAt: '2030-05-04T09:00:00.000Z', addresses: [], departureTimes,
+  };
+}
+
+function usualTimeCall(id: number, phone: string, profile: PassengerProfile | null): CallInquiry {
+  return {
+    id, phone, occurredAt: '2030-05-04T09:30:00.000Z', durationSeconds: 0,
+    deviceName: 'Usual departure browser fixture', createdAt: '2030-05-04T09:30:00.000Z',
+    deletedAt: null, bookingId: null, phase: 'answered', passengerProfile: profile,
+  };
+}
+
+function isIncomingCallsResponse(response: Response): boolean {
+  const url = new URL(response.url());
+  return url.pathname === '/api/admin/calls' && url.searchParams.get('scope') === 'incoming';
+}
+
 type PrintedDocument = { html: string; text: string; headings: string[]; rows: string[][] };
 type PrintBrowserWindow = Window & { __greenTaxiPrintedDocuments?: PrintedDocument[] };
 
@@ -913,6 +935,10 @@ test('answered Android SIM inquiry is deduplicated, restored and converted into 
   await expect(callRow.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue(displayedCaller);
   await expect(callRow).toContainText('1:07');
   await expect(callRow).toContainText('Redmi Android15 browser test');
+  await expect(page.locator('.admin-calls-table thead th')).toHaveText(['ქალაქი', 'ტელეფონი', 'მისამართი', 'ჯავშანი']);
+  await expect(callRow.locator('td')).toHaveCount(4);
+  await expect(callRow.locator('td[data-label="ჯავშანი"]')).toContainText('1:07');
+  await expect(callRow.locator('td[data-label="ჯავშანი"]')).toContainText('Redmi Android15 browser test');
   await expect(page.locator('.admin-calls-table thead')).not.toContainText('ბოლო გაჩერება თბილისში');
   await expect(page.locator('.admin-calls-table thead')).not.toContainText('ბოლო მისამართი გორში');
   await page.screenshot({ path: '/tmp/greentaxi-admin-phone.png', fullPage: true });
@@ -929,11 +955,19 @@ test('answered Android SIM inquiry is deduplicated, restored and converted into 
   await expect(callRow).toHaveCount(0);
   await openAdminView(page, 'ისტორია');
   await expect(callRow).toBeVisible();
-  await callRow.getByRole('button', { name: 'აღდგენა', exact: true }).click();
+  await expect(callRow.locator('td')).toHaveCount(4);
+  await expect(callRow.locator('td[data-label="ჯავშანი"]')).toContainText('1:07');
+  await expect(callRow.locator('td[data-label="ჯავშანი"]')).toContainText('Redmi Android15 browser test');
+  await page.setViewportSize({ width: 320, height: 850 });
+  const restoreButton = callRow.getByRole('button', { name: 'აღდგენა', exact: true });
+  await expect(restoreButton).toBeVisible();
+  expect(await restoreButton.evaluate(button => button.getBoundingClientRect().height), 'Restoring a call must have a comfortable mobile touch target').toBeGreaterThanOrEqual(44);
+  await restoreButton.click();
   const restoreDialog = page.getByRole('dialog', { name: 'სატელეფონო განაცხადის აღდგენა', exact: true });
   await restoreDialog.getByRole('button', { name: 'აღდგენა', exact: true }).click();
   await expect(restoreDialog).toHaveCount(0);
   await expect(callRow).toHaveCount(0);
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await openAdminView(page, 'შემოსული');
   await expect(callRow).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -1469,10 +1503,14 @@ test('a large incoming queue paginates, shares schedules and preserves edits whe
   for (const count of counts.values()) expect(count, 'Rows sharing direction/date should share one loaded schedule').toBe(1);
 });
 
-test('a late caller number fills an untouched row but preserves a manually cleared phone and address', async ({ page }) => {
+test('a late caller number fills an untouched phone but preserves manual hour, cleared phone and address', async ({ page }) => {
   const phone = '555010609';
   const savedPickup = 'გორი, მოგვიანებით ამოცნობილი ნომრის შენახული აყვანის მისამართი';
-  await seedConfirmedProfile({ phone, name: 'სატესტო მოგვიანებით ამოცნობილი მგზავრი', address: savedPickup });
+  const historical = await seedPassengerTrip({ phone, name: 'სატესტო მოგვიანებით ამოცნობილი მგზავრი', address: savedPickup });
+  await setHistoricalFixtureDate(historical.id, futureDate(-1));
+  const trusted = await adminApi.get(`/api/admin/passengers/profile?phone=${phone}`);
+  expect(trusted.ok()).toBeTruthy();
+  expect((await trusted.json() as { profile: PassengerProfile }).profile.departureTimes?.['gori-tbilisi']).toEqual(['21:00']);
   const automaticCall = await seedAnsweredCall(null, 'inline-late-identity-auto-609');
   const manualCall = await seedAnsweredCall(null, 'inline-late-identity-manual-610');
   await openAuthenticatedAdmin(page);
@@ -1481,6 +1519,9 @@ test('a late caller number fills an untouched row but preserves a manually clear
   const manual = incomingCallRow(page, manualCall.id);
   await expect(automatic.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue('');
   await expect(automatic.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue('');
+  // The operator can choose a departure while the same SIM caller's number is still hidden.
+  await chooseCallDay(automatic, 'ხვალ');
+  await chooseCallTime(automatic, '08:30');
   const manualPhone = manual.getByLabel('ტელეფონის ნომერი', { exact: true });
   await manualPhone.fill('555010610');
   await manualPhone.clear();
@@ -1495,17 +1536,17 @@ test('a late caller number fills an untouched row but preserves a manually clear
   await expect(automatic).toContainText('დასრულებულია');
   await expect(automatic.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue('555 01 06 09');
   await expect(automatic.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(savedPickup);
+  await expect(automatic.getByRole('group', { name: 'დრო', exact: true }).getByRole('button', { name: '08:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(automatic.locator('.admin-call-time-note')).toHaveCount(0);
   await expect(manual).toContainText('დასრულებულია');
   await expect(manualPhone).toHaveValue('');
   await expect(manual.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(manualAddress);
   await expect(manual.getByRole('button', { name: 'დადასტურება', exact: true })).toBeDisabled();
-  await chooseCallDay(automatic, 'ხვალ');
-  await chooseCallTime(automatic, '08:30');
   const converted = page.waitForResponse(response => response.url().endsWith(`/api/admin/calls/${automaticCall.id}/convert`));
   await automatic.getByRole('button', { name: 'დადასტურება', exact: true }).click();
   const response = await converted;
   expect(response.ok()).toBeTruthy();
-  expect(await response.json()).toMatchObject({ phone, goriAddress: savedPickup, seats: 1, status: 'confirmed' });
+  expect(await response.json()).toMatchObject({ phone, goriAddress: savedPickup, seats: 1, status: 'confirmed', assignedDate: futureDate(1), assignedTime: '08:30' });
   await expect(automatic).toHaveCount(0);
   await manual.getByRole('button', { name: 'უარი', exact: true }).click();
   await expect(manual).toHaveCount(0);
@@ -2114,5 +2155,155 @@ test('multiple saved address choices stay scoped to the current phone when an ea
   } finally {
     releaseFirst();
     await page.unroute(/\/api\/admin\/passengers\/profile\?/);
+  }
+});
+
+test('usual departure times use eligible hours for the chosen city and day and preserve manual choices on polling', async ({ page }) => {
+  const phone = '590890401';
+  const calls = [usualTimeCall(902_001, phone, usualTimeProfile(phone, {
+    'gori-tbilisi': ['08:30', '15:00', '20:00'],
+    'tbilisi-gori': ['09:30', '16:00', '21:00'],
+  }))];
+  await page.clock.install({ time: new Date('2030-05-04T10:00:00Z') });
+  await page.clock.pauseAt(new Date('2030-05-04T10:00:01Z'));
+  await page.route('**/api/admin/calls?*', async route => {
+    if (new URL(route.request().url()).searchParams.get('scope') !== 'incoming') { await route.continue(); return; }
+    await route.fulfill({ json: { calls } });
+  });
+  await page.route('**/api/admin/schedule?*', async route => {
+    const query = new URL(route.request().url()).searchParams;
+    const direction = query.get('direction') as Direction;
+    const date = query.get('date')!;
+    await route.fulfill({ json: {
+      direction, date, baseTimes: TIMES, overrideTimes: null,
+      slots: TIMES.map(time => ({ time, active: !(direction === 'gori-tbilisi' && date === '2030-05-04' && time === '15:00'), bookingCount: 0, seatCount: 0 })),
+    } });
+  });
+  await openAuthenticatedAdmin(page);
+  await openAdminView(page, 'შემოსული');
+  const row = incomingCallRow(page, calls[0].id);
+  const hours = row.getByRole('group', { name: 'დრო', exact: true });
+  const selected = () => hours.locator('button[aria-pressed="true"]');
+  // The first usual hour is elapsed and the second is disabled; use the next eligible preference.
+  await expect(selected()).toHaveText('20:00');
+  await expect(hours.getByRole('button', { name: '08:30', exact: true })).toHaveCount(0);
+  await expect(hours.getByRole('button', { name: '15:00', exact: true })).toHaveCount(0);
+  await expect(row.getByRole('group', { name: 'დღე', exact: true }).getByRole('button', { name: /^დღეს(?:\s|\d|$)/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(row.locator('.admin-call-time-note')).toContainText('დრო წინა მგზავრობებიდან');
+  await expect(selected()).toBeInViewport();
+  await expect(row.locator('.admin-call-booking-cell .admin-call-metadata')).toContainText(calls[0].deviceName);
+
+  await chooseCallDay(row, 'ხვალ');
+  await expect(selected()).toHaveText('08:30');
+  await expect(selected()).toBeInViewport();
+  await row.getByLabel('გამგზავრების ქალაქი', { exact: true }).selectOption('tbilisi-gori');
+  await expect(selected()).toHaveText('09:30');
+  await chooseCallDay(row, 'დღეს');
+  await expect(selected()).toHaveText('16:00');
+  await row.getByLabel('გამგზავრების ქალაქი', { exact: true }).selectOption('gori-tbilisi');
+  await expect(selected()).toHaveText('20:00');
+  await chooseCallTime(row, '18:00');
+  await expect(row.locator('.admin-call-time-note')).toHaveCount(0);
+  calls[0] = { ...calls[0], passengerProfile: usualTimeProfile(phone, { 'gori-tbilisi': ['21:00'] }) };
+  const poll = page.waitForResponse(isIncomingCallsResponse);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  expect((await poll).ok()).toBeTruthy();
+  await expect(selected()).toHaveText('18:00');
+  await expect(row.locator('.admin-call-time-note')).toHaveCount(0);
+  await chooseCallDay(row, 'ხვალ');
+  await expect(hours.getByRole('button', { name: /^\d{2}:\d{2}$/ })).toHaveText(TIMES);
+  await expect(selected()).toHaveText('21:00');
+  // A usual hour at the end of the full-day carousel must scroll into the visible strip.
+  await expect(selected()).toBeInViewport();
+  await chooseCallDay(row, 'დღეს');
+  await expect(selected()).toHaveText('21:00');
+
+  calls[0] = { ...calls[0], passengerProfile: usualTimeProfile(phone, { 'gori-tbilisi': ['08:30', '15:00'] }) };
+  const exhaustedPoll = page.waitForResponse(isIncomingCallsResponse);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  expect((await exhaustedPoll).ok()).toBeTruthy();
+  await chooseCallDay(row, 'ხვალ');
+  await expect(selected()).toHaveText('08:30');
+  await chooseCallDay(row, 'დღეს');
+  await expect(selected()).toHaveCount(0);
+  await expect(row.getByRole('group', { name: 'დღე', exact: true }).getByRole('button', { name: /^დღეს(?:\s|\d|$)/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(row.getByRole('button', { name: 'დადასტურება', exact: true })).toBeDisabled();
+});
+
+test('usual departure times arriving late fill only untouched rows and stay scoped to the current canonical phone', async ({ page }) => {
+  const firstPhone = '590890411';
+  const manualPhone = '590890412';
+  const heldPhone = '590890413';
+  const currentPhone = '590890414';
+  const calls = [usualTimeCall(902_011, firstPhone, null), usualTimeCall(902_012, manualPhone, null)];
+  await page.clock.install({ time: new Date('2030-05-04T10:00:00Z') });
+  await page.clock.pauseAt(new Date('2030-05-04T10:00:01Z'));
+  await page.route('**/api/admin/calls?*', async route => {
+    if (new URL(route.request().url()).searchParams.get('scope') !== 'incoming') { await route.continue(); return; }
+    await route.fulfill({ json: { calls } });
+  });
+  await openAuthenticatedAdmin(page);
+  await openAdminView(page, 'შემოსული');
+  const first = incomingCallRow(page, calls[0].id);
+  const manual = incomingCallRow(page, calls[1].id);
+  const firstHours = first.getByRole('group', { name: 'დრო', exact: true });
+  const manualHours = manual.getByRole('group', { name: 'დრო', exact: true });
+  await expect(firstHours.getByRole('button', { name: /^\d{2}:\d{2}$/ })).toHaveText(['15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00']);
+  await expect(firstHours.locator('button[aria-pressed="true"]')).toHaveCount(0);
+  await expect(manualHours.locator('button[aria-pressed="true"]')).toHaveCount(0);
+  await chooseCallTime(manual, '18:00');
+  calls[0] = { ...calls[0], passengerProfile: usualTimeProfile(firstPhone, { 'gori-tbilisi': ['20:00'] }) };
+  calls[1] = { ...calls[1], passengerProfile: usualTimeProfile(manualPhone, { 'gori-tbilisi': ['21:00'] }) };
+  const lateProfile = page.waitForResponse(isIncomingCallsResponse);
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  expect((await lateProfile).ok()).toBeTruthy();
+  await expect(firstHours.locator('button[aria-pressed="true"]')).toHaveText('20:00');
+  await expect(manualHours.locator('button[aria-pressed="true"]')).toHaveText('18:00');
+  await expect(firstHours.getByRole('button', { name: '20:00', exact: true })).toBeInViewport();
+
+  let releaseHeld!: () => void;
+  let reportHeldReady!: () => void;
+  let reportHeldFinished!: () => void;
+  const heldGate = new Promise<void>(resolveGate => { releaseHeld = resolveGate; });
+  const heldReady = new Promise<void>(resolveReady => { reportHeldReady = resolveReady; });
+  const heldFinished = new Promise<void>(resolveFinished => { reportHeldFinished = resolveFinished; });
+  await page.route(/\/api\/admin\/passengers\/profile\?/, async route => {
+    const requestedPhone = new URL(route.request().url()).searchParams.get('phone');
+    if (requestedPhone === heldPhone) {
+      reportHeldReady();
+      await heldGate;
+      try { await route.fulfill({ json: { profile: usualTimeProfile(heldPhone, { 'gori-tbilisi': ['21:00'] }) } }); }
+      catch { /* Changing the phone intentionally aborts this earlier lookup. */ }
+      finally { reportHeldFinished(); }
+      return;
+    }
+    if (requestedPhone === currentPhone) {
+      await route.fulfill({ json: { profile: usualTimeProfile(`+995${currentPhone}`, { 'gori-tbilisi': ['16:00'] }) } });
+      return;
+    }
+    await route.continue();
+  });
+  try {
+    await first.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(heldPhone);
+    await page.clock.runFor(350);
+    await heldReady;
+    await expect(firstHours.locator('button[aria-pressed="true"]')).toHaveCount(0);
+    const currentLookup = page.waitForResponse(response => isProfileResponse(response, currentPhone));
+    await first.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(`+995 ${displayedPassengerPhone(currentPhone)}`);
+    await page.clock.runFor(350);
+    expect((await currentLookup).ok()).toBeTruthy();
+    await expect(firstHours.locator('button[aria-pressed="true"]')).toHaveText('16:00');
+    releaseHeld();
+    await heldFinished;
+    const stalePoll = page.waitForResponse(isIncomingCallsResponse);
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    expect((await stalePoll).ok()).toBeTruthy();
+    await expect(firstHours.locator('button[aria-pressed="true"]')).toHaveText('16:00');
+    await expect(first.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue(`+995 ${displayedPassengerPhone(currentPhone)}`);
+    await expect(manualHours.locator('button[aria-pressed="true"]')).toHaveText('18:00');
+    await expect(first.getByRole('group', { name: 'დღე', exact: true }).getByRole('button', { name: /^დღეს(?:\s|\d|$)/ })).toHaveAttribute('aria-pressed', 'true');
+  } finally {
+    releaseHeld();
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
   }
 });

@@ -49,7 +49,7 @@ const passengerRowsSql = `SELECT bookings.*,stops.name AS current_stop_name,stop
   FROM bookings LEFT JOIN stops ON stops.id=bookings.pickup_stop_id`;
 
 /** A single joined read covers both metrics and pickup addresses, including historical contacts. */
-export async function listPassengers(db: Database): Promise<Passenger[]> {
+export async function listPassengers(db: Database, now: Date = new Date()): Promise<Passenger[]> {
   const rows = await db.prepare(`${passengerRowsSql} ORDER BY bookings.updated_at DESC,bookings.id DESC`).all();
   const groups = new Map<string, DatabaseRow[]>();
   for (const row of rows) {
@@ -59,7 +59,7 @@ export async function listPassengers(db: Database): Promise<Passenger[]> {
     groups.set(canonical, group);
   }
   const [profiles, stops] = await Promise.all([
-    readPassengerProfiles(db, [...groups.keys()]), db.prepare('SELECT id,name,address,active FROM stops').all(),
+    readPassengerProfiles(db, [...groups.keys()], now), db.prepare('SELECT id,name,address,active FROM stops').all(),
   ]);
   return [...groups.entries()].map(([canonical, group]) => passengerSummary(group, profiles.get(canonical) ?? null, stops))
     .sort((first, second) => second.latestDate.localeCompare(first.latestDate) || first.phone.localeCompare(second.phone));
