@@ -18,7 +18,7 @@ export type Booking = {
 export type Schedule = { direction: Direction; date: string; baseTimes: string[]; overrideTimes: string[] | null; slots: Slot[] };
 export type Passenger = { name: string; phone: string; orderCount: number; seats: number; latestDate: string };
 export type PassengerProfile = {
-  phone: string; name: string; goriAddress: string;
+  phone: string; name: string; goriAddress: string; goriPickupAddress: string;
   pickupStopId: number | null; pickupStopName: string | null; updatedAt: string;
 };
 export type Analytics = {

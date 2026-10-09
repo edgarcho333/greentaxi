@@ -591,7 +591,7 @@ test('live calls in either direction convert without a name to eight-seat operat
       const received = await fresh.request('/integrations/android/calls', 'POST', event, bearer, false);
       assert.equal(received.status, 201);
       const body = input({ name: undefined, phone: '568694879', seats: 8, direction, ...(direction === 'tbilisi-gori' ? { pickupStopId: stop.id } : {}) });
-      for (const fields of [{ seats: 9 }, { requestedDate: '2030-01-03' }, { requestedDate: '2030-01-01', requestedTime: '08:30' }]) {
+      for (const fields of [{ seats: 9 }, { requestedDate: '2029-12-31' }, { requestedDate: '2030-01-01', requestedTime: '08:30' }]) {
         const rejected = await fresh.request(`/admin/calls/${received.data.id}/convert`, 'POST', { ...body, ...fields });
         assert.equal(rejected.status, 400);
         assert.equal((await fresh.db.prepare('SELECT booking_id FROM call_inquiries WHERE id=?').get(received.data.id))!.booking_id, null);
@@ -607,6 +607,124 @@ test('live calls in either direction convert without a name to eight-seat operat
       assert.equal(retry.id, converted.id);
       assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='call.convert' AND booking_id=?").get(converted.id))!.count, 1);
     }
+  } finally { await fresh.close(); }
+});
+
+test('inline telephone orders allow future calendar dates in both directions without widening the manual booking window', async () => {
+  const fresh = await fixture({ now: () => new Date('2030-01-01T04:30:00Z') });
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'კალენდრის სატესტო ტელეფონი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const stop = (await successful(fresh, '/public/config')).stops[0];
+    const customDate = '2030-01-20';
+    const forgedSource = await fresh.request('/admin/bookings', 'POST', input({ requestedDate: customDate, source: 'android' }));
+    assert.equal(forgedSource.status, 400);
+    assert.equal(forgedSource.data.code, 'DATE_OUT_OF_RANGE');
+    for (const direction of ['gori-tbilisi', 'tbilisi-gori']) {
+      const received = await fresh.request('/integrations/android/calls', 'POST', callEvent({
+        eventId: `calendar-${direction}`, phase: 'answered', durationSeconds: 0, phone: '568694879',
+      }), bearer, false);
+      assert.equal(received.status, 201);
+      const body = input({ name: undefined, phone: '568694879', seats: 8, direction, requestedDate: customDate,
+        ...(direction === 'tbilisi-gori' ? { pickupStopId: stop.id } : {}) });
+      for (const [fields, code] of [
+        [{ requestedDate: '2029-12-31' }, 'DATE_OUT_OF_RANGE'],
+        [{ requestedDate: '2030-01-01', requestedTime: '08:30' }, 'SLOT_PAST'],
+        [{ requestedDate: '2030-02-31' }, 'DATE_INVALID'],
+      ] as const) {
+        const rejected = await fresh.request(`/admin/calls/${received.data.id}/convert`, 'POST', { ...body, ...fields });
+        assert.equal(rejected.status, 400);
+        assert.equal(rejected.data.code, code);
+        assert.equal((await fresh.db.prepare('SELECT booking_id FROM call_inquiries WHERE id=?').get(received.data.id))?.booking_id, null);
+      }
+      await successful(fresh, '/admin/schedule/date', 'PUT', { direction, date: customDate, times: ['09:30', '12:00'] });
+      const inactive = await fresh.request(`/admin/calls/${received.data.id}/convert`, 'POST', body);
+      assert.equal(inactive.status, 409);
+      assert.equal(inactive.data.code, 'SLOT_INACTIVE');
+      const converted = await successful(fresh, `/admin/calls/${received.data.id}/convert`, 'POST', { ...body, requestedTime: '09:30' });
+      assert.equal(converted.assignedDate, customDate);
+      assert.equal(converted.assignedTime, '09:30');
+      assert.equal(converted.seats, 8);
+      assert.equal(converted.name, '');
+      const retry = await successful(fresh, `/admin/calls/${received.data.id}/convert`, 'POST', { ...body, requestedTime: '12:00', seats: 1 });
+      assert.equal(retry.id, converted.id);
+      assert.equal(retry.seats, 8);
+      assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='call.convert' AND booking_id=?").get(converted.id))?.count, 1);
+    }
+  } finally { await fresh.close(); }
+});
+
+test('pickup memories for Gori and Tbilisi stay independent of reverse-trip Gori dropoffs and late call completion', async () => {
+  let clock = new Date('2030-01-01T04:30:00Z');
+  const fresh = await fixture({ now: () => clock });
+  try {
+    const number = '568694879';
+    const stop = (await successful(fresh, '/public/config')).stops[0];
+    await successful(fresh, '/admin/bookings', 'POST', input({ phone: number, goriAddress: 'გორი, ასაღები სახლი 10' }));
+    clock = new Date('2030-01-01T04:31:00Z');
+    await successful(fresh, '/admin/bookings', 'POST', input({ name: undefined, phone: number,
+      direction: 'tbilisi-gori', pickupStopId: stop.id, goriAddress: 'გორი, ჩამოსვლის სახლი 20' }));
+    let profile = (await successful(fresh, '/admin/passengers/profile?phone=' + number)).profile;
+    assert.equal(profile.goriPickupAddress, 'გორი, ასაღები სახლი 10');
+    assert.equal(profile.goriAddress, 'გორი, ჩამოსვლის სახლი 20');
+    assert.equal(profile.pickupStopId, stop.id);
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'მისამართების სატესტო ტელეფონი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const event = callEvent({ eventId: 'city-pickup-memory', phone: number, phase: 'answered', durationSeconds: 0 });
+    const received = await fresh.request('/integrations/android/calls', 'POST', event, bearer, false);
+    assert.equal(received.status, 201);
+    const incoming = (await successful(fresh, '/admin/calls')).calls.find((call: any) => call.id === received.data.id);
+    assert.deepEqual(incoming.passengerProfile, profile);
+    clock = new Date('2030-01-01T04:32:00Z');
+    const converted = await successful(fresh, `/admin/calls/${received.data.id}/convert`, 'POST', input({
+      name: undefined, phone: number, goriAddress: 'გორი, ახალი ასაღები სახლი 30', requestedDate: '2030-01-20',
+    }));
+    profile = (await successful(fresh, '/admin/passengers/profile?phone=' + number)).profile;
+    assert.equal(profile.goriPickupAddress, converted.goriAddress);
+    assert.equal(profile.pickupStopId, stop.id);
+    await fresh.request('/integrations/android/calls', 'POST', { ...event, phase: 'completed', durationSeconds: 42 }, bearer, false);
+    assert.deepEqual((await successful(fresh, '/admin/passengers/profile?phone=' + number)).profile, profile);
+    await successful(fresh, `/admin/bookings/${converted.id}/delete`, 'POST', {});
+    assert.deepEqual((await successful(fresh, '/admin/passengers/profile?phone=' + number)).profile, profile);
+    const publicRequest = await successful(fresh, '/bookings', 'POST', input({ phone: number, goriAddress: 'დაუდასტურებელი მისამართი' }));
+    assert.ok(publicRequest.id);
+    assert.deepEqual((await successful(fresh, '/admin/passengers/profile?phone=' + number)).profile, profile);
+  } finally { await fresh.close(); }
+});
+
+test('pickup-memory deployment backfills trusted Gori history without changing existing customer details, calls or orders', async () => {
+  let clock = new Date('2030-01-01T04:30:00Z');
+  const fresh = await fixture({ now: () => clock });
+  try {
+    const number = '568694879';
+    const stop = (await successful(fresh, '/public/config')).stops[0];
+    const pickup = await successful(fresh, '/admin/bookings', 'POST', input({ phone: number, goriAddress: 'გორი, ისტორიული ასაღები სახლი' }));
+    clock = new Date('2030-01-01T04:31:00Z');
+    await successful(fresh, `/admin/bookings/${pickup.id}/delete`, 'POST', {});
+    clock = new Date('2030-01-01T04:32:00Z');
+    await successful(fresh, '/admin/bookings', 'POST', input({ phone: number, direction: 'tbilisi-gori',
+      pickupStopId: stop.id, goriAddress: 'გორი, უფრო ახალი ჩამოსვლის სახლი' }));
+    await successful(fresh, '/bookings', 'POST', input({ phone: number, goriAddress: 'დაუდასტურებელი ახალი მისამართი' }));
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'მიგრაციის სატესტო ტელეფონი' });
+    await fresh.request('/integrations/android/calls', 'POST', callEvent({ phone: number, phase: 'answered', durationSeconds: 0 }),
+      { Authorization: `Bearer ${paired.token}` }, false);
+    // A version-five installation has the legacy profile but no dedicated Gori pickup memory.
+    await fresh.db.prepare("UPDATE passenger_profiles SET gori_pickup_address='',gori_pickup_updated_at=NULL").run();
+    await fresh.db.prepare("DELETE FROM settings WHERE key='goriPickupMemoryV1'").run();
+    const legacySql = 'SELECT phone,name,gori_address,pickup_stop_id,pickup_stop_name,updated_at FROM passenger_profiles ORDER BY phone';
+    const legacy = await fresh.db.prepare(legacySql).all();
+    const bookings = await fresh.db.prepare('SELECT * FROM bookings ORDER BY id').all();
+    const calls = await fresh.db.prepare('SELECT * FROM call_inquiries ORDER BY id').all();
+    const reopened = await createApp({ dbPath: fresh.path, databaseUrl: fresh.databaseUrl, now: () => clock, deferPhoneMigration: false });
+    try {
+      const profile = await reopened.db.prepare('SELECT * FROM passenger_profiles WHERE phone=?').get(number);
+      assert.equal(profile?.gori_pickup_address, 'გორი, ისტორიული ასაღები სახლი');
+      assert.equal(profile?.gori_pickup_updated_at, '2030-01-01T04:31:00.000Z');
+      assert.deepEqual(await reopened.db.prepare(legacySql).all(), legacy);
+      assert.deepEqual(await reopened.db.prepare('SELECT * FROM bookings ORDER BY id').all(), bookings);
+      assert.deepEqual(await reopened.db.prepare('SELECT * FROM call_inquiries ORDER BY id').all(), calls);
+      assert.equal((await reopened.db.prepare("SELECT value FROM settings WHERE key='goriPickupMemoryV1'").get())?.value, '1');
+    } finally { await reopened.close(); }
   } finally { await fresh.close(); }
 });
 

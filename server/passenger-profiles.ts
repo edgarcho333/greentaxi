@@ -3,6 +3,7 @@ import type { PassengerProfile } from '../src/api.js';
 import { normalizePhone, phoneAliases } from '../shared/phone.js';
 
 const PHONE_STORAGE_MARKER = 'georgianPhoneStorageV2';
+const PICKUP_MEMORY_MARKER = 'goriPickupMemoryV1';
 const PHONE_QUERY_SIZE = 200;
 type Candidate = { row: DatabaseRow; priority: number; canonical: string };
 
@@ -27,6 +28,18 @@ function compareCandidates(first: Candidate, second: Candidate): number {
   if (firstId !== secondId) return secondId - firstId;
   return String(first.row.phone).localeCompare(String(second.row.phone));
 }
+function pickupCandidate(candidates: Candidate[]): Candidate | undefined {
+  return candidates.filter(candidate => typeof candidate.row.gori_pickup_address === 'string' && candidate.row.gori_pickup_address.trim())
+    .sort((first, second) => compareCandidates(
+      { ...first, row: { ...first.row, updated_at: first.row.gori_pickup_updated_at ?? first.row.updated_at } },
+      { ...second, row: { ...second.row, updated_at: second.row.gori_pickup_updated_at ?? second.row.updated_at } },
+    ))[0];
+}
+function withPickupMemory(row: DatabaseRow): DatabaseRow {
+  return row.direction === 'gori-tbilisi'
+    ? { ...row, gori_pickup_address: row.gori_address, gori_pickup_updated_at: row.updated_at }
+    : row;
+}
 function mergeProfile(canonical: string, candidates: Candidate[]): PassengerProfile | null {
   const sorted = [...candidates].sort(compareCandidates);
   if (!sorted.length) return null;
@@ -38,6 +51,7 @@ function mergeProfile(canonical: string, candidates: Candidate[]): PassengerProf
     phone: canonical,
     name: typeof named.name === 'string' ? named.name : '',
     goriAddress: typeof addressed.gori_address === 'string' ? addressed.gori_address : '',
+    goriPickupAddress: String(pickupCandidate(candidates)?.row.gori_pickup_address ?? ''),
     pickupStopId: stop ? Number(stop.pickup_stop_id) : null,
     pickupStopName: stop ? String(stop.current_stop_name ?? stop.pickup_stop_name) : null,
     updatedAt: stamp(newest),
@@ -79,12 +93,15 @@ export async function readPassengerProfile(db: Database, phone: string): Promise
   return (await readPassengerProfiles(db, [canonical])).get(canonical) ?? null;
 }
 
-async function writeProfile(db: Database, profile: PassengerProfile, staleAliases: string[]): Promise<void> {
-  await db.prepare(`INSERT INTO passenger_profiles(phone,name,gori_address,pickup_stop_id,pickup_stop_name,updated_at) VALUES (?,?,?,?,?,?)
+async function writeProfile(db: Database, profile: PassengerProfile, candidates: Candidate[]): Promise<void> {
+  const pickup = pickupCandidate(candidates);
+  await db.prepare(`INSERT INTO passenger_profiles(phone,name,gori_address,pickup_stop_id,pickup_stop_name,updated_at,gori_pickup_address,gori_pickup_updated_at) VALUES (?,?,?,?,?,?,?,?)
     ON CONFLICT(phone) DO UPDATE SET name=excluded.name,gori_address=excluded.gori_address,
-      pickup_stop_id=excluded.pickup_stop_id,pickup_stop_name=excluded.pickup_stop_name,updated_at=excluded.updated_at`)
-    .run(profile.phone, profile.name, profile.goriAddress, profile.pickupStopId, profile.pickupStopName, profile.updatedAt);
-  const aliases = [...new Set(staleAliases)].filter(value => value !== profile.phone && canonicalPhone(value) === profile.phone);
+      pickup_stop_id=excluded.pickup_stop_id,pickup_stop_name=excluded.pickup_stop_name,updated_at=excluded.updated_at,
+      gori_pickup_address=excluded.gori_pickup_address,gori_pickup_updated_at=excluded.gori_pickup_updated_at`)
+    .run(profile.phone, profile.name, profile.goriAddress, profile.pickupStopId, profile.pickupStopName, profile.updatedAt,
+      profile.goriPickupAddress, pickup ? pickup.row.gori_pickup_updated_at ?? stamp(pickup.row) : null);
+  const aliases = [...new Set(candidates.map(candidate => String(candidate.row.phone)))].filter(value => value !== profile.phone && canonicalPhone(value) === profile.phone);
   for (let offset = 0; offset < aliases.length; offset += PHONE_QUERY_SIZE) {
     const batch = aliases.slice(offset, offset + PHONE_QUERY_SIZE);
     await db.prepare(`DELETE FROM passenger_profiles WHERE phone IN (${batch.map(() => '?').join(',')})`).run(...batch);
@@ -101,10 +118,11 @@ export async function savePassengerProfile(db: Database, row: DatabaseRow): Prom
     : await db.prepare('SELECT id,name,active FROM stops WHERE id=? AND active=1').get(row.pickup_stop_id);
   const incoming: Candidate = {
     canonical, priority: 1000,
-    row: { ...row, phone: canonical, stop_active: stop?.active ?? 0, current_stop_name: stop?.name ?? null },
+    row: { ...withPickupMemory(row), phone: canonical, stop_active: stop?.active ?? 0, current_stop_name: stop?.name ?? null },
   };
-  const merged = mergeProfile(canonical, [...previous, incoming]);
-  if (merged) await writeProfile(db, merged, previous.map(candidate => String(candidate.row.phone)));
+  const candidates = [...previous, incoming];
+  const merged = mergeProfile(canonical, candidates);
+  if (merged) await writeProfile(db, merged, candidates);
 }
 
 /** One versioned repair; invalid legacy rows and immutable call hashes remain intact. */
@@ -133,7 +151,7 @@ export async function migratePhoneStorage(db: Database): Promise<void> {
       const group = groups.get(canonical) ?? [];
       group.push({
         canonical, priority: 10,
-        row: { ...row, phone: canonical, stop_active: stop?.active ?? 0, current_stop_name: stop?.name ?? null },
+        row: { ...withPickupMemory(row), phone: canonical, stop_active: stop?.active ?? 0, current_stop_name: stop?.name ?? null },
       });
       groups.set(canonical, group);
     }
@@ -144,8 +162,46 @@ export async function migratePhoneStorage(db: Database): Promise<void> {
     }
     for (const [canonical, candidates] of groups) {
       const profile = mergeProfile(canonical, candidates);
-      if (profile) await writeProfile(db, profile, candidates.map(candidate => String(candidate.row.phone)));
+      if (profile) await writeProfile(db, profile, candidates);
     }
     await db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(PHONE_STORAGE_MARKER, '1');
+  });
+}
+
+/** Backfill pickup-only memory without changing legacy contact fields, call identity or booking history. */
+export async function migratePickupMemory(db: Database): Promise<void> {
+  await db.transaction(async () => {
+    if (await db.prepare('SELECT value FROM settings WHERE key=?').get(PICKUP_MEMORY_MARKER)) return;
+    const groups = new Map<string, Candidate[]>();
+    const profiles = await db.prepare('SELECT * FROM passenger_profiles').all();
+    for (const row of profiles) {
+      const canonical = canonicalPhone(row.phone);
+      if (!canonical) continue;
+      const group = groups.get(canonical) ?? [];
+      group.push({ row, priority: 100, canonical });
+      groups.set(canonical, group);
+    }
+    const bookings = await db.prepare("SELECT * FROM bookings WHERE status='confirmed' AND direction='gori-tbilisi' ORDER BY updated_at,id").all();
+    for (const row of bookings) {
+      const canonical = canonicalPhone(row.phone);
+      if (!canonical) continue;
+      const group = groups.get(canonical) ?? [];
+      group.push({ row: withPickupMemory(row), priority: 10, canonical });
+      groups.set(canonical, group);
+    }
+    for (const [canonical, candidates] of groups) {
+      const pickup = pickupCandidate(candidates);
+      if (!pickup) continue;
+      const cached = candidates.filter(candidate => candidate.priority === 100);
+      if (!cached.length) {
+        const profile = mergeProfile(canonical, candidates);
+        if (profile) await writeProfile(db, profile, candidates);
+        continue;
+      }
+      // Keep aliases intact here: deferred phone migration must remain read-compatible.
+      for (const candidate of cached) await db.prepare('UPDATE passenger_profiles SET gori_pickup_address=?,gori_pickup_updated_at=? WHERE phone=?')
+        .run(pickup.row.gori_pickup_address, pickup.row.gori_pickup_updated_at ?? stamp(pickup.row), candidate.row.phone);
+    }
+    await db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(PICKUP_MEMORY_MARKER, '1');
   });
 }

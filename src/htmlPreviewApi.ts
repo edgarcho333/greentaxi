@@ -92,6 +92,7 @@ function passengerProfile(bookings: Booking[], phone: string): PassengerProfile 
   const booking = bookings.find(row => !row.deletedAt && row.status === 'confirmed' && canonicalPassengerPhone(row.phone) === canonicalPhone);
   return booking ? {
     phone: canonicalPhone, name: booking.name, goriAddress: booking.goriAddress,
+    goriPickupAddress: bookings.find(row => row.status === 'confirmed' && row.direction === 'gori-tbilisi' && canonicalPassengerPhone(row.phone) === canonicalPhone)?.goriAddress ?? '',
     pickupStopId: booking.pickupStopId, pickupStopName: booking.pickupStopName, updatedAt: booking.updatedAt,
   } : null;
 }
@@ -122,7 +123,7 @@ function analytics(bookings: Booking[], params: URLSearchParams): Analytics {
 export function installPreviewApi(): void {
   const day = today();
   const bookings = sampleBookings(day);
-  const caller = bookings.find(booking => booking.direction === 'tbilisi-gori' && booking.status === 'confirmed')!;
+  const caller = bookings.find(booking => booking.direction === 'gori-tbilisi' && booking.status === 'confirmed')!;
   const sampleCall: CallInquiry = { id: 1, phone: caller.phone, occurredAt: `${day}T08:00:00+04:00`, durationSeconds: 0, phase: 'answered', passengerProfile: passengerProfile(bookings, caller.phone), deviceName: 'სატესტო Redmi — რეალური ზარი არ არის', createdAt: `${day}T08:00:00+04:00`, deletedAt: null, bookingId: null };
   const reply = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
   window.fetch = async (input, init) => {

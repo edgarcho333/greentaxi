@@ -4,7 +4,7 @@ import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } fr
 import { promisify } from 'node:util';
 import type { Analytics, Booking, CallDevice, CallInquiry, Direction, PassengerProfile, Schedule, Slot, User } from '../src/api.js';
 import { normalizePhone, legacyPhoneKey } from '../shared/phone.js';
-import { migratePhoneStorage, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from './passenger-profiles.js';
+import { migratePhoneStorage, migratePickupMemory, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from './passenger-profiles.js';
 
 const scrypt = promisify(scryptCallback);
 const DIRECTIONS: Direction[] = ['gori-tbilisi', 'tbilisi-gori'];
@@ -212,12 +212,13 @@ export async function createApp(options: Options = {}) {
     return new Date(`${day}T${slotTime}:00+04:00`).getTime() > now().getTime();
   }
   const tbilisiCalendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tbilisi', year: 'numeric', month: '2-digit', day: '2-digit' });
-  function staffDateWindow(day: string) {
+  function staffDateWindow(day: string, calendarException = false) {
     const parts = tbilisiCalendar.formatToParts(now());
     const today = ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)!.value).join('-');
     const lastDay = new Date(`${today}T12:00:00Z`);
     lastDay.setUTCDate(lastDay.getUTCDate() + 1);
-    if (day < today || day > lastDay.toISOString().slice(0, 10)) reject(400, 'აირჩიეთ დღეს ან ხვალ.', 'DATE_OUT_OF_RANGE');
+    if (day < today || (!calendarException && day > lastDay.toISOString().slice(0, 10))) reject(400,
+      calendarException ? 'აირჩიეთ დღევანდელი ან მომავალი თარიღი.' : 'აირჩიეთ დღეს ან ხვალ.', 'DATE_OUT_OF_RANGE');
   }
   async function activeSlot(d: Direction, day: string, slotTime: string, futureRequired = false) {
     if (!(await configuredTimes(d, day)).effective.includes(slotTime)) reject(409, 'არჩეული დრო გამორთულია. აირჩიეთ მოქმედი დრო.', 'SLOT_INACTIVE');
@@ -259,7 +260,7 @@ export async function createApp(options: Options = {}) {
     const input = (await inputBooking(body, undefined, Boolean(employee)));
     const day = date(body.requestedDate, employee ? 'DATE_INVALID' : 'VALIDATION');
     const slotTime = time(body.requestedTime);
-    if (employee) staffDateWindow(day);
+    if (employee) staffDateWindow(day, source === 'android');
     (await activeSlot(input.direction, day, slotTime, true));
     const stamp = now().toISOString();
     const config = (await settings());
@@ -755,6 +756,7 @@ export async function createApp(options: Options = {}) {
     await db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO NOTHING').run('passengerProfilesBackfilled', '1');
   });
     if (!(options.deferPhoneMigration ?? process.env.PHONE_MIGRATION_DEFERRED === '1')) await migratePhoneStorage(db);
+    await migratePickupMemory(db);
   } catch (error) {
     await db.close().catch(() => {});
     throw error;
