@@ -333,6 +333,170 @@ test('concurrent driver updates preserve independently supplied refusal and manu
   } finally { await fresh.close(); }
 });
 
+test('trip capacity counts all confirmed seats independently of booking filters and groups multiple cars', async () => {
+  const fresh = await fixture({ now: () => new Date('2026-10-09T00:00:00Z') });
+  const trip = { direction: 'gori-tbilisi', date: '2026-10-09', time: '06:00' };
+  const path = '/admin/trips/capacity?direction=gori-tbilisi&date=2026-10-09&time=06:00';
+  try {
+    const initial = await successful(fresh, path);
+    assert.deepEqual(initial.drivers.map((driver: any) => [driver.key, driver.name, driver.capacity]), [['roster:1', 'რეზო', 7]]);
+    const second = await successful(fresh, '/admin/trips/drivers', 'POST', { ...trip, expectedRevision: initial.revision, action: 'add', driver: { kind: 'roster', id: 2 } });
+    assert.equal(second.totalSeats, 14);
+    const firstOrder = await successful(fresh, '/admin/bookings', 'POST', input({ requestedDate: trip.date, requestedTime: trip.time, seats: 8 }));
+    await successful(fresh, '/admin/bookings', 'POST', input({ requestedDate: trip.date, requestedTime: trip.time, seats: 1, phone: '599123457' }));
+    await successful(fresh, '/bookings', 'POST', input({ requestedDate: trip.date, requestedTime: trip.time, seats: 3, phone: '599123458' }));
+    const deleted = await successful(fresh, '/admin/bookings', 'POST', input({ requestedDate: trip.date, requestedTime: trip.time, seats: 4, phone: '599123459' }));
+    await successful(fresh, `/admin/bookings/${deleted.id}/delete`, 'POST', {});
+    await successful(fresh, '/admin/bookings', 'POST', input({ direction: 'tbilisi-gori', pickupStopId: 1, requestedDate: trip.date, requestedTime: trip.time, seats: 2, phone: '599123460' }));
+    const capacity = await successful(fresh, path + '&search=nothing&page=999&status=waiting');
+    assert.deepEqual([capacity.bookingCount, capacity.bookedSeats, capacity.totalSeats, capacity.freeSeats, capacity.uncoveredSeats], [2, 9, 14, 5, 0]);
+    assert.deepEqual(capacity.drivers.map((driver: any) => [driver.filledSeats, driver.freeSeats]), [[7, 0], [2, 5]]);
+    assert.equal(capacity.revision, second.revision, 'Booking arrivals must not invalidate a driver plan revision');
+    await successful(fresh, `/admin/bookings/${firstOrder.id}/delete`, 'POST', {});
+    assert.equal((await successful(fresh, path)).bookedSeats, 1);
+    await successful(fresh, `/admin/bookings/${firstOrder.id}/restore`, 'POST', {});
+    assert.equal((await successful(fresh, path)).bookedSeats, 9);
+    const unrestricted = await successful(fresh, '/admin/bookings', 'POST', input({ requestedDate: trip.date, requestedTime: trip.time, seats: 8, phone: '599123461' }));
+    assert.equal(unrestricted.status, 'confirmed');
+    const excess = await successful(fresh, path);
+    assert.deepEqual([excess.bookedSeats, excess.freeSeats, excess.uncoveredSeats], [17, 0, 3]);
+  } finally { await fresh.close(); }
+});
+
+test('removing a trip driver creates a manual reserve without declining, reflowing other times or changing next day', async () => {
+  const fresh = await fixture();
+  const trip = { direction: 'gori-tbilisi', date: '2026-10-09', time: '06:00' };
+  const path = '/admin/trips/capacity?direction=gori-tbilisi&date=2026-10-09&time=06:00';
+  try {
+    const before = await successful(fresh, path);
+    const removed = await successful(fresh, '/admin/trips/drivers', 'POST', { ...trip, expectedRevision: before.revision, action: 'remove', removeKey: 'roster:1' });
+    assert.deepEqual([removed.drivers.length, removed.totalSeats], [0, 0]);
+    const day = await successful(fresh, '/admin/drivers/schedule?direction=gori-tbilisi&date=2026-10-09');
+    assert.deepEqual([day.drivers[0].declined, day.drivers[0].assignmentMode, day.drivers[0].assignedTime, day.drivers[1].assignedTime], [false, 'manual', null, '07:00']);
+    const next = await successful(fresh, '/admin/drivers/schedule?direction=gori-tbilisi&date=2026-10-10');
+    assert.deepEqual([next.drivers[0].id, next.drivers[0].assignedTime, next.drivers.at(-1).assignmentMode], [2, '06:00', 'auto']);
+    const restored = await successful(fresh, '/admin/trips/drivers', 'POST', { ...trip, expectedRevision: removed.revision, action: 'add', driver: { kind: 'roster', id: 1 } });
+    assert.equal(restored.totalSeats, 7);
+  } finally { await fresh.close(); }
+});
+
+test('one-off drivers stay local to one date and time and are retained in soft removal history', async () => {
+  const fresh = await fixture();
+  const trip = { direction: 'gori-tbilisi', date: '2026-10-09', time: '06:00' };
+  const path = '/admin/trips/capacity?direction=gori-tbilisi&date=2026-10-09&time=06:00';
+  try {
+    const before = await successful(fresh, path);
+    const extra = await successful(fresh, '/admin/trips/drivers', 'POST', { ...trip, expectedRevision: before.revision, action: 'add', driver: { kind: 'temporary', name: '  სატესტო ერთჯერადი  ', capacity: 6 } });
+    assert.equal(extra.totalSeats, 13);
+    assert.equal(extra.drivers[1].name, 'სატესტო ერთჯერადი');
+    assert.equal(extra.drivers[1].kind, 'temporary');
+    assert.equal(extra.drivers[1].driverId, null);
+    assert.match(extra.drivers[1].key, /^temporary:[a-f0-9-]{36}$/);
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM drivers').get())?.count, 43);
+    assert.equal((await successful(fresh, '/admin/trips/capacity?direction=gori-tbilisi&date=2026-10-09&time=07:00')).totalSeats, 7);
+    assert.equal((await successful(fresh, '/admin/trips/capacity?direction=gori-tbilisi&date=2026-10-10&time=06:00')).drivers.length, 1);
+    const removed = await successful(fresh, '/admin/trips/drivers', 'POST', { ...trip, expectedRevision: extra.revision, action: 'remove', removeKey: extra.drivers[1].key });
+    assert.equal(removed.totalSeats, 7);
+    const stored = await fresh.db.prepare('SELECT date,time,name,capacity,removed_at FROM temporary_trip_drivers').get();
+    assert.equal(stored?.date, trip.date);
+    assert.equal(stored?.time, trip.time);
+    assert.equal(stored?.capacity, 6);
+    assert.ok(stored?.removed_at);
+    const audits = await fresh.db.prepare("SELECT action,user_id,details FROM audit_log WHERE action LIKE 'trip.driver.%' ORDER BY id").all();
+    assert.deepEqual(audits.map(row => [row.action, row.user_id]), [['trip.driver.add', 1], ['trip.driver.remove', 1]]);
+  } finally { await fresh.close(); }
+});
+
+test('trip replacement is atomic, preserves booking records and rejects concurrent edits of an outdated plan', async () => {
+  const fresh = await fixture({ now: () => new Date('2026-10-09T00:00:00Z') });
+  const trip = { direction: 'gori-tbilisi', date: '2026-10-09', time: '06:00' };
+  const path = '/admin/trips/capacity?direction=gori-tbilisi&date=2026-10-09&time=06:00';
+  try {
+    await successful(fresh, '/admin/bookings', 'POST', input({ requestedDate: trip.date, requestedTime: trip.time, seats: 8 }));
+    const bookings = JSON.stringify(await fresh.db.prepare('SELECT * FROM bookings ORDER BY id').all());
+    const before = await successful(fresh, path);
+    const changes = await Promise.all([2, 3].map(id => fresh.request('/admin/trips/drivers', 'POST', {
+      ...trip, expectedRevision: before.revision, action: 'replace', removeKey: 'roster:1', driver: { kind: 'roster', id },
+    })));
+    assert.deepEqual(changes.map(change => change.status).sort(), [200, 409]);
+    assert.equal(changes.find(change => change.status === 409)?.data.code, 'TRIP_CHANGED');
+    const after = await successful(fresh, path);
+    assert.equal(after.drivers.length, 1);
+    assert.notEqual(after.drivers[0].key, 'roster:1');
+    assert.equal(after.bookedSeats, 8);
+    assert.equal(JSON.stringify(await fresh.db.prepare('SELECT * FROM bookings ORDER BY id').all()), bookings);
+    assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='trip.driver.replace'").get())?.count, 1);
+    const replaced = await successful(fresh, '/admin/trips/drivers', 'POST', { ...trip, expectedRevision: after.revision, action: 'replace', removeKey: after.drivers[0].key, driver: { kind: 'temporary', name: 'Replacement', capacity: 6 } });
+    assert.deepEqual([replaced.drivers.length, replaced.totalSeats, replaced.freeSeats, replaced.uncoveredSeats], [1, 6, 0, 2]);
+    const original = await fresh.db.prepare('SELECT declined,assignment_mode,manual_time FROM driver_day_overrides WHERE driver_id=1 AND date=?').get(trip.date);
+    assert.deepEqual({ ...original }, { declined: 0, assignment_mode: 'manual', manual_time: null });
+  } finally { await fresh.close(); }
+});
+
+test('capacity supports inactive historic trips while retained manual and one-off drivers contribute no seats', async () => {
+  const fresh = await fixture({ now: () => new Date('2026-10-09T00:00:00Z') });
+  const trip = { direction: 'gori-tbilisi', date: '2026-10-09', time: '06:00' };
+  const path = '/admin/trips/capacity?direction=gori-tbilisi&date=2026-10-09&time=06:00';
+  try {
+    await successful(fresh, '/admin/bookings', 'POST', input({ requestedDate: trip.date, requestedTime: trip.time, seats: 8 }));
+    await successful(fresh, '/admin/drivers/1/day', 'PATCH', { direction: trip.direction, date: trip.date, assignment: { mode: 'manual', time: trip.time } });
+    const before = await successful(fresh, path);
+    await successful(fresh, '/admin/trips/drivers', 'POST', { ...trip, expectedRevision: before.revision, action: 'add', driver: { kind: 'temporary', name: 'Retained car', capacity: 7 } });
+    await successful(fresh, '/admin/schedule/date', 'PUT', { direction: trip.direction, date: trip.date, times: ['07:30'] });
+    const inactive = await successful(fresh, path);
+    assert.equal(inactive.active, false);
+    assert.deepEqual([inactive.bookedSeats, inactive.totalSeats, inactive.freeSeats, inactive.uncoveredSeats], [8, 0, 0, 8]);
+    assert.deepEqual(inactive.drivers.map((driver: any) => [driver.active, driver.filledSeats, driver.freeSeats]), [[false, 0, 0], [false, 0, 0]]);
+    const rejected = await fresh.request('/admin/trips/drivers', 'POST', { ...trip, expectedRevision: inactive.revision, action: 'remove', removeKey: 'roster:1' });
+    assert.equal(rejected.status, 409);
+    assert.equal(rejected.data.code, 'SLOT_INACTIVE');
+    await successful(fresh, `/admin/schedule/date?direction=${trip.direction}&date=${trip.date}`, 'DELETE');
+    assert.equal((await successful(fresh, path)).totalSeats, 14);
+  } finally { await fresh.close(); }
+});
+
+test('trip APIs require staff and validate unsupported directions, malformed changes, declined drivers and current membership without partial writes', async () => {
+  const fresh = await fixture();
+  const trip = { direction: 'gori-tbilisi', date: '2026-10-09', time: '06:00' };
+  const path = '/admin/trips/capacity?direction=gori-tbilisi&date=2026-10-09&time=06:00';
+  try {
+    const before = await successful(fresh, path);
+    assert.equal((await fresh.request(path, 'GET', undefined, {}, false)).status, 401);
+    assert.equal((await fresh.request('/admin/trips/drivers', 'POST', { ...trip, expectedRevision: before.revision, action: 'remove', removeKey: 'roster:1' }, {}, false)).status, 401);
+    const mutations = [
+      { action: 'other' }, { action: 'add' }, { action: 'add', expectedRevision: '' },
+      { action: 'add', driver: { kind: 'roster', id: 99999 } },
+      { action: 'add', driver: { kind: 'roster', id: 1 } },
+      { action: 'add', driver: { kind: 'temporary', name: 'Test', capacity: 9 } },
+      { action: 'add', driver: { kind: 'temporary', name: '', capacity: 7 } },
+      { action: 'add', driver: { kind: 'temporary', name: 'Test', capacity: '7' } },
+      { action: 'add', driver: { kind: 'temporary', name: 'Test', capacity: 1.5 } },
+      { action: 'remove', removeKey: 'roster:2' }, { action: 'remove', removeKey: 'temporary:fake' },
+      { action: 'replace', removeKey: 'roster:1', driver: { kind: 'roster', id: 1 } },
+      { action: 'replace', removeKey: 'roster:1', driver: { kind: 'roster', id: 99999 } },
+      { action: 'remove', removeKey: 'roster:1', direction: 'tbilisi-gori' },
+      { action: 'remove', removeKey: 'roster:1', date: '2026-02-29' },
+      { action: 'remove', removeKey: 'roster:1', time: '24:00' },
+    ];
+    const snapshot = JSON.stringify(await fresh.db.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all());
+    for (const change of mutations) {
+      const response = await fresh.request('/admin/trips/drivers', 'POST', { ...trip, expectedRevision: before.revision, ...change });
+      assert.ok([400, 404, 409].includes(response.status), JSON.stringify(change));
+    }
+    assert.equal(JSON.stringify(await fresh.db.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all()), snapshot);
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM temporary_trip_drivers').get())?.count, 0);
+    assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action LIKE 'trip.driver.%'").get())?.count, 0);
+    await successful(fresh, '/admin/drivers/2/day', 'PATCH', { direction: trip.direction, date: trip.date, declined: true });
+    const current = await successful(fresh, path);
+    const declined = await fresh.request('/admin/trips/drivers', 'POST', { ...trip, expectedRevision: current.revision, action: 'replace', removeKey: 'roster:1', driver: { kind: 'roster', id: 2 } });
+    assert.equal(declined.status, 409);
+    assert.equal(declined.data.code, 'DRIVER_DECLINED');
+    assert.equal((await successful(fresh, path)).drivers[0].key, 'roster:1');
+    assert.equal((await fresh.request('/admin/trips/capacity?direction=tbilisi-gori&date=2026-10-09&time=06:00')).data.code, 'DRIVER_DIRECTION');
+    assert.equal((await fresh.request('/admin/trips/capacity?direction=gori-tbilisi&date=2026-02-29&time=06:00')).status, 400);
+  } finally { await fresh.close(); }
+});
+
 test('editing and moving preserve confirmation; restoring a waiting request returns it to the queue', async () => {
   const created = await successful(f, '/admin/bookings', 'POST', input({ seats: 1 }));
   const edited = await successful(f, `/admin/bookings/${created.id}`, 'PATCH', { seats: 4, goriAddress: 'გორი, ახალი სატესტო მისამართი' });

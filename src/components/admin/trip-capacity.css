@@ -1,0 +1,105 @@
+.admin-trip-capacity {
+  min-width: 0;
+  margin: 0 0 12px;
+  padding: 17px 19px;
+  border: 1px solid #dce9e1;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 3px 12px #273b3203;
+  color: #244035;
+}
+.admin-trip-capacity button, .admin-trip-capacity input, .admin-trip-capacity select { font: inherit; }
+.admin-trip-capacity button { cursor: pointer; }
+.admin-trip-capacity button:disabled { cursor: default; opacity: .5; }
+.admin-trip-capacity :is(button, input, select):focus-visible { outline: 3px solid #65c993; outline-offset: 3px; }
+.admin-trip-capacity-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 18px; min-width: 0; }
+.admin-trip-capacity-title { display: flex; align-items: center; gap: 11px; min-width: 0; flex: 1; }
+.admin-trip-capacity-icon { display: grid; place-items: center; flex: 0 0 42px; width: 42px; height: 42px; border-radius: 11px; background: #edf8f2; color: #07844e; }
+.admin-trip-capacity-title h2 { margin: 0 0 4px; font-family: var(--font-heading); font-size: 18px; font-weight: 400; color: #18382b; }
+.admin-trip-capacity-title p { margin: 0; color: #789084; font-size: 11px; line-height: 1.7; }
+.admin-trip-capacity-title p strong { color: #2a6548; font-weight: 600; }
+.admin-trip-capacity-toggle, .admin-trip-capacity-button { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 44px; padding: 10px 13px; color: #21804e; background: #f1faf5; border: 1px solid #d3e8dc; border-radius: 9px; font-size: 12px; }
+.admin-trip-capacity-toggle:hover, .admin-trip-capacity-button:hover { background: #e5f4eb; }
+.admin-trip-capacity-toggle > svg, .admin-trip-capacity-button > svg { flex-shrink: 0; }
+.admin-trip-capacity-button.primary { color: #fff; background: #07934c; border-color: #07934c; font-weight: 600; }
+.admin-trip-capacity-button.primary:hover { background: #087c42; }
+.admin-trip-capacity-button.danger { color: #b96761; border-color: #efd7d4; background: #fff8f7; }
+.admin-trip-capacity-button.danger:hover { background: #fff0ee; }
+.admin-trip-capacity-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 15px 0 0; }
+.admin-trip-capacity-stat { display: flex; align-items: baseline; gap: 9px; padding: 9px 12px; color: #75897e; background: #f7faf8; border: 1px solid #e7eee9; border-radius: 9px; font-size: 11px; }
+.admin-trip-capacity-stat strong { color: #264e38; font-size: 19px; font-variant-numeric: tabular-nums; }
+.admin-trip-capacity-stat.free { background: #eef8f1; border-color: #d6eade; }
+.admin-trip-capacity-stat.free strong { color: #0b8a47; }
+.admin-trip-capacity-stat.over { color: #b26b3c; background: #fff6ed; border-color: #f1ddc9; }
+.admin-trip-capacity-stat.over strong { color: #b15d28; }
+.admin-trip-capacity-cars { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(245px, 100%), 1fr)); gap: 10px; margin-top: 13px; }
+.admin-trip-capacity-car { min-width: 0; padding: 13px; border: 1px solid #deebe2; border-radius: 10px; background: #fafdFB; }
+.admin-trip-capacity-car.full { background: #eef9f1; border-color: #8dccaa; }
+.admin-trip-capacity-car.uncovered { border-color: #e5e9e7; background: #f7f8f7; }
+.admin-trip-capacity-car-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; min-width: 0; }
+.admin-trip-capacity-car-head > div { min-width: 0; }
+.admin-trip-capacity-car-name { display: flex; align-items: center; gap: 7px; color: #2f6546; font-size: 13px; font-weight: 600; }
+.admin-trip-capacity-car-name strong { overflow-wrap: anywhere; font: inherit; }
+.admin-trip-capacity-car-name > svg { flex-shrink: 0; }
+.admin-trip-capacity-car small { display: block; margin-top: 5px; color: #8a9b90; font-size: 10px; line-height: 1.7; }
+.admin-trip-capacity-car-count { flex-shrink: 0; color: #60846c; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.admin-trip-capacity-car.full .admin-trip-capacity-car-count { color: #0c8f4c; }
+.admin-trip-capacity-car.uncovered .admin-trip-capacity-car-name, .admin-trip-capacity-car.uncovered .admin-trip-capacity-car-count { color: #7d8981; }
+.admin-trip-capacity-seats { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.admin-trip-capacity-seat { display: grid; place-items: center; flex: 0 0 27px; width: 27px; height: 29px; border: 1px solid #dbe4df; border-radius: 6px; background: #e9eeeb; color: #acb8b0; }
+.admin-trip-capacity-seat.filled { color: #fff; background: #149451; border-color: #149451; box-shadow: inset 0 1px 0 #ffffff20; }
+.admin-trip-capacity-car.uncovered .admin-trip-capacity-seat { border-style: dashed; background: #eceeed; color: #a4afa8; }
+.admin-trip-capacity-more-seats { color: #89968d; font-size: 11px; }
+.admin-trip-capacity-car-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; padding-top: 11px; border-top: 1px solid #e4eee7; }
+.admin-trip-capacity-car-actions .admin-trip-capacity-button { flex: 1; font-size: 11px; padding: 9px; }
+.admin-trip-capacity-empty { display: flex; align-items: center; gap: 10px; min-height: 44px; color: #7c9185; font-size: 12px; line-height: 1.8; }
+.admin-trip-capacity-empty > svg { flex-shrink: 0; color: #5c9471; }
+.admin-trip-capacity-empty p { margin: 0; }
+.admin-trip-capacity-loading { display: flex; align-items: center; gap: 8px; padding: 14px 0 3px; color: #799082; font-size: 12px; }
+.admin-trip-capacity-feedback { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding: 10px 12px; border: 1px solid #d9eadf; border-radius: 9px; color: #388457; background: #f1faf4; font-size: 11px; line-height: 1.8; }
+.admin-trip-capacity-feedback > svg { flex: 0 0 16px; margin-top: 2px; }
+.admin-trip-capacity-feedback > span { flex: 1; min-width: 0; }
+.admin-trip-capacity-feedback.error { color: #b35b51; border-color: #efd5d1; background: #fff5f3; }
+.admin-trip-capacity-feedback .admin-trip-capacity-button { font-size: 11px; background: #fff; color: inherit; border-color: currentColor; }
+.admin-trip-capacity-editor { margin-top: 14px; padding: 15px; background: #f7faf8; border: 1px solid #dfece4; border-radius: 10px; min-width: 0; }
+.admin-trip-capacity-editor h3 { margin: 0 0 12px; font-family: var(--font-heading); font-size: 14px; font-weight: 400; color: #416d51; }
+.admin-trip-capacity-editor-tabs { display: flex; gap: 8px; margin-bottom: 13px; }
+.admin-trip-capacity-editor-tabs button { min-height: 44px; padding: 9px 12px; color: #7d9486; background: #fff; border: 1px solid #e0eae4; border-radius: 8px; font-size: 11px; }
+.admin-trip-capacity-editor-tabs button.active { color: #16824b; background: #eaf7ee; border-color: #92c9a7; }
+.admin-trip-capacity-editor-fields { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 9px; min-width: 0; }
+.admin-trip-capacity-editor-fields label { flex: 1 1 260px; display: flex; flex-direction: column; gap: 6px; min-width: 0; color: #789183; font-size: 11px; }
+.admin-trip-capacity-editor-fields label.capacity { flex: 0 1 106px; }
+.admin-trip-capacity-editor :is(input, select) { width: 100%; min-width: 0; min-height: 44px; padding: 9px 11px; border: 1px solid #dce8e0; border-radius: 8px; background: #fff; color: #3b6250; font-size: 12px; }
+.admin-trip-capacity-editor-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.admin-trip-capacity-editor-note { margin: 10px 0 0; color: #8a9c90; font-size: 10px; line-height: 1.8; }
+.admin-trip-capacity-warning { margin: 12px 0 0; display: flex; align-items: flex-start; gap: 8px; color: #a5783f; font-size: 11px; line-height: 1.8; }
+.admin-trip-capacity-warning > svg { flex-shrink: 0; margin-top: 2px; }
+@media (max-width: 720px) {
+  .admin-trip-capacity { padding: 15px; }
+  .admin-trip-capacity-heading { gap: 10px; }
+  .admin-trip-capacity-title { flex-basis: calc(100% - 54px); }
+  .admin-trip-capacity-title h2 { font-size: 16px; }
+  .admin-trip-capacity-summary { gap: 7px; }
+  .admin-trip-capacity-stat { padding: 8px 10px; gap: 7px; }
+  .admin-trip-capacity-stat strong { font-size: 18px; }
+}
+@media (max-width: 430px) {
+  .admin-trip-capacity { padding: 12px; }
+  .admin-trip-capacity-title { gap: 8px; }
+  .admin-trip-capacity-icon { flex-basis: 36px; width: 36px; height: 36px; }
+  .admin-trip-capacity-title h2 { font-size: 14px; }
+  .admin-trip-capacity-title p { font-size: 10px; }
+  .admin-trip-capacity-toggle { width: 100%; }
+  .admin-trip-capacity-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .admin-trip-capacity-stat { align-items: flex-start; flex-direction: column; gap: 2px; padding: 8px; font-size: 10px; }
+  .admin-trip-capacity-stat.over { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 9px; }
+  .admin-trip-capacity-car { padding: 11px; }
+  .admin-trip-capacity-car-name { font-size: 12px; }
+  .admin-trip-capacity-editor { padding: 11px; }
+  .admin-trip-capacity-editor-tabs { gap: 6px; }
+  .admin-trip-capacity-editor-tabs button { flex: 1; padding: 9px 7px; }
+  .admin-trip-capacity-editor-fields label { flex-basis: 100%; }
+  .admin-trip-capacity-editor-fields label.capacity { flex-basis: 100%; }
+  .admin-trip-capacity-editor-buttons { width: 100%; }
+  .admin-trip-capacity-editor-buttons > button { flex: 1; }
+}

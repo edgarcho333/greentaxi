@@ -25,6 +25,20 @@ export type DriverSchedule = {
   direction: 'gori-tbilisi'; date: string; anchorDate: string; firstDriverId: number;
   times: string[]; drivers: DriverDay[];
 };
+export type TripDriver = {
+  key: string; driverId: number | null; kind: 'roster' | 'temporary'; name: string;
+  capacity: number; filledSeats: number; freeSeats: number; active: boolean;
+};
+export type TripCapacity = {
+  direction: 'gori-tbilisi'; date: string; time: string; active: boolean;
+  bookingCount: number; bookedSeats: number; totalSeats: number; freeSeats: number;
+  uncoveredSeats: number; revision: string; drivers: TripDriver[]; availableDrivers: DriverDay[];
+};
+export type TripDriverSelection = { kind: 'roster'; id: number } | { kind: 'temporary'; name: string; capacity: number };
+export type TripDriverMutation = {
+  direction: 'gori-tbilisi'; date: string; time: string; expectedRevision: string;
+  action: 'add' | 'remove' | 'replace'; removeKey?: string; driver?: TripDriverSelection;
+};
 export type Passenger = {
   name: string; phone: string; address: string; addressCity: 'gori' | 'tbilisi' | null;
   orderCount: number; seats: number; latestDate: string;

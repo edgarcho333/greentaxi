@@ -2,6 +2,7 @@ import { addDays, today, type Analytics, type Booking, type CallInquiry, type Di
 import { canonicalPassengerPhone } from './components/admin/usePassengerProfile';
 import { passengerDepartureTimes } from '../shared/passenger-departure-times';
 import { buildDriverSchedule } from '../shared/driver-rotation';
+import { calculateTripCapacity } from '../shared/trip-capacity';
 
 export const previewUser: User = { id: 1, login: 'preview', name: 'სატესტო ოპერატორი' };
 export const previewOnlyMessage = 'ამ HTML ფაილში მხოლოდ დიზაინის ნახვაა შესაძლებელი. რეალური მოქმედებებისთვის გაუშვით აპლიკაციის სერვერი.';
@@ -169,6 +170,16 @@ export function installPreviewApi(): void {
         if (params.get('direction') !== 'gori-tbilisi') return reply({ error: 'მძღოლების რიგი მოქმედებს მხოლოდ გორი → თბილისი მიმართულებით.', code: 'DRIVER_DIRECTION' }, 400);
         const saved = schedule(bookings, params);
         return reply(buildDriverSchedule(saved.date, saved.overrideTimes ?? saved.baseTimes));
+      }
+      case '/api/admin/trips/capacity': {
+        if (params.get('direction') !== 'gori-tbilisi') return reply({ error: 'მძღოლების რიგი მოქმედებს მხოლოდ გორი → თბილისი მიმართულებით.', code: 'DRIVER_DIRECTION' }, 400);
+        const saved = schedule(bookings, params);
+        const time = params.get('time') ?? '';
+        const active = saved.slots.some(slot => slot.time === time && slot.active);
+        const plan = buildDriverSchedule(saved.date, saved.overrideTimes ?? saved.baseTimes);
+        const rows = bookings.filter(booking => !booking.deletedAt && booking.status === 'confirmed' && booking.direction === 'gori-tbilisi' && booking.assignedDate === saved.date && booking.assignedTime === time);
+        const cars = plan.drivers.filter(driver => !driver.declined && driver.assignedTime === time).map(driver => ({ key: `roster:${driver.id}`, driverId: driver.id, kind: 'roster' as const, name: driver.name, capacity: driver.capacity, active: active && driver.assignmentActive }));
+        return reply({ direction: 'gori-tbilisi', date: saved.date, time, active, bookingCount: rows.length, ...calculateTripCapacity(cars, rows.reduce((total, row) => total + row.seats, 0)), revision: '0'.repeat(64), availableDrivers: plan.drivers });
       }
       case '/api/admin/calls': return reply({ calls: (params.get('scope') ?? 'incoming') === 'incoming' && matchesSearch(sampleCall.passengerProfile?.name || '', sampleCall.phone || '', params.get('search') ?? '') ? [sampleCall] : [] });
       case '/api/admin/devices': return reply({ devices: [] });

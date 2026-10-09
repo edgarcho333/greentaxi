@@ -1,6 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createDatabase, type Database } from './database.js';
-import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { Analytics, Booking, CallDevice, CallInquiry, Direction, PassengerProfile, Schedule, Slot, User } from '../src/api.js';
 import { normalizePhone, legacyPhoneKey } from '../shared/phone.js';
@@ -8,6 +8,7 @@ import { migratePassengerAddresses, migratePhoneStorage, migratePickupMemory, re
 import { comparePassengerTrips, listPassengers, passengerBookings, passengerSummary } from './passengers.js';
 import { readDriverSchedule } from './drivers.js';
 import { DRIVER_DIRECTION } from '../shared/driver-rotation.js';
+import { readTripCapacity } from './trip-capacity.js';
 
 const scrypt = promisify(scryptCallback);
 const DIRECTIONS: Direction[] = ['gori-tbilisi', 'tbilisi-gori'];
@@ -618,6 +619,75 @@ export async function createApp(options: Options = {}) {
     const day = date(req.query.date);
     const result = await transaction(async () => readDriverSchedule(db, day, (await configuredTimes(d, day)).effective));
     res.json(result);
+  });
+  app.get('/api/admin/trips/capacity', async (req, res) => {
+    const d = driverDirection(req.query.direction);
+    const day = date(req.query.date);
+    const slotTime = time(req.query.time);
+    const result = await transaction(async () => readTripCapacity(db, day, slotTime, (await configuredTimes(d, day)).effective));
+    res.json(result);
+  });
+  app.post('/api/admin/trips/drivers', async (req: ContextRequest, res) => {
+    const d = driverDirection(req.body.direction);
+    const day = date(req.body.date);
+    const slotTime = time(req.body.time);
+    const action = req.body.action;
+    if (!['add', 'remove', 'replace'].includes(action)) reject(400, 'აირჩიეთ მძღოლის ცვლილება.', 'VALIDATION');
+    const expectedRevision = text(req.body.expectedRevision, 'რეისის ვერსია', 64, 64);
+    if (!/^[a-f0-9]{64}$/.test(expectedRevision)) reject(400, 'რეისის ვერსია არასწორია.', 'VALIDATION');
+    let removeKey: string | undefined;
+    if (action === 'remove' || action === 'replace') {
+      removeKey = text(req.body.removeKey, 'მძღოლი', 1, 100);
+      if (!/^roster:[1-9]\d*$/.test(removeKey) && !/^temporary:[a-f0-9-]{36}$/.test(removeKey)) reject(400, 'მძღოლის არჩევანი არასწორია.', 'VALIDATION');
+    } else if (req.body.removeKey !== undefined) reject(400, 'მძღოლის არჩევანი არასწორია.', 'VALIDATION');
+    let addition: { kind: 'roster'; id: number } | { kind: 'temporary'; name: string; capacity: number } | undefined;
+    if (action === 'add' || action === 'replace') {
+      const choice = req.body.driver;
+      if (!choice || typeof choice !== 'object' || Array.isArray(choice)) reject(400, 'აირჩიეთ მძღოლი.', 'VALIDATION');
+      if (choice.kind === 'roster') addition = { kind: 'roster', id: numberId(choice.id) };
+      else if (choice.kind === 'temporary') addition = { kind: 'temporary', name: text(choice.name, 'მძღოლის სახელი', 1, 100), capacity: seatCount(choice.capacity, 8) };
+      else reject(400, 'აირჩიეთ მძღოლი.', 'VALIDATION');
+    } else if (req.body.driver !== undefined) reject(400, 'მძღოლის არჩევანი არასწორია.', 'VALIDATION');
+    const result = await transaction(async () => {
+      await activeSlot(d, day, slotTime);
+      const effective = (await configuredTimes(d, day)).effective;
+      const current = await readTripCapacity(db, day, slotTime, effective);
+      if (current.revision !== expectedRevision) reject(409, 'მძღოლების განრიგი შეიცვალა. განაახლეთ სია და სცადეთ ხელახლა.', 'TRIP_CHANGED');
+      const removed = removeKey ? current.drivers.find(driver => driver.key === removeKey) : undefined;
+      if (removeKey && !removed) reject(409, 'მძღოლი ამ რეისზე აღარ არის დანიშნული. განაახლეთ სია.', 'TRIP_CHANGED');
+      if (addition?.kind === 'roster') {
+        const selectedId = addition.id;
+        const existing = (await readDriverSchedule(db, day, effective)).drivers.find(driver => driver.id === selectedId);
+        if (!existing) reject(404, 'მძღოლი ვერ მოიძებნა.', 'NOT_FOUND');
+        if (existing.declined) reject(409, 'მძღოლმა ამ დღეს უარი თქვა. ჯერ შეცვალეთ მისი დღის სტატუსი.', 'DRIVER_DECLINED');
+        if (existing.assignedTime === slotTime) reject(409, 'მძღოლი ამ რეისზე უკვე დანიშნულია.', 'DRIVER_ALREADY_ASSIGNED');
+      }
+      const timestamp = now().toISOString();
+      async function manuallyAssign(id: number, manualTime: string | null) {
+        // Updating this one manual preference does not decline a driver or reflow
+        // the automatic positions of the remaining drivers for this date.
+        await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,0,'manual',?,?)
+          ON CONFLICT(driver_id,date) DO UPDATE SET assignment_mode='manual',manual_time=excluded.manual_time,updated_at=excluded.updated_at`)
+          .run(id, day, manualTime, timestamp);
+      }
+      if (removed?.driverId !== null && removed?.driverId !== undefined) await manuallyAssign(removed.driverId, null);
+      else if (removed) await db.prepare('UPDATE temporary_trip_drivers SET removed_at=? WHERE id=? AND direction=? AND date=? AND time=? AND removed_at IS NULL')
+        .run(timestamp, removed.key.slice('temporary:'.length), d, day, slotTime);
+      let addedKey: string | undefined;
+      if (addition?.kind === 'roster') {
+        await manuallyAssign(addition.id, slotTime);
+        addedKey = `roster:${addition.id}`;
+      } else if (addition?.kind === 'temporary') {
+        const id = randomUUID();
+        const last = await db.prepare('SELECT COALESCE(MAX(sort_order),0) AS last FROM temporary_trip_drivers WHERE direction=? AND date=? AND time=?').get(d, day, slotTime);
+        await db.prepare('INSERT INTO temporary_trip_drivers(id,direction,date,time,name,capacity,sort_order,created_at) VALUES (?,?,?,?,?,?,?,?)')
+          .run(id, d, day, slotTime, addition.name, addition.capacity, (last?.last ?? 0) + 1, timestamp);
+        addedKey = `temporary:${id}`;
+      }
+      await audit(`trip.driver.${action}`, req.employee, undefined, { direction: d, date: day, time: slotTime, ...(removeKey ? { removeKey } : {}), ...(addedKey ? { addedKey } : {}) });
+      return readTripCapacity(db, day, slotTime, effective);
+    });
+    res.status(action === 'add' ? 201 : 200).json(result);
   });
   app.patch('/api/admin/drivers/:id/day', async (req: ContextRequest, res) => {
     const d = driverDirection(req.body.direction);

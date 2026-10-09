@@ -5,6 +5,7 @@ import AdminSettings from './admin/AdminSettings';
 import CallQueue from './admin/CallQueue';
 import BookingPrint from './admin/BookingPrint';
 import Passengers from './admin/Passengers';
+import TripCapacity from './admin/TripCapacity';
 import usePassengerProfile, { canonicalPassengerPhone } from './admin/usePassengerProfile';
 import SavedAddressPicker, { savedGoriAddresses } from './admin/SavedAddressPicker';
 import sidebarNight from '../assets/sidebar-night.webp';
@@ -163,6 +164,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
           <section className="admin-time-panel" aria-label="დროის არჩევა"><div className="admin-strip-heading"><Clock3 size={26} /><span>აირჩიეთ<br />დრო</span></div><div className="admin-time-strip" ref={timeStrip}><button className={`admin-time-chip admin-time-all ${!time ? 'selected' : ''}`} onClick={() => setTime('')}><strong>ყველა</strong><span>{selectedSchedule?.slots.reduce((sum, slot) => sum + slot.bookingCount, 0) ?? '—'}</span></button>{selectedSchedule?.slots.map(slot => <button key={slot.time} className={`admin-time-chip ${time === slot.time ? 'selected' : ''} ${!slot.active ? 'is-disabled-slot' : ''}`} onClick={() => setTime(slot.time)} title={slot.active ? `${slot.bookingCount} ჯავშანი · ${slot.seatCount} ადგილი` : 'დრო გამორთულია. არსებული ჯავშნები შენარჩუნებულია.'}><strong>{slot.time}</strong><span>{slot.bookingCount}</span>{!slot.active && <span className="admin-slot-dot" />}</button>)}</div><button className="admin-icon-button admin-time-arrow" onClick={() => timeStrip.current?.scrollBy({ left: Math.max(200, timeStrip.current.clientWidth * .7), behavior: 'smooth' })} aria-label="შემდეგი საათები"><ChevronRight size={22} /></button></section>
           {scheduleError && <div className="admin-error">{scheduleError} <button onClick={reload}>ხელახლა ცდა</button></div>}
           {selectedSchedule?.slots.some(slot => !slot.active && slot.bookingCount > 0) && <div className="admin-notice">გამორთულ დროზე ჯავშნები შენარჩუნებულია. გადაიტანეთ ისინი მოქმედ დროზე.</div>}
+          <TripCapacity direction={direction} date={date} time={time} refresh={refresh} onChange={reload} />
         </>}
         {view === 'incoming' && <div className="admin-section-note"><Inbox size={18} />აირჩიეთ თარიღი და დრო — სლოტში დამატება ჯავშანს ავტომატურად დაადასტურებს.</div>}
         {view === 'history' && <div className="admin-section-note"><History size={18} />წაშლილი ჯავშნები ინახება ისტორიაში. აღდგენისას შეგიძლიათ აირჩიოთ მოქმედი დრო.</div>}
