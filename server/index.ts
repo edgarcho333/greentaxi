@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import type { Analytics, Booking, CallDevice, CallInquiry, Direction, PassengerProfile, Schedule, Slot, User } from '../src/api.js';
 import { normalizePhone, legacyPhoneKey } from '../shared/phone.js';
 import { migratePhoneStorage, migratePickupMemory, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from './passenger-profiles.js';
+import { comparePassengerTrips, listPassengers, passengerBookings, passengerSummary } from './passengers.js';
 
 const scrypt = promisify(scryptCallback);
 const DIRECTIONS: Direction[] = ['gori-tbilisi', 'tbilisi-gori'];
@@ -676,27 +677,23 @@ export async function createApp(options: Options = {}) {
     res.json({ profile: await profile(phone(req.query.phone)) });
   });
   app.get('/api/admin/passengers', async (req, res) => {
-    const rows = await db.prepare('SELECT * FROM bookings WHERE deleted_at IS NULL ORDER BY updated_at DESC,id DESC').all();
-    const grouped = new Map<string, { name: string; phone: string; orderCount: number; seats: number; latestDate: string }>();
-    for (const row of rows) {
-      const canonical = normalizePhone(row.phone) ?? row.phone;
-      const day = row.assigned_date ?? row.requested_date;
-      const previous = grouped.get(canonical);
-      if (previous) {
-        previous.orderCount++;
-        previous.seats += row.seats;
-        if (day > previous.latestDate) previous.latestDate = day;
-      } else grouped.set(canonical, { name: row.name, phone: canonical, orderCount: 1, seats: row.seats, latestDate: day });
-    }
-    let passengers = [...grouped.values()];
+    let passengers = await listPassengers(db);
     if (req.query.search) {
       const search = text(req.query.search, 'ძიება', 1, 100).toLocaleLowerCase('ka-GE');
-      const phoneSearch = normalizePhone(search) ?? search.replace(/\D/g, '');
+      const canonicalSearch = normalizePhone(search);
+      const phoneSearch = canonicalSearch ?? search.replace(/\D/g, '');
       passengers = passengers.filter(passenger => passenger.name.toLocaleLowerCase('ka-GE').includes(search)
-        || Boolean(phoneSearch && passenger.phone.includes(phoneSearch)));
+        || passenger.address.toLocaleLowerCase('ka-GE').includes(search)
+        || Boolean(phoneSearch && (canonicalSearch ? passenger.phone === canonicalSearch : passenger.phone.includes(phoneSearch))));
     }
-    passengers.sort((first, second) => second.latestDate.localeCompare(first.latestDate) || first.phone.localeCompare(second.phone));
     res.json({ passengers });
+  });
+  app.get('/api/admin/passengers/:phone', async (req, res) => {
+    const canonical = phone(req.params.phone);
+    const rows = await passengerBookings(db, canonical);
+    if (!rows.length) reject(404, 'მგზავრი ვერ მოიძებნა.', 'NOT_FOUND');
+    const [passengerProfile, stops] = await Promise.all([profile(canonical), db.prepare('SELECT id,name,address,active FROM stops').all()]);
+    res.json({ passenger: passengerSummary(rows, passengerProfile, stops), profile: passengerProfile, bookings: rows.sort(comparePassengerTrips).map(booking) });
   });
   app.get('/api/admin/analytics', async (req, res) => {
     const from = req.query.from ? date(req.query.from) : '0001-01-01';

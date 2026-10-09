@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRightLeft, BarChart3, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock3, Edit3, History, Inbox, Leaf, Loader2, LogOut, MapPin, Menu, MoreHorizontal, Phone, Plus, Printer, RefreshCw, Search, Settings, Trash2, Users, X } from 'lucide-react';
-import { ApiError, addDays, directions, request, today, type Analytics, type Booking, type CallInquiry, type Direction, type Passenger, type PublicConfig, type Schedule, type User } from '../api';
+import { ApiError, addDays, directions, request, today, type Analytics, type Booking, type CallInquiry, type Direction, type PublicConfig, type Schedule, type User } from '../api';
 import AdminSettings from './admin/AdminSettings';
 import CallQueue from './admin/CallQueue';
 import BookingPrint from './admin/BookingPrint';
+import Passengers from './admin/Passengers';
 import usePassengerProfile, { canonicalPassengerPhone } from './admin/usePassengerProfile';
 import sidebarNight from '../assets/sidebar-night.webp';
 import { formatPhone, normalizePhone, phoneDialNumber } from '../../shared/phone';
@@ -30,9 +31,25 @@ function errorMessage(error: unknown) { return error instanceof Error ? error.me
 function statusLabel(booking: Booking) { return booking.status === 'confirmed' ? 'დადასტურებული' : 'ელოდება დადასტურებას'; }
 function bookingIdentity(booking: Booking) { return booking.name?.trim() || `#${String(booking.id).padStart(4, '0')}`; }
 function bookingActionIdentity(booking: Booking) { return booking.name?.trim() || formatPhone(booking.phone) || bookingIdentity(booking); }
+function dashboardLocation(): { view: View; passengerPhone: string | null } {
+  const path = window.location.pathname.startsWith('/admin') ? window.location.pathname : `/${window.location.hash.replace(/^#/, '')}`;
+  const match = /^\/admin\/passengers(?:\/([^/]+))?\/?$/.exec(path);
+  if (match) {
+    let phone: string | null = match[1] || null;
+    try { if (phone) phone = decodeURIComponent(phone); } catch { /* Invalid URL is handled by the protected detail endpoint. */ }
+    return { view: 'passengers', passengerPhone: phone };
+  }
+  const savedView = window.history.state?.greenTaxiView;
+  return { view: nav.some(item => item.view === savedView) ? savedView : 'scheduled', passengerPhone: null };
+}
+function dashboardUrl(view: View, phone: string | null = null) {
+  const path = view === 'passengers' ? `/admin/passengers${phone === null ? '' : `/${encodeURIComponent(phone)}`}` : '/admin';
+  return window.location.pathname.startsWith('/admin') ? path : `#${path.slice(1)}`;
+}
 
 export default function AdminDashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
-  const [view, setView] = useState<View>('scheduled');
+  const [location, setLocation] = useState(dashboardLocation);
+  const { view, passengerPhone } = location;
   const [direction, setDirection] = useState<Direction>('gori-tbilisi');
   const [date, setDate] = useState(today);
   const [dateStart, setDateStart] = useState(today);
@@ -40,7 +57,6 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
   const [search, setSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [bookings, setBookings] = useState<Booking[]>([]);
-  const [passengers, setPassengers] = useState<Passenger[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [incomingCount, setIncomingCount] = useState(0);
   const [config, setConfig] = useState<PublicConfig>({ stops: [], didubeName: 'დიდუბე', didubeAddress: '' });
@@ -62,6 +78,12 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
   const dates = Array.from({ length: 8 }, (_, index) => addDays(dateStart, index));
   const selectedSchedule = schedules.find(item => item.date === date);
   const reload = useCallback(() => setRefresh(value => value + 1), []);
+
+  useEffect(() => {
+    const update = () => { setLocation(dashboardLocation()); setMobileNav(false); setMenuId(null); };
+    window.addEventListener('popstate', update); window.addEventListener('hashchange', update);
+    return () => { window.removeEventListener('popstate', update); window.removeEventListener('hashchange', update); };
+  }, []);
 
   useEffect(() => { const timer = window.setTimeout(() => setSearchQuery(search.trim()), 250); return () => window.clearTimeout(timer); }, [search]);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 4500); return () => window.clearTimeout(timer); }, [toast]);
@@ -95,15 +117,20 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
   }, [direction, dateStart, view, refresh]);
   useEffect(() => {
     const sequence = ++listSequence.current;
-    if (view === 'settings' || view === 'analytics') { setLoading(false); setError(''); return; }
+    if (view === 'settings' || view === 'analytics' || view === 'passengers') { setLoading(false); setError(''); return; }
     setLoading(true); setError(''); setMenuId(null);
-    const load = view === 'passengers'
-      ? request<{ passengers: Passenger[] }>(`/admin/passengers?${query({ search: searchQuery })}`).then(result => { if (sequence === listSequence.current) setPassengers(result.passengers); })
-      : request<{ bookings: Booking[] }>(`/admin/bookings?${query({ scope: view === 'history' ? 'deleted' : view, direction, date: view === 'scheduled' ? date : undefined, time: view === 'scheduled' ? time : undefined, search: searchQuery })}`).then(result => { if (sequence === listSequence.current) setBookings(result.bookings); });
+    const load = request<{ bookings: Booking[] }>(`/admin/bookings?${query({ scope: view === 'history' ? 'deleted' : view, direction, date: view === 'scheduled' ? date : undefined, time: view === 'scheduled' ? time : undefined, search: searchQuery })}`).then(result => { if (sequence === listSequence.current) setBookings(result.bookings); });
     load.catch(cause => { if (sequence === listSequence.current) setError(errorMessage(cause)); }).finally(() => { if (sequence === listSequence.current) setLoading(false); });
   }, [view, direction, date, time, searchQuery, refresh]);
 
-  function changeView(next: View) { setView(next); setMobileNav(false); setSearch(''); setSearchQuery(''); setMenuId(null); }
+  function navigateDashboard(next: View, phone: string | null = null) {
+    window.history.replaceState({ ...window.history.state, greenTaxiView: view }, '');
+    const url = dashboardUrl(next, phone);
+    const currentUrl = window.location.pathname.startsWith('/admin') ? window.location.pathname : window.location.hash;
+    if (currentUrl !== url) window.history.pushState({ greenTaxiView: next }, '', url);
+    setLocation({ view: next, passengerPhone: phone }); setMobileNav(false); setMenuId(null);
+  }
+  function changeView(next: View) { navigateDashboard(next); setSearch(''); setSearchQuery(''); }
   function chooseDate(next: string) { setDate(next); setTime(''); if (next < dateStart || next > addDays(dateStart, 7)) setDateStart(next); }
   function shiftDates(offset: number) { const next = addDays(dateStart, offset); setDateStart(next); setDate(next); setTime(''); }
   function completed(message: string) { setModal(null); setToast(message); reload(); }
@@ -111,7 +138,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
   useEffect(() => { setPage(current => Math.min(current, pageCount)); }, [pageCount]);
   const visibleBookings = bookings.slice((page - 1) * pageSize, page * pageSize);
 
-  return <div className={`admin-shell ${referenceView ? 'admin-reference-view' : ''}`}>
+  return <div className={`admin-shell ${referenceView ? 'admin-reference-view' : ''}${view === 'passengers' ? ' admin-passengers-view' : ''}`}>
     {mobileNav && <button className="admin-mobile-backdrop" onClick={() => setMobileNav(false)} aria-label="მენიუს დახურვა" />}
     <aside className={`admin-sidebar ${mobileNav ? 'is-open' : ''}`}>
       <a href="/" className="admin-brand" aria-label="Green Taxi მთავარი გვერდი"><span className="admin-brand-leaf admin-logo-leaves"><Leaf className="admin-logo-leaf-small" size={23} /><Leaf className="admin-logo-leaf-large" size={35} /></span><span><b>Green</b> Taxi</span><small>GOOD RIDES, A CLEANER TOMORROW.</small></a>
@@ -145,7 +172,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
           </tr>)}</tbody></table></div><div className="admin-pagination"><div className="admin-page-buttons"><button className="admin-icon-button" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label="წინა გვერდი"><ChevronLeft size={18} /></button>{Array.from({ length: Math.min(pageCount, 5) }, (_, index) => { const value = Math.max(1, Math.min(page - 2, pageCount - 4)) + index; return <button className={page === value ? 'selected' : ''} key={value} onClick={() => setPage(value)}>{value}</button>; })}<button className="admin-icon-button" disabled={page >= pageCount} onClick={() => setPage(page + 1)} aria-label="შემდეგი გვერდი"><ChevronRight size={18} /></button><span>{Math.min((page - 1) * pageSize + 1, bookings.length)}–{Math.min(page * pageSize, bookings.length)} / {bookings.length}</span></div><label>ჩანაწერები გვერდზე<select value={pageSize} onChange={event => setPageSize(Number(event.target.value))}><option>15</option><option>30</option><option>50</option></select></label></div></>}
         </section>
       </>}
-      {view === 'passengers' && <section className="admin-table-card"><div className="admin-table-heading"><div><h2>მგზავრების სია</h2><span>მგზავრები გაერთიანებულია ტელეფონის ნომრის მიხედვით</span></div><label className="admin-inline-search"><Search size={18} /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="სახელი ან ტელეფონი" /></label></div>{error ? <div className="admin-error">{error}<button onClick={reload}>ხელახლა ცდა</button></div> : loading ? <Loading /> : passengers.length === 0 ? <Empty icon={Users} title="მგზავრი ვერ მოიძებნა" text="პირველი ჯავშნის შემდეგ მგზავრი ამ სიაში გამოჩნდება." /> : <div className="admin-table-scroll"><table className="admin-booking-table admin-passengers-table"><thead><tr><th>მგზავრი</th><th>ტელეფონი</th><th>ჯავშნები</th><th>ადგილები</th><th>ბოლო მგზავრობა</th><th>მოქმედება</th></tr></thead><tbody>{passengers.map(passenger => <tr key={passenger.phone}><td><strong>{passenger.name}</strong></td><td>{formatPhone(passenger.phone)}</td><td>{passenger.orderCount}</td><td>{passenger.seats}</td><td>{dateLabel(passenger.latestDate, { day: 'numeric', month: 'long', year: 'numeric' })}</td><td><a className="admin-icon-button" href={`tel:${phoneDialNumber(passenger.phone) || passenger.phone}`} aria-label={`${passenger.name}: დარეკვა`}><Phone size={16} /></a></td></tr>)}</tbody></table></div>}</section>}
+      {view === 'passengers' && <Passengers phone={passengerPhone} refresh={refresh} config={config} onOpen={phone => navigateDashboard('passengers', phone)} onBack={() => navigateDashboard('passengers')} />}
       {view === 'analytics' && <AnalyticsPanel refresh={refresh} />}
       {view === 'settings' && <AdminSettings onChange={reload} />}
       <footer className="admin-footer"><span><span className="admin-live-dot" /> Green Taxi</span><span>გორი ↔ თბილისი</span></footer>

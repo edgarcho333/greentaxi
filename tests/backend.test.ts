@@ -451,6 +451,108 @@ test('persistent database data survives reopening and analytics and passenger qu
   } finally { await fresh.close(); }
 });
 
+test('passenger pages isolate canonical identities and retain every booking status without changing saved data', async () => {
+  const fresh = await fixture();
+  try {
+    const number = '599662211';
+    const stops = (await successful(fresh, '/public/config')).stops;
+    const selected = stops[0];
+    const original = await successful(fresh, '/admin/bookings', 'POST', input({ phone: `+995${number}`, goriAddress: 'ძველი სახლი გორში', seats: 2 }));
+    const reverse = await successful(fresh, '/admin/bookings', 'POST', input({
+      phone: '599 66 22 11', direction: 'tbilisi-gori', pickupStopId: selected.id,
+      goriAddress: 'ჩამოსვლის მისამართი გორში', requestedTime: '09:30', seats: 3,
+    }));
+    const waiting = await successful(fresh, '/bookings', 'POST', input({ phone: number, goriAddress: 'დაუდასტურებელი სხვა სახლი', requestedDate: '2030-01-08', seats: 1 }));
+    await successful(fresh, '/admin/bookings', 'POST', input({ phone: '599662212' }));
+    const foreign = await successful(fresh, '/admin/bookings', 'POST', input({ phone: `+1${number}`, goriAddress: 'სხვა ქვეყნის სახლი' }));
+    await successful(fresh, `/admin/bookings/${original.id}/delete`, 'POST', {});
+    // Rolling deployments can still contain the original international Georgian storage key.
+    await fresh.db.prepare('UPDATE bookings SET phone=? WHERE id=?').run(`+995${number}`, original.id);
+    await successful(fresh, `/admin/stops/${selected.id}`, 'PATCH', { name: 'განახლებული თბილისის გაჩერება', address: 'ახალი თბილისის მისამართი 20' });
+    const beforeRows = await fresh.db.prepare('SELECT * FROM bookings ORDER BY id').all();
+    const beforeProfiles = await fresh.db.prepare('SELECT * FROM passenger_profiles ORDER BY phone').all();
+    const beforeAudits = await fresh.db.prepare('SELECT * FROM audit_log ORDER BY id').all();
+
+    const list = (await successful(fresh, '/admin/passengers?search=' + encodeURIComponent(`+995${number}`))).passengers;
+    assert.equal(list.length, 1);
+    assert.equal(list[0].phone, number);
+    assert.equal(list[0].orderCount, 2);
+    assert.equal(list[0].seats, 4);
+    assert.equal(list[0].addressCity, 'tbilisi');
+    assert.match(list[0].address, /განახლებული თბილისის გაჩერება/);
+    assert.match(list[0].address, /ახალი თბილისის მისამართი 20/);
+    assert.ok(!list[0].address.includes('ჩამოსვლის მისამართი გორში'));
+    const addressSearch = (await successful(fresh, '/admin/passengers?search=' + encodeURIComponent('ახალი თბილისის მისამართი'))).passengers;
+    assert.deepEqual(addressSearch.map((row: any) => row.phone), [number]);
+
+    for (const alias of [number, `+995${number}`, `00995${number}`, '599 66 22 11']) {
+      const detail = await successful(fresh, '/admin/passengers/' + encodeURIComponent(alias));
+      assert.deepEqual(detail.passenger, list[0]);
+      assert.equal(detail.profile.phone, number);
+      assert.deepEqual(detail.bookings.map((row: any) => row.id), [waiting.id, reverse.id, original.id]);
+      assert.ok(detail.bookings.every((row: any) => row.phone === number));
+      assert.equal(detail.bookings[0].status, 'waiting');
+      assert.ok(detail.bookings[2].deletedAt);
+      assert.equal(detail.bookings[1].pickupStopName, selected.name, 'historical pickup name is the original booking snapshot');
+      assert.ok(detail.bookings.every((row: any) => row.id !== foreign.id));
+    }
+    const foreignDetail = await successful(fresh, '/admin/passengers/' + encodeURIComponent(`+1${number}`));
+    assert.equal(foreignDetail.passenger.phone, `+1${number}`);
+    assert.deepEqual(foreignDetail.bookings.map((row: any) => row.id), [foreign.id]);
+    assert.equal((await fresh.request('/admin/passengers/' + number, 'GET', undefined, {}, false)).status, 401);
+    assert.equal((await fresh.request('/admin/passengers/599662213')).status, 404);
+    assert.equal((await fresh.request('/admin/passengers/59966221')).status, 400);
+    assert.equal((await fresh.request('/admin/passengers/not-a-phone')).status, 400);
+    assert.deepEqual(await fresh.db.prepare('SELECT * FROM bookings ORDER BY id').all(), beforeRows);
+    assert.deepEqual(await fresh.db.prepare('SELECT * FROM passenger_profiles ORDER BY phone').all(), beforeProfiles);
+    assert.deepEqual(await fresh.db.prepare('SELECT * FROM audit_log ORDER BY id').all(), beforeAudits);
+  } finally { await fresh.close(); }
+});
+
+test('passenger addresses use trusted pickup memory and history-only contacts remain visible', async () => {
+  let instant = new Date('2030-01-01T00:00:00Z');
+  const fresh = await fixture({ now: () => instant });
+  try {
+    const number = '599662233';
+    const selected = (await successful(fresh, '/public/config')).stops[0];
+    const reverse = await successful(fresh, '/admin/bookings', 'POST', input({
+      phone: number, direction: 'tbilisi-gori', pickupStopId: selected.id, goriAddress: 'მხოლოდ ჩამოსვლის მისამართი',
+    }));
+    instant = new Date('2030-01-01T00:01:00Z');
+    const original = await successful(fresh, '/admin/bookings', 'POST', input({ phone: number, goriAddress: 'გორის შენახული სახლი', requestedTime: '10:00' }));
+    instant = new Date('2030-01-01T00:02:00Z');
+    await successful(fresh, `/admin/bookings/${original.id}`, 'PATCH', { goriAddress: 'გორის შესწორებული სახლი' });
+    instant = new Date('2030-01-01T00:03:00Z');
+    await successful(fresh, `/admin/bookings/${reverse.id}/delete`, 'POST', {});
+    let result = (await successful(fresh, '/admin/passengers/' + number)).passenger;
+    assert.equal(result.addressCity, 'gori');
+    assert.equal(result.address, 'გორის შესწორებული სახლი');
+    assert.equal(result.orderCount, 1);
+    instant = new Date('2030-01-01T00:04:00Z');
+    await successful(fresh, `/admin/bookings/${reverse.id}/restore`, 'POST', {});
+    result = (await successful(fresh, '/admin/passengers/' + number)).passenger;
+    assert.equal(result.addressCity, 'gori');
+    assert.equal(result.address, 'გორის შესწორებული სახლი');
+    await successful(fresh, `/admin/bookings/${reverse.id}/delete`, 'POST', {});
+    await successful(fresh, `/admin/bookings/${original.id}/delete`, 'POST', {});
+    result = (await successful(fresh, '/admin/passengers?search=' + number)).passengers[0];
+    assert.equal(result.phone, number);
+    assert.equal(result.orderCount, 0);
+    assert.equal(result.seats, 0);
+    assert.equal(result.latestDate, DAY);
+    assert.equal(result.address, 'გორის შესწორებული სახლი');
+    assert.equal((await successful(fresh, '/admin/passengers/' + number)).bookings.length, 2);
+
+    const waitingOnly = await successful(fresh, '/bookings', 'POST', input({ phone: '599662244', goriAddress: 'ჯერ დაუდასტურებელი სახლი' }));
+    const waitingDetail = await successful(fresh, '/admin/passengers/599662244');
+    assert.equal(waitingDetail.profile, null);
+    assert.equal(waitingDetail.passenger.address, 'ჯერ დაუდასტურებელი სახლი');
+    assert.equal(waitingDetail.passenger.addressCity, 'gori');
+    assert.deepEqual(waitingDetail.bookings.map((row: any) => row.id), [waitingOnly.id]);
+    assert.deepEqual(await successful(fresh, '/admin/passengers/profile?phone=599662244'), { profile: null });
+  } finally { await fresh.close(); }
+});
+
 function callEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return { eventId: 'android-call-1001', phone: '+995599123456', occurredAt: '2030-01-01T10:20:30+04:00', durationSeconds: 15, kind: 'incoming', ...overrides };
 }

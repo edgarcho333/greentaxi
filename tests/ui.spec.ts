@@ -165,6 +165,50 @@ function incomingCallRow(page: Page, id: number) {
   return page.locator(`.admin-calls-table tbody tr[data-call-id="${id}"]`);
 }
 
+function displayedPassengerPhone(phone: string): string {
+  return `${phone.slice(0, 3)} ${phone.slice(3, 5)} ${phone.slice(5, 7)} ${phone.slice(7)}`;
+}
+
+function passengerRow(page: Page, phone: string) {
+  return page.locator(`tr[data-passenger-phone="${phone}"]`);
+}
+
+async function seedPassengerTrip(input: {
+  phone: string; name: string; address: string; seats?: number; pickupStopId?: number; waiting?: boolean;
+}) {
+  const response = await adminApi.post(input.waiting ? '/api/bookings' : '/api/admin/bookings', { data: {
+    phone: input.phone, name: input.name, seats: input.seats ?? 1,
+    direction: input.pickupStopId ? 'tbilisi-gori' : 'gori-tbilisi',
+    pickupStopId: input.pickupStopId ?? null, goriAddress: input.address,
+    requestedDate: futureDate(1), requestedTime: '21:00',
+  } });
+  expect(response.ok()).toBeTruthy();
+  return await response.json() as Booking;
+}
+
+async function openPassengerHistory(page: Page, phone: string) {
+  await passengerRow(page, phone).getByRole('link', {
+    name: `${displayedPassengerPhone(phone)}: მგზავრობის ისტორია`, exact: true,
+  }).first().click();
+  await expect(page).toHaveURL(new RegExp(`/admin/passengers/${phone}$`));
+  await expect(page.getByRole('heading', { name: displayedPassengerPhone(phone), exact: true })).toBeVisible();
+  return page.getByRole('table', { name: 'მგზავრობის ისტორია', exact: true });
+}
+
+async function searchPassengerDirectory(page: Page, value: string) {
+  const response = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/admin/passengers' && url.searchParams.get('search') === value;
+  });
+  await page.getByRole('textbox', { name: 'მისამართი ან ტელეფონი', exact: true }).fill(value);
+  expect((await response).ok()).toBeTruthy();
+}
+
+function passengerHistoryFilter(page: Page, name: 'წარსული' | 'დაგეგმილი' | 'ყველა' | 'დასადასტურებელი' | 'წაშლილი') {
+  return page.getByRole('group', { name: 'მგზავრობის ისტორიის ფილტრი', exact: true })
+    .getByRole('button', { name: new RegExp(`^${name}(?:\\s|\\d|$)`) });
+}
+
 async function chooseCallDay(row: Locator, name: 'დღეს' | 'ხვალ') {
   const button = row.getByRole('group', { name: 'დღე', exact: true }).getByRole('button', { name: new RegExp(`^${name}(?:\\s|\\d|$)`) });
   await button.click();
@@ -1739,4 +1783,157 @@ test('printing stays blocked for an empty day or a failed fresh report and recov
   await expect(dialog.getByRole('alert')).toHaveCount(0);
   await expect(print).toBeEnabled();
   expect(await printedDocuments(page)).toHaveLength(0);
+});
+
+test('passenger directory shows pickup addresses and opens read-only trip history with separate states', async ({ page }) => {
+  const phone = '590886101';
+  const legacyName = 'სატესტო ისტორიის ძველი სახელი';
+  const address = 'გორი, ისტორიის სატესტო მისამართი 101';
+  const past = await seedPassengerTrip({ phone: `+995${phone}`, name: legacyName, address: 'გორი, წარსული მისამართი 11', seats: 2 });
+  await setHistoricalFixtureDate(past.id, futureDate(-1));
+  const tbilisi = await seedPassengerTrip({ phone: `00995${phone}`, name: legacyName, address: 'გორი, ჩამოსვლის მისამართი 22', seats: 3, pickupStopId: publicConfig.stops[0].id });
+  const upcoming = await seedPassengerTrip({ phone, name: legacyName, address, seats: 8 });
+  const waiting = await seedPassengerTrip({ phone, name: 'სატესტო დაუდასტურებელი სახელი', address: 'გორი, დაუდასტურებელი მისამართი 33', waiting: true });
+  const deleted = await seedPassengerTrip({ phone, name: legacyName, address, seats: 2 });
+  expect((await adminApi.post(`/api/admin/bookings/${deleted.id}/delete`, { data: {} })).ok()).toBeTruthy();
+  const otherPhone = '590886102';
+  const unrelated = await seedPassengerTrip({ phone: otherPhone, name: 'სხვა მგზავრის ძველი სახელი', address: 'გორი, სხვა მგზავრის მისამართი 102' });
+
+  await openAuthenticatedAdmin(page);
+  const mutations: string[] = [];
+  page.on('request', request => { if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) mutations.push(`${request.method()} ${new URL(request.url()).pathname}`); });
+  await openAdminView(page, 'მგზავრები');
+  await expect(page).toHaveURL(/\/admin\/passengers$/);
+  await searchPassengerDirectory(page, address);
+  const row = passengerRow(page, phone);
+  await expect(row).toBeVisible();
+  await expect(row).toContainText(address);
+  await expect(row).toContainText(displayedPassengerPhone(phone));
+  await expect(row).not.toContainText(legacyName);
+  await expect(row.locator('td').nth(2)).toHaveText('4');
+  await expect(row.locator('td').nth(3)).toHaveText('14');
+  await expect(page.getByRole('table', { name: 'მგზავრების სია', exact: true }).locator('thead th').first()).toHaveText('მისამართი');
+  await expect(row.locator('a[href^="tel:"]')).toHaveAttribute('href', `tel:+995${phone}`);
+  await expect(passengerRow(page, otherPhone)).toHaveCount(0);
+
+  const table = await openPassengerHistory(page, phone);
+  await expect(passengerHistoryFilter(page, 'წარსული')).toHaveAttribute('aria-pressed', 'true');
+  await expect(table.locator('tbody tr[data-booking-id]')).toHaveCount(1);
+  await expect(table.locator(`tr[data-booking-id="${past.id}"]`)).toContainText(past.goriAddress);
+  await expect(page.locator('body')).not.toContainText(legacyName);
+  await expect(page.locator('body')).toContainText(address);
+  await expect(page.locator('body')).toContainText(publicConfig.stops[0].name);
+
+  await passengerHistoryFilter(page, 'დაგეგმილი').click();
+  await expect(table.locator('tbody tr[data-booking-id]')).toHaveCount(2);
+  await expect(table.locator(`tr[data-booking-id="${upcoming.id}"]`)).toBeVisible();
+  await expect(table.locator(`tr[data-booking-id="${tbilisi.id}"]`)).toContainText(publicConfig.stops[0].name);
+  await passengerHistoryFilter(page, 'დასადასტურებელი').click();
+  await expect(table.locator('tbody tr[data-booking-id]')).toHaveCount(1);
+  await expect(table.locator(`tr[data-booking-id="${waiting.id}"]`)).toBeVisible();
+  await passengerHistoryFilter(page, 'წაშლილი').click();
+  await expect(table.locator('tbody tr[data-booking-id]')).toHaveCount(1);
+  await expect(table.locator(`tr[data-booking-id="${deleted.id}"]`)).toBeVisible();
+  await passengerHistoryFilter(page, 'ყველა').click();
+  await expect(table.locator('tbody tr[data-booking-id]')).toHaveCount(5);
+  await expect(table.locator(`tr[data-booking-id="${unrelated.id}"]`)).toHaveCount(0);
+  expect(mutations, 'Directory, passenger details and history filters must be read-only').toEqual([]);
+});
+
+test('passenger history navigation keeps directory search and pagination through browser back and forward', async ({ page }) => {
+  const marker = 'გორი, გვერდების ისტორიის სატესტო მისამართი';
+  const phones = Array.from({ length: 16 }, (_, index) => `590887${String(index + 1).padStart(3, '0')}`);
+  for (const [index, phone] of phones.entries()) {
+    await seedPassengerTrip({ phone, name: `სატესტო გვერდის ძველი სახელი ${index}`, address: `${marker} ${index + 1}` });
+  }
+  await openAuthenticatedAdmin(page);
+  await openAdminView(page, 'მგზავრები');
+  const search = page.getByRole('textbox', { name: 'მისამართი ან ტელეფონი', exact: true });
+  await searchPassengerDirectory(page, marker);
+  const rows = page.getByRole('table', { name: 'მგზავრების სია', exact: true }).locator('tbody tr[data-passenger-phone]');
+  await expect(rows).toHaveCount(15);
+  await expect(page.getByRole('combobox', { name: 'მგზავრები: ჩანაწერები გვერდზე', exact: true })).toHaveValue('15');
+  await page.getByRole('button', { name: 'მგზავრები: შემდეგი გვერდი', exact: true }).click();
+  await expect(rows).toHaveCount(1);
+  const phone = await rows.first().getAttribute('data-passenger-phone');
+  expect(phone).toBeTruthy();
+  await openPassengerHistory(page, phone!);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/admin\/passengers$/);
+  await expect(search).toHaveValue(marker);
+  await expect(rows).toHaveCount(1);
+  await expect(passengerRow(page, phone!)).toBeVisible();
+  await page.goForward();
+  await expect(page.getByRole('heading', { name: displayedPassengerPhone(phone!), exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: displayedPassengerPhone(phone!), exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'მგზავრების სიაში დაბრუნება', exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/passengers$/);
+  await expect(page.getByRole('heading', { name: 'მგზავრების სია', exact: true })).toBeVisible();
+  // A full reload starts fresh directory state, while browser navigation above
+  // must preserve the original in-memory search and second page.
+});
+
+test('direct passenger history URL requires sign-in and returns to the requested passenger', async ({ page }) => {
+  const phone = '590886201';
+  const address = 'გორი, მხოლოდ თანამშრომლისთვის მისამართი 201';
+  await seedPassengerTrip({ phone, name: 'სატესტო პირდაპირი შესვლის ძველი სახელი', address });
+  await page.goto(`/admin/passengers/${phone}`);
+  await expect(page.getByRole('heading', { name: 'მოგესალმებით', exact: true })).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(address);
+  await expect(page.getByRole('table', { name: 'მგზავრობის ისტორია', exact: true })).toHaveCount(0);
+  await page.getByLabel('მომხმარებლის სახელი', { exact: true }).fill(EMPLOYEE.login);
+  await page.getByLabel('პაროლი', { exact: true }).fill(EMPLOYEE.password);
+  await page.getByRole('button', { name: 'შესვლა', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/admin/passengers/${phone}$`));
+  await expect(page.getByRole('heading', { name: displayedPassengerPhone(phone), exact: true })).toBeVisible();
+  await expect(page.locator('body')).toContainText(address);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: displayedPassengerPhone(phone), exact: true })).toBeVisible();
+});
+
+test('slow passenger detail cannot replace another passenger and history stays usable on a narrow screen', async ({ page }) => {
+  const firstPhone = '590886301';
+  const secondPhone = '590886302';
+  const marker = 'გორი, მობილური ისტორიის მისამართი';
+  const first = await seedPassengerTrip({ phone: firstPhone, name: 'პირველი სატესტო ძველი სახელი', address: `${marker} 301` });
+  const second = await seedPassengerTrip({ phone: secondPhone, name: 'მეორე სატესტო ძველი სახელი', address: `${marker} 302` });
+  await setHistoricalFixtureDate(first.id, futureDate(-1));
+  await setHistoricalFixtureDate(second.id, futureDate(-1));
+  await openAuthenticatedAdmin(page);
+  await page.setViewportSize({ width: 320, height: 850 });
+  await page.getByRole('button', { name: 'მენიუს გახსნა', exact: true }).click();
+  await openAdminView(page, 'მგზავრები');
+  await searchPassengerDirectory(page, marker);
+  await expect(passengerRow(page, firstPhone)).toBeVisible();
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>(resolveGate => { releaseFirst = resolveGate; });
+  let firstRequested!: () => void;
+  const requestStarted = new Promise<void>(resolveRequest => { firstRequested = resolveRequest; });
+  await page.route(`**/api/admin/passengers/${firstPhone}`, async route => {
+    const response = await route.fetch();
+    firstRequested();
+    await firstGate;
+    await route.fulfill({ response }).catch(() => {});
+  });
+  try {
+    await passengerRow(page, firstPhone).getByRole('link', { name: `${displayedPassengerPhone(firstPhone)}: მგზავრობის ისტორია`, exact: true }).first().click();
+    await requestStarted;
+    await page.getByRole('button', { name: 'მგზავრების სიაში დაბრუნება', exact: true }).click();
+    const table = await openPassengerHistory(page, secondPhone);
+    await expect(table.locator(`tr[data-booking-id="${second.id}"]`)).toBeVisible();
+    releaseFirst();
+    await expect(page.getByRole('heading', { name: displayedPassengerPhone(secondPhone), exact: true })).toBeVisible();
+    await expect(table.locator(`tr[data-booking-id="${first.id}"]`)).toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText(`${marker} 301`);
+    await expect(page.locator('body')).toContainText(`${marker} 302`);
+    expect(await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }))).toEqual({ viewport: 320, document: 320 });
+    await passengerHistoryFilter(page, 'დაგეგმილი').click();
+    await expect(table.locator('tbody tr[data-booking-id]')).toHaveCount(0);
+    await passengerHistoryFilter(page, 'წარსული').click();
+    await expect(table.locator(`tr[data-booking-id="${second.id}"]`)).toBeVisible();
+  } finally {
+    releaseFirst();
+    await page.unroute(`**/api/admin/passengers/${firstPhone}`);
+  }
 });

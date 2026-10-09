@@ -16,11 +16,15 @@ export type Booking = {
   deletedAt: string | null; createdAt: string; updatedAt: string;
 };
 export type Schedule = { direction: Direction; date: string; baseTimes: string[]; overrideTimes: string[] | null; slots: Slot[] };
-export type Passenger = { name: string; phone: string; orderCount: number; seats: number; latestDate: string };
+export type Passenger = {
+  name: string; phone: string; address: string; addressCity: 'gori' | 'tbilisi' | null;
+  orderCount: number; seats: number; latestDate: string;
+};
 export type PassengerProfile = {
   phone: string; name: string; goriAddress: string; goriPickupAddress: string;
   pickupStopId: number | null; pickupStopName: string | null; updatedAt: string;
 };
+export type PassengerDetail = { passenger: Passenger; profile: PassengerProfile | null; bookings: Booking[] };
 export type Analytics = {
   totals: { incoming: number; confirmed: number; deleted: number; seats: number };
   directions: { direction: Direction; orders: number; seats: number }[];

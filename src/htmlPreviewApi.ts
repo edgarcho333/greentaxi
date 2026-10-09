@@ -74,16 +74,25 @@ function schedule(bookings: Booking[], params: URLSearchParams): Schedule {
 }
 
 function passengers(bookings: Booking[], search: string): Passenger[] {
-  const groups = new Map<string, Passenger>();
-  for (const row of bookings.filter(booking => !booking.deletedAt)) {
-    const date = row.assignedDate ?? row.requestedDate;
-    const passenger = groups.get(row.phone) ?? { name: row.name, phone: row.phone, orderCount: 0, seats: 0, latestDate: date };
-    passenger.orderCount++;
-    passenger.seats += row.seats;
-    if (date > passenger.latestDate) passenger.latestDate = date;
-    groups.set(row.phone, passenger);
+  const groups = new Map<string, Booking[]>();
+  for (const row of bookings) {
+    const phone = canonicalPassengerPhone(row.phone) || row.phone;
+    groups.set(phone, [...(groups.get(phone) || []), row]);
   }
-  return [...groups.values()].filter(row => matchesSearch(row.name, row.phone, search));
+  return [...groups].map(([phone, rows]) => {
+    const active = rows.filter(row => !row.deletedAt);
+    const confirmed = rows.filter(row => row.status === 'confirmed');
+    const pickup = [...(confirmed.length ? confirmed : rows)].sort((first, second) => second.createdAt.localeCompare(first.createdAt) || second.id - first.id)[0];
+    const profile = passengerProfile(bookings, phone);
+    const stop = config.stops.find(item => item.id === (profile?.pickupStopId || pickup.pickupStopId));
+    const address = pickup.direction === 'gori-tbilisi' ? profile?.goriPickupAddress || pickup.goriAddress : [stop?.name || pickup.pickupStopName, stop?.address].filter(Boolean).join(' — ');
+    return {
+      phone, name: rows[0].name, address, addressCity: pickup.direction === 'gori-tbilisi' ? 'gori' as const : 'tbilisi' as const,
+      orderCount: active.length, seats: active.reduce((count, row) => count + row.seats, 0),
+      latestDate: (active.length ? active : rows).reduce((latest, row) => (row.assignedDate || row.requestedDate) > latest ? row.assignedDate || row.requestedDate : latest, ''),
+    };
+  }).filter(row => matchesSearch(`${row.name} ${row.address}`, row.phone, search))
+    .sort((first, second) => second.latestDate.localeCompare(first.latestDate) || first.phone.localeCompare(second.phone));
 }
 
 function passengerProfile(bookings: Booking[], phone: string): PassengerProfile | null {
@@ -148,7 +157,17 @@ export function installPreviewApi(): void {
       case '/api/admin/passengers/profile': return reply({ profile: passengerProfile(bookings, params.get('phone') ?? '') });
       case '/api/admin/passengers': return reply({ passengers: passengers(bookings, params.get('search') ?? '') });
       case '/api/admin/analytics': return reply(analytics(bookings, params));
-      default: return reply({ error: previewOnlyMessage, code: 'PREVIEW_ONLY' }, 404);
+      default: {
+        const detail = url.pathname.match(/^\/api\/admin\/passengers\/([^/]+)$/);
+        if (detail) {
+          const phone = canonicalPassengerPhone(decodeURIComponent(detail[1]));
+          const passenger = passengers(bookings, '').find(row => row.phone === phone);
+          if (!phone || !passenger) return reply({ error: 'მგზავრი ვერ მოიძებნა.', code: 'NOT_FOUND' }, 404);
+          return reply({ passenger, profile: passengerProfile(bookings, phone), bookings: bookings.filter(row => canonicalPassengerPhone(row.phone) === phone)
+            .sort((first, second) => `${second.assignedDate || second.requestedDate} ${second.assignedTime || second.requestedTime}`.localeCompare(`${first.assignedDate || first.requestedDate} ${first.assignedTime || first.requestedTime}`) || second.id - first.id) });
+        }
+        return reply({ error: previewOnlyMessage, code: 'PREVIEW_ONLY' }, 404);
+      }
     }
   };
 }
