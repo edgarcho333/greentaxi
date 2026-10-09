@@ -4,6 +4,25 @@ import { readPassengerProfiles } from '../server/passenger-profiles.js';
 import { listPassengers } from '../server/passengers.js';
 import { normalizePhone } from '../shared/phone.js';
 
+function logImportReport(result: Awaited<ReturnType<typeof importHistoricalBookings>>) {
+  const { records, ...summary } = result;
+  const maximumLineBytes = 3500;
+  const lines = [`GREENTAXI_IMPORT_REPORT:${JSON.stringify(summary)}`];
+  if (Buffer.byteLength(lines[0], 'utf8') > maximumLineBytes) throw new Error('IMPORT_REPORT_SUMMARY_TOO_LARGE');
+  const prefix = 'GREENTAXI_IMPORT_RECORDS:';
+  let chunk: typeof records = [];
+  for (const record of records) {
+    const candidate = [...chunk, record];
+    if (candidate.length > 20 || Buffer.byteLength(`${prefix}${JSON.stringify(candidate)}`, 'utf8') > maximumLineBytes) {
+      if (chunk.length) lines.push(`${prefix}${JSON.stringify(chunk)}`);
+      chunk = [record];
+    } else chunk = candidate;
+    if (Buffer.byteLength(`${prefix}${JSON.stringify(chunk)}`, 'utf8') > maximumLineBytes) throw new Error('IMPORT_REPORT_RECORD_TOO_LARGE');
+  }
+  if (chunk.length) lines.push(`${prefix}${JSON.stringify(chunk)}`);
+  for (const line of lines) console.log(line);
+}
+
 // Private build-time maintenance job: no HTTP route and no customer values in logs.
 async function main() {
   const args = process.argv.slice(2);
@@ -15,7 +34,7 @@ async function main() {
     const phones = [...new Set(input.records.map(row => row.phone))];
     const before = await readPassengerProfiles(db, phones);
     const result = await importHistoricalBookings(db, input, { apply: args[0] === '--apply' });
-    console.log(`GREENTAXI_IMPORT_REPORT:${JSON.stringify(result)}`);
+    logImportReport(result);
     if (result.mode === 'blocked') { process.exitCode = 2; return; }
     if (result.committed) {
       const after = await readPassengerProfiles(db, phones);
