@@ -4,7 +4,7 @@ import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } fr
 import { promisify } from 'node:util';
 import type { Analytics, Booking, CallDevice, CallInquiry, Direction, PassengerProfile, Schedule, Slot, User } from '../src/api.js';
 import { normalizePhone, legacyPhoneKey } from '../shared/phone.js';
-import { migratePhoneStorage, migratePickupMemory, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from './passenger-profiles.js';
+import { migratePassengerAddresses, migratePhoneStorage, migratePickupMemory, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from './passenger-profiles.js';
 import { comparePassengerTrips, listPassengers, passengerBookings, passengerSummary } from './passengers.js';
 
 const scrypt = promisify(scryptCallback);
@@ -754,6 +754,7 @@ export async function createApp(options: Options = {}) {
   });
     if (!(options.deferPhoneMigration ?? process.env.PHONE_MIGRATION_DEFERRED === '1')) await migratePhoneStorage(db);
     await migratePickupMemory(db);
+    await migratePassengerAddresses(db);
   } catch (error) {
     await db.close().catch(() => {});
     throw error;

@@ -6,6 +6,7 @@ import CallQueue from './admin/CallQueue';
 import BookingPrint from './admin/BookingPrint';
 import Passengers from './admin/Passengers';
 import usePassengerProfile, { canonicalPassengerPhone } from './admin/usePassengerProfile';
+import SavedAddressPicker, { savedGoriAddresses } from './admin/SavedAddressPicker';
 import sidebarNight from '../assets/sidebar-night.webp';
 import { formatPhone, normalizePhone, phoneDialNumber } from '../../shared/phone';
 import './admin.css';
@@ -205,9 +206,11 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
     const originalDate = booking?.assignedDate || booking?.requestedDate || defaultDate;
     const date = modal.kind === 'edit' || modal.kind === 'delete' ? originalDate : staffDefaultDate(originalDate);
     const originalTime = booking?.assignedTime || booking?.requestedTime || defaultTime;
-    return { phone: formatPhone(booking?.phone || inquiry?.phone || ''), seats: booking?.seats || 1, direction: booking?.direction || defaultDirection, requestedDate: date, requestedTime: date === originalDate && staffFutureTime(date, originalTime) ? originalTime : '', goriAddress: booking?.goriAddress || savedProfile?.goriAddress || '', pickupStopId: booking?.pickupStopId || savedStop };
+    return { phone: formatPhone(booking?.phone || inquiry?.phone || ''), seats: booking?.seats || 1, direction: booking?.direction || defaultDirection, requestedDate: date, requestedTime: date === originalDate && staffFutureTime(date, originalTime) ? originalTime : '', goriAddress: booking?.goriAddress || (defaultDirection === 'gori-tbilisi' ? savedProfile?.goriPickupAddress : savedProfile?.goriAddress) || '', pickupStopId: booking?.pickupStopId || savedStop };
   });
-  const provenance = useRef<Record<'goriAddress' | 'pickupStopId', 'empty' | 'profile' | 'manual'>>({ goriAddress: savedProfile ? 'profile' : 'empty', pickupStopId: savedStop ? 'profile' : 'empty' });
+  type AddressProvenance = 'empty' | 'profile' | 'manual';
+  const provenance = useRef<Record<'goriAddress' | 'pickupStopId', AddressProvenance>>({ goriAddress: booking ? 'manual' : savedProfile ? 'profile' : 'empty', pickupStopId: booking?.pickupStopId ? 'manual' : savedStop ? 'profile' : 'empty' });
+  const addressDrafts = useRef<Partial<Record<Direction, { value: string; provenance: AddressProvenance }>>>({ [fields.direction]: { value: fields.goriAddress, provenance: provenance.current.goriAddress } });
   const profilePhone = useRef(canonicalPassengerPhone(fields.phone));
   const createAttempts = useRef(new Map<string, string>());
   const busyRef = useRef(false);
@@ -232,7 +235,11 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
   const scheduleKey = `${fields.direction}:${fields.requestedDate}`;
   const schedule = scheduleRecord?.key === scheduleKey && scheduleRecord.data.direction === fields.direction && scheduleRecord.data.date === fields.requestedDate ? scheduleRecord.data : null;
   const activeTimes = schedule?.slots.filter(slot => slot.active && staffFutureTime(fields.requestedDate, slot.time, clockNow)).map(slot => slot.time) || [];
-  const passengerProfile = usePassengerProfile(fields.phone, modal.kind === 'create' && !busy);
+  const passengerProfile = usePassengerProfile(fields.phone, isDetails);
+  const exactProfile = passengerProfile.profile || (savedProfile && canonicalPassengerPhone(savedProfile.phone) === canonicalPassengerPhone(fields.phone) ? savedProfile : null);
+  const savedAddresses = savedGoriAddresses(exactProfile);
+  const savedStopIds = new Set((exactProfile?.addresses || []).filter(address => address.city === 'tbilisi').map(address => address.pickupStopId));
+  if (exactProfile?.pickupStopId) savedStopIds.add(exactProfile.pickupStopId);
   const activeStops = config.stops.filter(stop => stop.active);
 
   useEffect(() => {
@@ -255,7 +262,11 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
     const phone = canonicalPassengerPhone(fields.phone);
     if (!profile || !phone || modal.kind !== 'create' || busy || canonicalPassengerPhone(profile.phone) !== phone) return;
     const changes: Partial<BookingFields> = {};
-    if (provenance.current.goriAddress !== 'manual') { changes.goriAddress = profile.goriAddress; provenance.current.goriAddress = 'profile'; }
+    if (provenance.current.goriAddress !== 'manual') {
+      changes.goriAddress = fields.direction === 'gori-tbilisi' ? profile.goriPickupAddress : profile.goriAddress;
+      provenance.current.goriAddress = 'profile';
+      addressDrafts.current[fields.direction] = { value: changes.goriAddress, provenance: 'profile' };
+    }
     if (provenance.current.pickupStopId !== 'manual') {
       const activeStop = profile.pickupStopId !== null && activeStops.some(stop => stop.id === profile.pickupStopId);
       if (fields.direction === 'tbilisi-gori' && activeStop) { changes.pickupStopId = profile.pickupStopId; provenance.current.pickupStopId = 'profile'; }
@@ -274,13 +285,24 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
     const reset: Partial<BookingFields> = {};
     if (modal.kind === 'create') {
       if (key === 'goriAddress' || key === 'pickupStopId') provenance.current[key as keyof typeof provenance.current] = 'manual';
+      if (key === 'goriAddress') addressDrafts.current[fields.direction] = { value: String(value), provenance: 'manual' };
       if (key === 'phone') {
         const nextPhone = canonicalPassengerPhone(String(value));
         if (profilePhone.current !== nextPhone) {
           if (provenance.current.goriAddress === 'profile') { reset.goriAddress = ''; provenance.current.goriAddress = 'empty'; }
           if (provenance.current.pickupStopId === 'profile') { reset.pickupStopId = null; provenance.current.pickupStopId = 'empty'; }
+          for (const direction of ['gori-tbilisi', 'tbilisi-gori'] as const) if (addressDrafts.current[direction]?.provenance === 'profile') delete addressDrafts.current[direction];
         }
         profilePhone.current = nextPhone;
+      }
+      if (key === 'direction' && value !== fields.direction) {
+        addressDrafts.current[fields.direction] = { value: fields.goriAddress, provenance: provenance.current.goriAddress };
+        const direction = value as Direction;
+        const existing = addressDrafts.current[direction];
+        const valueFromProfile = direction === 'gori-tbilisi' ? exactProfile?.goriPickupAddress : exactProfile?.goriAddress;
+        const next = existing || { value: valueFromProfile || '', provenance: exactProfile ? 'profile' as const : 'empty' as const };
+        reset.goriAddress = next.value;
+        provenance.current.goriAddress = next.provenance;
       }
     }
     if (key === 'direction' || key === 'requestedDate') { reset.requestedTime = ''; autoPick.current = modal.kind === 'create'; }
@@ -364,13 +386,14 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
     {modal.kind === 'delete' ? <div className="admin-delete-body"><span><Trash2 size={27} /></span><p>ნამდვილად გსურთ ამ ჯავშნის წაშლა?</p><small>მონაცემები ისტორიაში შენარჩუნდება. ჯავშნის აღდგენა ნებისმიერ დროს შეგიძლიათ.</small></div> : <>
       {isDetails && <>
         <div className="admin-operator-location">
-          {fields.direction === 'tbilisi-gori' && <label>აყვანის ადგილი თბილისში<select aria-label="აყვანის ადგილი თბილისში" required disabled={busy} value={fields.pickupStopId || ''} onChange={event => update('pickupStopId', Number(event.target.value))}><option value="" disabled>აირჩიეთ გაჩერება</option>{modal.kind === 'edit' && booking?.pickupStopId && !activeStops.some(stop => stop.id === booking.pickupStopId) && <option value={booking.pickupStopId}>{booking.pickupStopName} (გამორთული)</option>}{activeStops.map(stop => <option key={stop.id} value={stop.id}>{stop.name} — {stop.address}</option>)}</select>{!activeStops.length && !booking?.pickupStopId && <small className="admin-danger-text">ჯერ დაამატეთ მოქმედი გაჩერება პარამეტრებში.</small>}</label>}
+          {fields.direction === 'tbilisi-gori' && <label>აყვანის ადგილი თბილისში<select aria-label="აყვანის ადგილი თბილისში" required disabled={busy} value={fields.pickupStopId || ''} onChange={event => update('pickupStopId', Number(event.target.value))}><option value="" disabled>აირჩიეთ გაჩერება</option>{modal.kind === 'edit' && booking?.pickupStopId && !activeStops.some(stop => stop.id === booking.pickupStopId) && <option value={booking.pickupStopId}>{booking.pickupStopName} (გამორთული)</option>}{activeStops.map(stop => <option key={stop.id} value={stop.id}>{stop.name} — {stop.address}{savedStopIds.has(stop.id) ? ' · შენახული' : ''}</option>)}</select>{!activeStops.length && !booking?.pickupStopId && <small className="admin-danger-text">ჯერ დაამატეთ მოქმედი გაჩერება პარამეტრებში.</small>}</label>}
+          <SavedAddressPicker addresses={savedAddresses} value={fields.goriAddress} disabled={busy} onChoose={address => update('goriAddress', address)} />
           <label>{fields.direction === 'gori-tbilisi' ? 'აყვანის მისამართი გორში' : 'ჩამოსვლის მისამართი გორში'}<textarea autoFocus aria-label={fields.direction === 'gori-tbilisi' ? 'აყვანის მისამართი გორში' : 'ჩამოსვლის მისამართი გორში'} required disabled={busy} minLength={3} maxLength={500} rows={1} value={fields.goriAddress} onChange={event => update('goriAddress', event.target.value)} placeholder="ქუჩა, სახლის ნომერი, ორიენტირი" /></label>
         </div>
         <label>ტელეფონის ნომერი<input required disabled={busy} type="tel" inputMode="tel" autoComplete="tel-national" maxLength={30} value={fields.phone} onChange={event => update('phone', event.target.value)} onBlur={event => update('phone', formatPhone(event.target.value))} placeholder="მაგ. 555 12 34 56" /></label>
-        {modal.kind === 'create' && passengerProfile.status === 'loading' && <p className="admin-form-hint admin-profile-feedback" role="status"><Loader2 size={15} className="admin-spin" />შენახული მისამართების ძიება…</p>}
-        {modal.kind === 'create' && passengerProfile.status === 'found' && <p className="admin-form-hint admin-profile-feedback" role="status"><CheckCircle2 size={16} /><span>მისამართები ნაპოვნია. თქვენ მიერ შეცვლილი ან გასუფთავებული ველები შენარჩუნდება.</span></p>}
-        {modal.kind === 'create' && passengerProfile.status === 'error' && <p className="admin-form-hint admin-profile-feedback admin-profile-error" role="status"><span>მისამართები ვერ ჩაიტვირთა. შეავსეთ ხელით.</span><button type="button" className="admin-text-button" disabled={busy} onClick={passengerProfile.retry}>ხელახლა ცდა</button></p>}
+        {isDetails && passengerProfile.status === 'loading' && <p className="admin-form-hint admin-profile-feedback" role="status"><Loader2 size={15} className="admin-spin" />შენახული მისამართების ძიება…</p>}
+        {isDetails && passengerProfile.status === 'found' && <p className="admin-form-hint admin-profile-feedback" role="status"><CheckCircle2 size={16} /><span>მისამართები ნაპოვნია. აირჩიეთ შენახული ან შეიყვანეთ ახალი. თქვენ მიერ შეცვლილი ან გასუფთავებული ველები შენარჩუნდება.</span></p>}
+        {isDetails && passengerProfile.status === 'error' && <p className="admin-form-hint admin-profile-feedback admin-profile-error" role="status"><span>მისამართები ვერ ჩაიტვირთა. შეავსეთ ხელით.</span><button type="button" className="admin-text-button" disabled={busy} onClick={passengerProfile.retry}>ხელახლა ცდა</button></p>}
         <fieldset className="admin-operator-group" role="group" aria-label="მიმართულება"><legend>მიმართულება</legend><div className="admin-operator-directions">{Object.entries(directions).map(([value, label]) => <button type="button" key={value} disabled={busy || modal.kind === 'edit'} aria-pressed={fields.direction === value} onClick={() => update('direction', value as Direction)}>{label}</button>)}</div></fieldset>
         <fieldset className="admin-operator-group" role="group" aria-label="ადგილების რაოდენობა"><legend>ადგილების რაოდენობა</legend><div className="admin-operator-seats">{Array.from({ length: 8 }, (_, index) => index + 1).map(count => <button type="button" key={count} aria-label={`${count} ადგილი`} aria-pressed={fields.seats === count} disabled={busy} onClick={() => update('seats', count)}>{count}</button>)}</div></fieldset>
         {fields.direction === 'gori-tbilisi' && <div className="admin-operator-fixed-stop"><MapPin size={16} /><span>თბილისში: <strong>{booking?.didubeName || config.didubeName}</strong>{(booking?.didubeAddress || config.didubeAddress) && ` · ${booking?.didubeAddress || config.didubeAddress}`}</span></div>}

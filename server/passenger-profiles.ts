@@ -1,9 +1,10 @@
 import type { Database, DatabaseRow } from './database.js';
-import type { PassengerProfile } from '../src/api.js';
+import type { PassengerProfile, SavedPassengerAddress } from '../src/api.js';
 import { normalizePhone, phoneAliases } from '../shared/phone.js';
 
 const PHONE_STORAGE_MARKER = 'georgianPhoneStorageV2';
 const PICKUP_MEMORY_MARKER = 'goriPickupMemoryV1';
+const ADDRESSES_MARKER = 'passengerAddressesV1';
 const PHONE_QUERY_SIZE = 200;
 type Candidate = { row: DatabaseRow; priority: number; canonical: string };
 
@@ -11,6 +12,14 @@ function canonicalPhone(value: unknown): string | null {
   return typeof value === 'string' ? normalizePhone(value) : null;
 }
 function stamp(row: DatabaseRow): string { return typeof row.updated_at === 'string' ? row.updated_at : ''; }
+function cleanAddress(value: unknown): string {
+  return typeof value === 'string' ? value.normalize('NFC').replace(/\s+/gu, ' ').trim() : '';
+}
+function addressKey(address: string): string { return address.toLocaleLowerCase('ka-GE'); }
+function addressStamp(value: unknown): string {
+  const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : '';
+}
 function compareCandidates(first: Candidate, second: Candidate): number {
   const firstStamp = stamp(first.row);
   const secondStamp = stamp(second.row);
@@ -80,12 +89,58 @@ async function profileCandidates(db: Database, phones: string[]): Promise<Map<st
 /** Read aliases without repairing storage, so an operator lookup cannot change passenger data. */
 export async function readPassengerProfiles(db: Database, phones: string[]): Promise<Map<string, PassengerProfile>> {
   const groups = await profileCandidates(db, phones);
+  const addresses = await readSavedAddresses(db, [...groups.keys()]);
   const result = new Map<string, PassengerProfile>();
   for (const [canonical, candidates] of groups) {
     const profile = mergeProfile(canonical, candidates);
-    if (profile) result.set(canonical, profile);
+    if (profile) result.set(canonical, { ...profile, addresses: addresses.get(canonical) ?? [] });
   }
   return result;
+}
+
+/** Read saved suggestions in bounded batches; inactive fixed stops stay in storage and history. */
+async function readSavedAddresses(db: Database, phones: string[]): Promise<Map<string, SavedPassengerAddress[]>> {
+  const aliases = [...new Set(phones.flatMap(phone => phoneAliases(phone)))];
+  const groups = new Map<string, Map<string, SavedPassengerAddress>>();
+  for (let offset = 0; offset < aliases.length; offset += PHONE_QUERY_SIZE) {
+    const batch = aliases.slice(offset, offset + PHONE_QUERY_SIZE);
+    const rows = await db.prepare(`SELECT passenger_addresses.*,stops.active AS stop_active,
+      stops.name AS current_stop_name,stops.address AS current_stop_address
+      FROM passenger_addresses LEFT JOIN stops ON stops.id=passenger_addresses.pickup_stop_id
+      WHERE phone IN (${batch.map(() => '?').join(',')})`).all(...batch);
+    for (const row of rows) {
+      const canonical = canonicalPhone(row.phone);
+      if (!canonical || (row.city !== 'gori' && row.city !== 'tbilisi')) continue;
+      if (row.city === 'tbilisi' && Number(row.stop_active) !== 1) continue;
+      const saved: SavedPassengerAddress = {
+        city: row.city,
+        address: cleanAddress(row.city === 'tbilisi' ? row.current_stop_address : row.address),
+        pickupStopId: row.city === 'tbilisi' ? Number(row.pickup_stop_id) : null,
+        pickupStopName: row.city === 'tbilisi' ? String(row.current_stop_name ?? row.pickup_stop_name ?? '') : null,
+        updatedAt: addressStamp(row.updated_at),
+      };
+      const key = `${saved.city}:${saved.city === 'tbilisi' ? saved.pickupStopId : addressKey(saved.address)}`;
+      const group = groups.get(canonical) ?? new Map<string, SavedPassengerAddress>();
+      if (!group.has(key) || saved.updatedAt > group.get(key)!.updatedAt) group.set(key, saved);
+      groups.set(canonical, group);
+    }
+  }
+  return new Map([...groups].map(([phone, entries]) => [phone, [...entries.values()].sort((first, second) =>
+    second.updatedAt.localeCompare(first.updatedAt) || first.city.localeCompare(second.city) || first.address.localeCompare(second.address))]));
+}
+
+async function saveAddress(db: Database, phone: string, city: SavedPassengerAddress['city'], value: unknown,
+  updatedAt: unknown, stop?: DatabaseRow, snapshotName?: unknown): Promise<void> {
+  const address = cleanAddress(value);
+  if (city === 'gori' && !address) return;
+  if (city === 'tbilisi' && !stop) return;
+  const key = city === 'tbilisi' ? `stop:${Number(stop!.id)}` : addressKey(address);
+  await db.prepare(`INSERT INTO passenger_addresses(phone,city,address_key,address,pickup_stop_id,pickup_stop_name,updated_at)
+    VALUES (?,?,?,?,?,?,?) ON CONFLICT(phone,city,address_key) DO UPDATE SET
+      address=excluded.address,pickup_stop_id=excluded.pickup_stop_id,pickup_stop_name=excluded.pickup_stop_name,
+      updated_at=excluded.updated_at WHERE excluded.updated_at>=passenger_addresses.updated_at`)
+    .run(phone, city, key, address, city === 'tbilisi' ? Number(stop!.id) : null,
+      city === 'tbilisi' ? String(snapshotName ?? stop!.name ?? '') : null, addressStamp(updatedAt));
 }
 export async function readPassengerProfile(db: Database, phone: string): Promise<PassengerProfile | null> {
   const canonical = canonicalPhone(phone);
@@ -115,7 +170,7 @@ export async function savePassengerProfile(db: Database, row: DatabaseRow): Prom
   if (!canonical) return;
   const previous = (await profileCandidates(db, [canonical])).get(canonical) ?? [];
   const stop = row.pickup_stop_id === null || row.pickup_stop_id === undefined ? undefined
-    : await db.prepare('SELECT id,name,active FROM stops WHERE id=? AND active=1').get(row.pickup_stop_id);
+    : await db.prepare('SELECT id,name,address,active FROM stops WHERE id=?').get(row.pickup_stop_id);
   const incoming: Candidate = {
     canonical, priority: 1000,
     row: { ...withPickupMemory(row), phone: canonical, stop_active: stop?.active ?? 0, current_stop_name: stop?.name ?? null },
@@ -123,6 +178,36 @@ export async function savePassengerProfile(db: Database, row: DatabaseRow): Prom
   const candidates = [...previous, incoming];
   const merged = mergeProfile(canonical, candidates);
   if (merged) await writeProfile(db, merged, candidates);
+  await saveAddress(db, canonical, 'gori', row.gori_address, row.updated_at);
+  if (row.direction === 'tbilisi-gori') await saveAddress(db, canonical, 'tbilisi', stop?.address, row.updated_at, stop, row.pickup_stop_name);
+}
+
+/** One repeat-safe, additive backfill. GET requests never repair or add customer data. */
+export async function migratePassengerAddresses(db: Database): Promise<void> {
+  await db.transaction(async () => {
+    if (await db.prepare('SELECT value FROM settings WHERE key=?').get(ADDRESSES_MARKER)) return;
+    const stops = new Map((await db.prepare('SELECT id,name,address,active FROM stops').all()).map(row => [Number(row.id), row]));
+    const bookings = await db.prepare("SELECT * FROM bookings WHERE status='confirmed' ORDER BY created_at,id").all();
+    for (const row of bookings) {
+      const canonical = canonicalPhone(row.phone);
+      if (!canonical) continue;
+      await saveAddress(db, canonical, 'gori', row.gori_address, row.created_at);
+      if (row.direction === 'tbilisi-gori') {
+        const stop = stops.get(Number(row.pickup_stop_id));
+        await saveAddress(db, canonical, 'tbilisi', stop?.address, row.created_at, stop, row.pickup_stop_name);
+      }
+    }
+    const profiles = await db.prepare('SELECT * FROM passenger_profiles').all();
+    for (const row of profiles) {
+      const canonical = canonicalPhone(row.phone);
+      if (!canonical) continue;
+      await saveAddress(db, canonical, 'gori', row.gori_address, row.updated_at);
+      await saveAddress(db, canonical, 'gori', row.gori_pickup_address, row.gori_pickup_updated_at ?? row.updated_at);
+      const stop = stops.get(Number(row.pickup_stop_id));
+      if (stop) await saveAddress(db, canonical, 'tbilisi', stop.address, row.updated_at, stop, row.pickup_stop_name);
+    }
+    await db.prepare('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(ADDRESSES_MARKER, '1');
+  });
 }
 
 /** One versioned repair; invalid legacy rows and immutable call hashes remain intact. */

@@ -98,11 +98,24 @@ function passengers(bookings: Booking[], search: string): Passenger[] {
 function passengerProfile(bookings: Booking[], phone: string): PassengerProfile | null {
   const canonicalPhone = canonicalPassengerPhone(phone);
   if (!canonicalPhone) return null;
-  const booking = bookings.find(row => !row.deletedAt && row.status === 'confirmed' && canonicalPassengerPhone(row.phone) === canonicalPhone);
+  const trusted = bookings.filter(row => row.status === 'confirmed' && canonicalPassengerPhone(row.phone) === canonicalPhone).sort((first, second) => second.createdAt.localeCompare(first.createdAt) || second.id - first.id);
+  const booking = trusted[0];
+  const tbilisiBooking = trusted.find(row => row.direction === 'tbilisi-gori');
+  const savedStop = config.stops.find(stop => stop.active && stop.id === tbilisiBooking?.pickupStopId);
+  const addresses: NonNullable<PassengerProfile['addresses']> = [];
+  const seen = new Set<string>();
+  for (const row of trusted) {
+    const key = `gori:${row.goriAddress.trim().replace(/\s+/g, ' ').toLocaleLowerCase()}`;
+    if (row.goriAddress.trim() && !seen.has(key)) { addresses.push({ city: 'gori', address: row.goriAddress.trim(), pickupStopId: null, pickupStopName: null, updatedAt: row.updatedAt }); seen.add(key); }
+    const stop = config.stops.find(item => item.active && item.id === row.pickupStopId);
+    if (row.direction === 'tbilisi-gori' && stop && !seen.has(`tbilisi:${stop.id}`)) {
+      addresses.push({ city: 'tbilisi', address: stop.address, pickupStopId: stop.id, pickupStopName: stop.name, updatedAt: row.updatedAt }); seen.add(`tbilisi:${stop.id}`);
+    }
+  }
   return booking ? {
     phone: canonicalPhone, name: booking.name, goriAddress: booking.goriAddress,
-    goriPickupAddress: bookings.find(row => row.status === 'confirmed' && row.direction === 'gori-tbilisi' && canonicalPassengerPhone(row.phone) === canonicalPhone)?.goriAddress ?? '',
-    pickupStopId: booking.pickupStopId, pickupStopName: booking.pickupStopName, updatedAt: booking.updatedAt,
+    goriPickupAddress: trusted.find(row => row.direction === 'gori-tbilisi')?.goriAddress ?? '',
+    pickupStopId: savedStop?.id ?? null, pickupStopName: savedStop?.name ?? null, updatedAt: booking.updatedAt, addresses,
   } : null;
 }
 

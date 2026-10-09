@@ -19,6 +19,8 @@
 .admin-call-phone-cell strong { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .admin-call-dial { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; color: #619273; font-size: 9px; text-decoration: none; }
 .admin-call-destination { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; color: #829487; font-size: 9px; }
+.admin-call-destination > label { display: flex; flex-direction: column; gap: 4px; }
+.admin-call-destination .admin-saved-address-picker { margin-bottom: 2px; }
 .admin-calls-card .admin-call-destination textarea { min-height: 54px; height: 54px; }
 .admin-call-booking-controls { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .admin-call-day-row { display: flex; align-items: stretch; gap: 5px; }

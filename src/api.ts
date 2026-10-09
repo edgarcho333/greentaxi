@@ -20,9 +20,14 @@ export type Passenger = {
   name: string; phone: string; address: string; addressCity: 'gori' | 'tbilisi' | null;
   orderCount: number; seats: number; latestDate: string;
 };
+export type SavedPassengerAddress = {
+  city: 'gori' | 'tbilisi'; address: string; pickupStopId: number | null;
+  pickupStopName: string | null; updatedAt: string;
+};
 export type PassengerProfile = {
   phone: string; name: string; goriAddress: string; goriPickupAddress: string;
   pickupStopId: number | null; pickupStopName: string | null; updatedAt: string;
+  addresses?: SavedPassengerAddress[];
 };
 export type PassengerDetail = { passenger: Passenger; profile: PassengerProfile | null; bookings: Booking[] };
 export type Analytics = {

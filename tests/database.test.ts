@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { Pool } from 'pg';
 import { createDatabase, postgresPoolOptions, postgresSql, type Database } from '../server/database.js';
-import { migratePhoneStorage, migratePickupMemory, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from '../server/passenger-profiles.js';
+import { migratePassengerAddresses, migratePhoneStorage, migratePickupMemory, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from '../server/passenger-profiles.js';
 
 test('PostgreSQL translation preserves literals/comments and returns only numeric table IDs', () => {
   assert.equal(postgresSql(`SELECT '?' AS literal, "?identifier", ? AS orderCount, ? as latestDate -- ?\n/* ? */`),
@@ -34,7 +34,7 @@ test('production refuses an absent DATABASE_URL', async () => {
 });
 
 async function verifySchemaAndTransactions(first: Database, second: Database = first) {
-  assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 6);
+  assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 7);
   assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM stops').get())?.count, 3);
   assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM base_schedule').get())?.count, 2);
   const user = await first.prepare('INSERT INTO users(login,name,password_hash,created_at) VALUES (?,?,?,?)').run('adapter', 'Operator', 'test-hash', new Date().toISOString());
@@ -113,7 +113,7 @@ test('SQLite migration preserves existing data and runs once', async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const database = await createDatabase({ dbPath, databaseUrl: '', production: false });
       try {
-        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 6);
+        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 7);
         assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM stops').get())?.count, 1);
         assert.equal((await database.prepare('SELECT value FROM settings WHERE key=?').get('didubeName'))?.value, 'Existing Didube');
       } finally { await database.close(); }
@@ -193,7 +193,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
         for (let attempt = 0; attempt < 2; attempt++) {
           const database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
           databases.push(database);
-          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 6);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 7);
           assert.deepEqual((await database.prepare('SELECT * FROM schema_versions WHERE version<6 ORDER BY version').all()).map(row => ({ ...row })), versions);
           if (attempt === 0) assert.equal((await readPassengerProfile(database, '568694879'))?.goriPickupAddress, '');
           await migratePickupMemory(database);
@@ -233,6 +233,80 @@ test('PostgreSQL concurrent migration and cross-instance transactions preserve i
     await admin.end();
   }
 });
+
+for (const dialect of ['sqlite', 'postgres'] as const) {
+  test(`${dialect} saved-address migration upgrades persisted version six once and keeps prior checksums and trusted history intact`,
+    { skip: dialect === 'postgres' && !process.env.TEST_DATABASE_URL }, async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'greentaxi-address-upgrade-'));
+      const dbPath = join(directory, 'pre-007.sqlite');
+      const schema = `addresses_upgrade_${randomUUID().replaceAll('-', '')}`;
+      let administration: Pool | undefined;
+      let stored: Pool | undefined;
+      let sqlite: import('node:sqlite').DatabaseSync | undefined;
+      let databaseUrl: string | undefined;
+      let database: Database | undefined;
+      try {
+        if (dialect === 'postgres') {
+          administration = new Pool(postgresPoolOptions(process.env.TEST_DATABASE_URL!));
+          await administration.query(`CREATE SCHEMA ${schema}`);
+          const connection = new URL(process.env.TEST_DATABASE_URL!);
+          connection.searchParams.set('options', `-csearch_path=${schema}`);
+          databaseUrl = connection.toString();
+          stored = new Pool(postgresPoolOptions(databaseUrl));
+        } else {
+          const { DatabaseSync } = await import('node:sqlite');
+          sqlite = new DatabaseSync(dbPath);
+          sqlite.exec('PRAGMA foreign_keys=ON');
+        }
+        const exec = async (sql: string) => { if (stored) await stored.query(sql); else sqlite!.exec(sql); };
+        const run = async (sql: string, ...values: (string | number | null)[]) => {
+          if (stored) await stored.query(postgresSql(sql), values); else sqlite!.prepare(sql).run(...values);
+        };
+        const rows = async (sql: string) => {
+          if (!stored) return sqlite!.prepare(sql).all().map(row => ({ ...row }));
+          const result = await stored.query(sql);
+          const integers = result.fields.filter(field => [20, 21, 23].includes(field.dataTypeID));
+          return result.rows.map(row => {
+            for (const field of integers) if (typeof row[field.name] === 'string') row[field.name] = Number(row[field.name]);
+            return row;
+          });
+        };
+        await exec('CREATE TABLE schema_versions (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)');
+        for (const [index, migration] of ['001_initial', '002_rate_limits', '003_call_phase', '004_legacy_call_hash', '005_staff_seats', '006_gori_pickup_memory'].entries()) {
+          const name = `${migration}.${dialect}.sql`;
+          const sql = await readFile(new URL(`../server/migrations/${name}`, import.meta.url), 'utf8');
+          await exec(sql);
+          await run('INSERT INTO schema_versions(version,name,checksum,applied_at) VALUES (?,?,?,?)', index + 1, name, createHash('sha256').update(sql).digest('hex'), '2026-10-09T00:00:00.000Z');
+        }
+        await run('INSERT INTO passenger_profiles(phone,name,gori_address,gori_pickup_address,gori_pickup_updated_at,pickup_stop_id,pickup_stop_name,updated_at) VALUES (?,?,?,?,?,?,?,?)',
+          '+995568694879', 'Legacy private name', 'Gori arrival', 'Gori house', '2026-10-09T10:00:00.000Z', 1, 'Stored fixed stop', '2026-10-09T11:00:00.000Z');
+        const snapshots = new Map<string, string>();
+        for (const table of ['schema_versions', 'passenger_profiles', 'bookings', 'call_inquiries', 'audit_log']) snapshots.set(table, JSON.stringify(await rows(`SELECT * FROM ${table} ORDER BY 1`)));
+        sqlite?.close(); sqlite = undefined;
+        let addresses: string | undefined;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
+          if (!attempt) assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM passenger_addresses').get())?.count, 0);
+          await migratePassengerAddresses(database);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 7);
+          const current = JSON.stringify(await database.prepare('SELECT * FROM passenger_addresses ORDER BY phone,city,address_key').all());
+          if (!attempt) addresses = current; else assert.equal(current, addresses);
+          const profile = await readPassengerProfile(database, '568694879');
+          assert.equal(profile?.addresses?.length, 3);
+          assert.equal(profile?.goriPickupAddress, 'Gori house');
+          for (const [table, snapshot] of snapshots) {
+            const sql = `SELECT * FROM ${table}${table === 'schema_versions' ? ' WHERE version<7' : ''} ORDER BY 1`;
+            assert.equal(JSON.stringify(await database.prepare(sql).all()), snapshot);
+          }
+          await database.close(); database = undefined;
+        }
+      } finally {
+        await database?.close(); sqlite?.close(); await stored?.end();
+        if (administration) { await administration.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); await administration.end(); }
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+}
 
 test('PostgreSQL staff seat migration upgrades persisted version 4 without changing rows or references', { skip: !process.env.TEST_DATABASE_URL }, async () => {
   const schema = `staff_upgrade_${randomUUID().replaceAll('-', '')}`;
@@ -301,10 +375,10 @@ test('PostgreSQL staff seat migration upgrades persisted version 4 without chang
     assert.equal(databases.length, 2);
     for (const table of tables) assert.equal(JSON.stringify((await stored.query(`SELECT * FROM ${table} ORDER BY 1,2`)).rows), snapshots.get(table), `${table} rows changed`);
     assert.deepEqual((await stored.query('SELECT * FROM schema_versions WHERE version<5 ORDER BY version')).rows, versions);
-    assert.equal((await stored.query('SELECT COUNT(*) AS count FROM schema_versions')).rows[0].count, '6');
-    assert.deepEqual((await stored.query(indexesSql, [schema])).rows, indexes);
+    assert.equal((await stored.query('SELECT COUNT(*) AS count FROM schema_versions')).rows[0].count, '7');
+    assert.deepEqual((await stored.query(indexesSql, [schema])).rows.filter(row => row.tablename !== 'passenger_addresses'), indexes);
     const migratedConstraints = (await stored.query(constraintsSql, [schema])).rows;
-    assert.deepEqual(migratedConstraints.filter(row => row.name !== 'bookings_seats_check'), constraints.filter(row => row.name !== 'bookings_seats_check'));
+    assert.deepEqual(migratedConstraints.filter(row => row.name !== 'bookings_seats_check' && row.table_name !== 'passenger_addresses'), constraints.filter(row => row.name !== 'bookings_seats_check'));
     assert.match(migratedConstraints.find(row => row.name === 'bookings_seats_check')!.definition, /seats <= 8/);
     assert.deepEqual((await stored.query('SELECT last_value,is_called FROM bookings_id_seq')).rows, sequence);
     const eightSeat = await insertHistoryBooking(databases[0], '568694880', 'New eight-seat staff booking', '2030-01-05T00:00:00.000Z', 'confirmed', null, 8);
@@ -342,7 +416,7 @@ test('alias profile reads merge newest contact details and active stop memory wi
     assert.deepEqual([...profiles.keys()].sort(), ['+447700900123', '568694879']);
     assert.deepEqual(profiles.get('568694879'), {
       phone: '568694879', name: 'Latest contact', goriAddress: 'გორი — Latest contact', goriPickupAddress: '',
-      pickupStopId: 1, pickupStopName: 'Current active stop name', updatedAt: '2030-01-03T00:00:00.000Z',
+      pickupStopId: 1, pickupStopName: 'Current active stop name', updatedAt: '2030-01-03T00:00:00.000Z', addresses: [],
     });
     assert.equal((await readPassengerProfile(database, '995568694879'))?.name, 'Latest contact');
     assert.equal(await readPassengerProfile(database, 'invalid'), null);
@@ -374,7 +448,7 @@ test('batch profile lookup bounds alias parameters without per-passenger queries
       },
     };
     assert.equal((await readPassengerProfiles(observed, phones)).size, 205);
-    assert.ok(queries <= 5, `Expected at most 5 batched queries, received ${queries}`);
+    assert.ok(queries <= 10, `Expected at most 10 bounded profile/address batch queries, received ${queries}`);
   } finally { await database.close(); }
 });
 
@@ -463,6 +537,76 @@ async function insertHistoryBooking(database: Database, phone: string, name: str
     .run(name, phone, seats, 'gori-tbilisi', `გორი — ${name}`, 'დიდუბე', 'Didube test address', '2030-01-01', '08:30',
       status === 'confirmed' ? '2030-01-01' : null, status === 'confirmed' ? '08:30' : null, status, deletedAt, 'public', '2030-01-01T00:00:00.000Z', updatedAt);
 }
+test('saved addresses are additive, canonical, deduplicated and historical imports preserve newer city defaults', async () => {
+  const database = await memoryDatabase();
+  try {
+    const current = { status: 'confirmed', phone: '568694879', direction: 'gori-tbilisi', name: '',
+      gori_address: '  Street   One 12 ', updated_at: '2026-10-09T10:00:00.000Z' };
+    await database.transaction(async () => {
+      await savePassengerProfile(database, current);
+      await savePassengerProfile(database, { ...current, phone: '+995568694879', gori_address: 'Street Two 24', updated_at: '2026-10-09T11:00:00.000Z' });
+      await savePassengerProfile(database, { ...current, phone: '995568694879', direction: 'tbilisi-gori', gori_address: 'New Gori destination', pickup_stop_id: 2, updated_at: '2026-10-09T12:00:00.000Z' });
+      await savePassengerProfile(database, { ...current, phone: '00995568694879', gori_address: 'street one 12', updated_at: '2026-10-07T08:00:00.000Z' });
+      await savePassengerProfile(database, { ...current, phone: '568694879', direction: 'tbilisi-gori', pickup_stop_id: 1, gori_address: 'Historical Gori destination', updated_at: '2026-10-07T09:00:00.000Z' });
+      await savePassengerProfile(database, { ...current, status: 'waiting', gori_address: 'Unverified address', updated_at: '2026-10-10T08:00:00.000Z' });
+      await savePassengerProfile(database, { ...current, phone: '+447911123456', gori_address: 'Foreign customer address' });
+    });
+    const profile = await readPassengerProfile(database, '+995568694879');
+    assert.equal(profile?.goriPickupAddress, 'Street Two 24');
+    assert.equal(profile?.goriAddress, 'New Gori destination');
+    assert.equal(profile?.pickupStopId, 2);
+    assert.equal(profile?.updatedAt, '2026-10-09T12:00:00.000Z');
+    assert.deepEqual(profile?.addresses?.filter(address => address.city === 'gori').map(address => address.address),
+      ['New Gori destination', 'Street Two 24', 'Street One 12', 'Historical Gori destination']);
+    assert.deepEqual(profile?.addresses?.filter(address => address.city === 'tbilisi').map(address => address.pickupStopId), [2, 1]);
+    assert.equal(profile?.addresses?.find(address => address.address === 'Street One 12')?.updatedAt, '2026-10-09T10:00:00.000Z');
+    assert.equal(profile?.addresses?.some(address => /Foreign|Unverified/.test(address.address)), false);
+    await database.prepare('UPDATE stops SET name=?,address=? WHERE id=?').run('Updated configured stop', 'Updated configured address', 2);
+    assert.equal((await readPassengerProfile(database, '568694879'))?.addresses?.find(address => address.pickupStopId === 2)?.address, 'Updated configured address');
+    await database.prepare('UPDATE stops SET active=0 WHERE id=2').run();
+    assert.deepEqual((await readPassengerProfile(database, '568694879'))?.addresses?.filter(address => address.city === 'tbilisi').map(address => address.pickupStopId), [1]);
+    assert.equal((await database.prepare("SELECT COUNT(*) AS count FROM passenger_addresses WHERE phone=? AND city='tbilisi'").get('568694879'))?.count, 2);
+    const before = await database.prepare('SELECT * FROM passenger_addresses ORDER BY phone,city,address_key').all();
+    await readPassengerProfiles(database, ['568694879', '+995568694879', '+447911123456']);
+    assert.deepEqual(await database.prepare('SELECT * FROM passenger_addresses ORDER BY phone,city,address_key').all(), before);
+    await assert.rejects(database.transaction(async () => {
+      await savePassengerProfile(database, { ...current, gori_address: 'Failed booking address', updated_at: '2026-10-10T10:00:00.000Z' });
+      throw new Error('Synthetic failed booking mutation');
+    }), /Synthetic failed booking mutation/);
+    assert.deepEqual(await database.prepare('SELECT * FROM passenger_addresses ORDER BY phone,city,address_key').all(), before);
+    assert.equal((await readPassengerProfile(database, '568694879'))?.goriPickupAddress, 'Street Two 24');
+  } finally { await database.close(); }
+});
+
+test('saved-address backfill includes trusted deleted trips and aliases, preserves all existing tables and runs once', async () => {
+  const database = await memoryDatabase();
+  try {
+    await insertProfile(database, '+995568694879', 'Cached trusted customer', '2026-10-09T12:00:00.000Z', 2);
+    await database.prepare('UPDATE passenger_profiles SET gori_pickup_address=?,gori_pickup_updated_at=? WHERE phone=?')
+      .run('Trusted cached pickup', '2026-10-09T11:00:00.000Z', '+995568694879');
+    const removed = await insertHistoryBooking(database, '00995568694879', 'Deleted address', '2026-10-08T10:00:00.000Z', 'confirmed', '2026-10-08T10:00:00.000Z');
+    const reverse = await insertHistoryBooking(database, '995568694879', 'Past Gori arrival', '2026-10-07T10:00:00.000Z', 'confirmed');
+    await database.prepare("UPDATE bookings SET direction='tbilisi-gori',pickup_stop_id=1,pickup_stop_name=? WHERE id=?").run('Snapshot stop', reverse.lastInsertRowid);
+    await insertHistoryBooking(database, '568694879', 'Untrusted address', '2026-10-10T10:00:00.000Z', 'waiting');
+    await insertHistoryBooking(database, '568694880', 'Untrusted unknown contact', '2026-10-10T10:00:00.000Z', 'waiting');
+    const before = new Map<string, string>();
+    for (const table of ['passenger_profiles', 'bookings', 'audit_log', 'call_inquiries']) before.set(table, JSON.stringify(await database.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()));
+    await migratePassengerAddresses(database);
+    const profile = await readPassengerProfile(database, '568694879');
+    assert.equal(profile?.addresses?.filter(address => address.city === 'gori').length, 4);
+    assert.equal(profile?.addresses?.filter(address => address.city === 'tbilisi').length, 2);
+    assert.equal(profile?.addresses?.some(address => address.address === 'გორი — Deleted address'), true);
+    assert.equal(profile?.addresses?.some(address => /Untrusted/.test(address.address)), false);
+    assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM passenger_addresses WHERE phone=?').get('568694880'))?.count, 0);
+    for (const [table, snapshot] of before) assert.equal(JSON.stringify(await database.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()), snapshot);
+    const stored = await database.prepare('SELECT * FROM passenger_addresses ORDER BY phone,city,address_key').all();
+    await database.prepare('UPDATE bookings SET gori_address=? WHERE id=?').run('Changed after one-time backfill', removed.lastInsertRowid);
+    await migratePassengerAddresses(database);
+    assert.deepEqual(await database.prepare('SELECT * FROM passenger_addresses ORDER BY phone,city,address_key').all(), stored);
+    assert.equal((await database.prepare('SELECT value FROM settings WHERE key=?').get('passengerAddressesV1'))?.value, '1');
+  } finally { await database.close(); }
+});
+
 test('phone migration merges collisions atomically, trusts confirmed history and preserves hashes and invalid rows', async () => {
   const database = await memoryDatabase();
   try {
@@ -570,7 +714,7 @@ for (const fixture of [
         assert.deepEqual(migratedIndexes, indexes);
         for (const name of indexes) assert.deepEqual((await database.prepare(`PRAGMA index_info(${name})`).all()).map(row => ({ ...row })), indexColumns.get(name));
         assert.deepEqual((await database.prepare('SELECT * FROM schema_versions WHERE version<5 ORDER BY version').all()).map(row => ({ ...row })), versions);
-        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 6);
+        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 7);
         assert.equal((await database.prepare("SELECT seq FROM sqlite_sequence WHERE name='bookings'").get())?.seq, fixture.autoincrement ? 9999 : 44);
         const eightSeat = await insertHistoryBooking(database, '568694880', 'New staff booking', '2030-01-05T00:00:00.000Z', 'confirmed', null, 8);
         assert.equal(eightSeat.lastInsertRowid, fixture.autoincrement ? 10000 : 45);

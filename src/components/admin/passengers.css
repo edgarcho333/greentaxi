@@ -51,6 +51,11 @@
 .passenger-addresses span { display: flex; align-items: center; gap: 7px; color: #7d9e87; font-size: 11px; margin-bottom: 9px; }
 .passenger-addresses span svg { flex-shrink: 0; }
 .passenger-addresses strong { display: block; color: #375f45; font-size: 14px; font-weight: 500; line-height: 1.8; overflow-wrap: anywhere; }
+.passenger-addresses > div > span > small { margin-left: auto; border-radius: 4px; padding: 2px 5px; background: #eaf6ef; color: #548165; font-size: 10px; font-variant-numeric: tabular-nums; }
+.passenger-addresses ul { margin: 0; padding: 0; list-style: none; max-height: 280px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #d1e4d7 transparent; }
+.passenger-addresses li { padding: 8px 0; border-bottom: 1px solid #e6f0e9; }
+.passenger-addresses li:first-child { padding-top: 0; }
+.passenger-addresses li:last-child { border-bottom: 0; padding-bottom: 0; }
 .passenger-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 22px; }
 .passenger-summary > div { padding: 18px 20px; background: #fff; border: 1px solid #e5ede8; border-radius: 9px; }
 .passenger-summary span { display: block; color: #8b9d91; font-size: 11px; margin-bottom: 9px; line-height: 1.6; }

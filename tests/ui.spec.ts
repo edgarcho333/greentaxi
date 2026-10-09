@@ -1361,6 +1361,8 @@ test('live inline call keeps city-specific pickup addresses and manual choices a
   expect((await trusted.json() as { profile: PassengerProfile }).profile).toMatchObject({
     name, goriPickupAddress: pickupAddress, goriAddress: manualDropoff, pickupStopId: chosenStop.id,
   });
+  // The assertions have finished; ignore only errors from outstanding delayed mock routes during teardown.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 test('inline calendar and carousel hide elapsed hours and require a new choice after a slot is disabled', async ({ page, browserErrors }) => {
@@ -1935,5 +1937,182 @@ test('slow passenger detail cannot replace another passenger and history stays u
   } finally {
     releaseFirst();
     await page.unroute(`**/api/admin/passengers/${firstPhone}`);
+  }
+});
+
+test('multiple saved addresses can be selected for manual bookings and edits without changing earlier trips', async ({ page }) => {
+  const phone = '590889101';
+  const firstAddress = 'გორი, შენახული საცხოვრებელი მისამართი 101';
+  const secondAddress = 'გორი, შენახული სამუშაო მისამართი 102';
+  const destination = 'გორი, დამოუკიდებელი ჩამოსვლის მისამართი 103';
+  const first = await seedPassengerTrip({ phone: `+995${phone}`, name: 'პირველი სატესტო ძველი სახელი', address: firstAddress });
+  const second = await seedPassengerTrip({ phone, name: 'მეორე სატესტო ძველი სახელი', address: secondAddress });
+  const arrival = await seedPassengerTrip({ phone, name: 'ჩამოსვლის სატესტო ძველი სახელი', address: destination, pickupStopId: publicConfig.stops[1].id });
+  await seedPassengerTrip({ phone, name: 'მეორე გაჩერების სატესტო ძველი სახელი', address: destination, pickupStopId: publicConfig.stops[2].id });
+  await openAuthenticatedAdmin(page);
+  const dialog = await openManualOrder(page);
+  const lookup = page.waitForResponse(response => isProfileResponse(response, phone));
+  await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(`+995 ${displayedPassengerPhone(phone)}`);
+  expect((await lookup).ok()).toBeTruthy();
+  const saved = dialog.getByRole('combobox', { name: 'შენახული მისამართები გორში', exact: true });
+  await expect(saved.locator('option')).toHaveCount(4);
+  await expect(dialog.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(secondAddress);
+  await saved.selectOption(firstAddress);
+  await expect(dialog.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(firstAddress);
+  await chooseOperatorDirection(dialog, 'tbilisi-gori');
+  await expect(dialog.getByLabel('ჩამოსვლის მისამართი გორში', { exact: true })).toHaveValue(destination);
+  await expect(dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true }).locator('option', { hasText: publicConfig.stops[1].name })).toContainText('შენახული');
+  await expect(dialog.getByLabel('აყვანის ადგილი თბილისში', { exact: true }).locator('option', { hasText: publicConfig.stops[2].name })).toContainText('შენახული');
+  await chooseOperatorDirection(dialog, 'gori-tbilisi');
+  await expect(dialog.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(firstAddress);
+  await chooseOperatorDay(dialog, futureDate(1));
+  await chooseOperatorTime(dialog, '21:00');
+  const creation = page.waitForResponse(response => response.url().endsWith('/api/admin/bookings') && response.request().method() === 'POST');
+  await dialog.getByRole('button', { name: 'შექმნა და დადასტურება', exact: true }).click();
+  const createdResponse = await creation;
+  expect(createdResponse.ok()).toBeTruthy();
+  const created = await createdResponse.json() as Booking;
+  expect(created).toMatchObject({ phone, goriAddress: firstAddress, direction: 'gori-tbilisi', status: 'confirmed' });
+  await expect(dialog).toHaveCount(0);
+  await chooseAdminDate(page, futureDate(1));
+  await chooseAdminTime(page, '21:00');
+  await page.getByRole('textbox', { name: 'მგზავრის სახელი ან ტელეფონი', exact: true }).fill(phone);
+  const createdRow = bookingRowById(page, created.id);
+  await expect(createdRow).toBeVisible();
+  await createdRow.getByRole('button', { name: `${displayedPassengerPhone(phone)}: რედაქტირება`, exact: true }).click();
+  const edit = page.getByRole('dialog', { name: 'ჯავშნის რედაქტირება', exact: true });
+  const editSaved = edit.getByRole('combobox', { name: 'შენახული მისამართები გორში', exact: true });
+  await expect(editSaved.locator('option')).toHaveCount(4);
+  // Loading a more recently used profile address must leave this booking's own snapshot intact.
+  await expect(edit.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(firstAddress);
+  await editSaved.selectOption(secondAddress);
+  const update = page.waitForResponse(response => response.url().endsWith(`/api/admin/bookings/${created.id}`) && response.request().method() === 'PATCH');
+  await edit.getByRole('button', { name: 'ცვლილებების შენახვა', exact: true }).click();
+  const updated = await update;
+  expect(updated.ok()).toBeTruthy();
+  expect(await updated.json()).toMatchObject({ id: created.id, goriAddress: secondAddress });
+  await expect(edit).toHaveCount(0);
+  const trips = await adminApi.get(`/api/admin/bookings?${new URLSearchParams({ scope: 'scheduled', date: futureDate(1), search: phone })}`);
+  expect(trips.ok()).toBeTruthy();
+  const bookings = (await trips.json() as { bookings: Booking[] }).bookings;
+  expect(bookings.find(booking => booking.id === first.id)?.goriAddress).toBe(firstAddress);
+  expect(bookings.find(booking => booking.id === second.id)?.goriAddress).toBe(secondAddress);
+  expect(bookings.find(booking => booking.id === arrival.id)?.goriAddress).toBe(destination);
+  await openAdminView(page, 'მგზავრები');
+  await searchPassengerDirectory(page, phone);
+  await openPassengerHistory(page, phone);
+  const addresses = page.getByRole('region', { name: 'შენახული მისამართები', exact: true });
+  await expect(addresses.getByText(firstAddress, { exact: true })).toHaveCount(1);
+  await expect(addresses.getByText(secondAddress, { exact: true })).toHaveCount(1);
+  await expect(addresses.getByText(destination, { exact: true })).toHaveCount(1);
+  await expect(addresses).toContainText(publicConfig.stops[1].name);
+  await expect(addresses).toContainText(publicConfig.stops[2].name);
+});
+
+test('multiple saved addresses in a live call survive refreshed profiles and allow saving a new manual address', async ({ page }) => {
+  test.setTimeout(45_000);
+  const phone = '590889201';
+  const firstAddress = 'გორი, ზარის პირველი შენახული მისამართი 201';
+  const secondAddress = 'გორი, ზარის მეორე შენახული მისამართი 202';
+  const thirdAddress = 'გორი, სხვა ოპერატორის ახალი მისამართი 203';
+  const manualAddress = 'გორი, ზარის დროს ხელით დამატებული მისამართი 204';
+  await seedPassengerTrip({ phone, name: 'ზარის სატესტო პროფილი', address: firstAddress });
+  await seedPassengerTrip({ phone, name: 'ზარის სატესტო პროფილი', address: secondAddress });
+  const { id } = await seedAnsweredCall(phone, 'multiple-addresses-call-201');
+  await openAuthenticatedAdmin(page);
+  await openAdminView(page, 'შემოსული');
+  const row = incomingCallRow(page, id);
+  const saved = row.getByRole('combobox', { name: 'შენახული მისამართები გორში', exact: true });
+  const address = row.getByLabel('აყვანის მისამართი გორში', { exact: true });
+  await expect(saved.locator('option')).toHaveCount(3);
+  await expect(address).toHaveValue(secondAddress);
+  await saved.selectOption(firstAddress);
+  await seedPassengerTrip({ phone, name: 'ზარის სატესტო პროფილი', address: thirdAddress });
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(saved.locator('option')).toHaveCount(4, { timeout: 15_000 });
+  await expect(address).toHaveValue(firstAddress);
+  await expect(saved).toHaveValue(firstAddress);
+  await saved.selectOption('');
+  await expect(address).toHaveValue('');
+  const poll = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/admin/calls' && url.searchParams.get('scope') === 'incoming';
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  expect((await poll).ok()).toBeTruthy();
+  await expect(address).toHaveValue('');
+  await expect(row.getByRole('button', { name: 'დადასტურება', exact: true })).toBeDisabled();
+  await address.fill(manualAddress);
+  await chooseCallDay(row, 'ხვალ');
+  await chooseCallTime(row, '21:00');
+  await chooseCallSeats(row, 3);
+  const conversion = page.waitForResponse(response => response.url().endsWith(`/api/admin/calls/${id}/convert`) && response.request().method() === 'POST');
+  await row.getByRole('button', { name: 'დადასტურება', exact: true }).click();
+  const converted = await conversion;
+  expect(converted.ok()).toBeTruthy();
+  expect(await converted.json()).toMatchObject({ phone, goriAddress: manualAddress, seats: 3, status: 'confirmed' });
+  await expect(row).toHaveCount(0);
+  const response = await adminApi.get(`/api/admin/passengers/profile?phone=${phone}`);
+  expect(response.ok()).toBeTruthy();
+  const profile = (await response.json() as { profile: PassengerProfile }).profile;
+  expect(profile.goriPickupAddress).toBe(manualAddress);
+  expect(profile.addresses?.filter(item => item.city === 'gori').map(item => item.address).sort()).toEqual([firstAddress, secondAddress, thirdAddress, manualAddress].sort());
+  const next = await seedAnsweredCall(phone, 'multiple-addresses-call-202');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  const nextRow = incomingCallRow(page, next.id);
+  await expect(nextRow.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(manualAddress, { timeout: 15_000 });
+  await expect(nextRow.getByRole('combobox', { name: 'შენახული მისამართები გორში', exact: true }).locator('option')).toHaveCount(5);
+});
+
+test('multiple saved address choices stay scoped to the current phone when an earlier lookup arrives late', async ({ page }) => {
+  const firstPhone = '590889301';
+  const secondPhone = '590889302';
+  const firstAddresses = ['გორი, პირველი ნომრის მისამართი 301', 'გორი, პირველი ნომრის მისამართი 302'];
+  const secondAddresses = ['გორი, მეორე ნომრის მისამართი 303', 'გორი, მეორე ნომრის მისამართი 304'];
+  for (const address of firstAddresses) await seedPassengerTrip({ phone: firstPhone, name: 'პირველი სატესტო პროფილი', address });
+  for (const address of secondAddresses) await seedPassengerTrip({ phone: secondPhone, name: 'მეორე სატესტო პროფილი', address });
+  await openAuthenticatedAdmin(page);
+  let releaseFirst!: () => void;
+  let reportFirstReady!: () => void;
+  let reportFirstFinished!: () => void;
+  const firstGate = new Promise<void>(resolveGate => { releaseFirst = resolveGate; });
+  const firstReady = new Promise<void>(resolveReady => { reportFirstReady = resolveReady; });
+  const firstFinished = new Promise<void>(resolveFinished => { reportFirstFinished = resolveFinished; });
+  await page.route(/\/api\/admin\/passengers\/profile\?/, async route => {
+    if (new URL(route.request().url()).searchParams.get('phone') !== firstPhone) { await route.continue(); return; }
+    const response = await route.fetch();
+    reportFirstReady();
+    await firstGate;
+    try { await route.fulfill({ response }); } catch { /* The first lookup is intentionally aborted when the number changes. */ }
+    finally { reportFirstFinished(); }
+  });
+  const dialog = await openManualOrder(page);
+  const phoneInput = dialog.getByLabel('ტელეფონის ნომერი', { exact: true });
+  const saved = dialog.getByRole('combobox', { name: 'შენახული მისამართები გორში', exact: true });
+  try {
+    await phoneInput.fill(`+995${firstPhone}`);
+    await firstReady;
+    const secondLookup = page.waitForResponse(response => isProfileResponse(response, secondPhone));
+    await phoneInput.fill(`995${secondPhone}`);
+    expect((await secondLookup).ok()).toBeTruthy();
+    await expect(saved.locator('option')).toHaveCount(3);
+    await expect(dialog.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(secondAddresses[1]);
+    releaseFirst();
+    await firstFinished;
+    await expect(saved.locator('option')).toHaveCount(3);
+    expect(await saved.locator('option').evaluateAll(options => options.map(option => (option as HTMLOptionElement).value).filter(Boolean).sort())).toEqual([...secondAddresses].sort());
+    await expect(dialog.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(secondAddresses[1]);
+    await saved.selectOption(secondAddresses[0]);
+    const unknownPhone = '590889399';
+    const unknownLookup = page.waitForResponse(response => isProfileResponse(response, unknownPhone));
+    await phoneInput.fill(unknownPhone);
+    expect((await unknownLookup).ok()).toBeTruthy();
+    await expect(saved).toHaveCount(0);
+    // A deliberately selected address remains a manual choice, while another person's list disappears.
+    await expect(dialog.getByLabel('აყვანის მისამართი გორში', { exact: true })).toHaveValue(secondAddresses[0]);
+    await dialog.getByRole('button', { name: 'გაუქმება', exact: true }).click();
+  } finally {
+    releaseFirst();
+    await page.unroute(/\/api\/admin\/passengers\/profile\?/);
   }
 });

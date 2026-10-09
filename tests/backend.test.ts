@@ -1146,6 +1146,37 @@ test('public unverified orders and waiting edits cannot overwrite a trusted pass
   } finally { await fresh.close(); }
 });
 
+test('confirmed order creation, edits and confirmation accumulate saved addresses while waiting requests and guest lookups stay private', async () => {
+  const fresh = await fixture();
+  try {
+    const number = '599887766';
+    const first = await successful(fresh, '/admin/bookings', 'POST', input({ phone: number, goriAddress: 'გორი, პირველი სახლი 1' }));
+    await successful(fresh, `/admin/bookings/${first.id}`, 'PATCH', { goriAddress: 'გორი, მეორე სახლი 2' });
+    await successful(fresh, '/admin/bookings', 'POST', input({ phone: '+995' + number, direction: 'tbilisi-gori', pickupStopId: 1, goriAddress: 'გორი, დაბრუნების სახლი 3' }));
+    await successful(fresh, '/admin/bookings', 'POST', input({ phone: number, direction: 'tbilisi-gori', pickupStopId: 2, goriAddress: 'გორი, დაბრუნების სახლი 3' }));
+    const pending = await fresh.request('/bookings', 'POST', input({ phone: number, goriAddress: 'გორი, მხოლოდ დასადასტურებელი 4' }), {}, false);
+    assert.equal(pending.status, 201);
+    let profile = (await successful(fresh, '/admin/passengers/profile?phone=' + number)).profile;
+    assert.deepEqual(profile.addresses.filter((address: any) => address.city === 'gori').map((address: any) => address.address).sort(),
+      ['გორი, პირველი სახლი 1', 'გორი, მეორე სახლი 2', 'გორი, დაბრუნების სახლი 3'].sort());
+    assert.deepEqual(profile.addresses.filter((address: any) => address.city === 'tbilisi').map((address: any) => address.pickupStopId).sort(), [1, 2]);
+    await successful(fresh, `/admin/bookings/${pending.data.id}/confirm`, 'POST', { date: DAY, time: '09:30' });
+    profile = (await successful(fresh, '/admin/passengers/profile?phone=00995' + number)).profile;
+    assert.equal(profile.addresses.filter((address: any) => address.city === 'gori').length, 4);
+    assert.equal((await successful(fresh, '/admin/passengers/' + number)).profile.addresses.length, 6);
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'Multiple-address synthetic phone' });
+    const event = await fresh.request('/integrations/android/calls', 'POST', callEvent({ eventId: 'saved-address-call', phone: number, phase: 'answered', durationSeconds: 0 }), { Authorization: `Bearer ${paired.token}` }, false);
+    assert.equal(event.status, 201);
+    assert.equal((await successful(fresh, '/admin/calls')).calls.find((row: any) => row.id === event.data.id).passengerProfile.addresses.length, 6);
+    await successful(fresh, '/admin/stops/2', 'PATCH', { active: false });
+    profile = (await successful(fresh, '/admin/passengers/profile?phone=' + number)).profile;
+    assert.deepEqual(profile.addresses.filter((address: any) => address.city === 'tbilisi').map((address: any) => address.pickupStopId), [1]);
+    assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM passenger_addresses WHERE phone=? AND city='tbilisi'").get(number))?.count, 2);
+    assert.equal((await fresh.request('/admin/passengers/profile?phone=' + number, 'GET', undefined, {}, false)).status, 401);
+    assert.equal((await fresh.request('/admin/passengers/' + number, 'GET', undefined, {}, false)).status, 401);
+  } finally { await fresh.close(); }
+});
+
 test('passenger profiles remember the last active Tbilisi stop and exclude a disabled stop from autofill', async () => {
   const fresh = await fixture();
   try {
