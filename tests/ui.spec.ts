@@ -258,6 +258,20 @@ function usualTimeCall(id: number, phone: string, profile: PassengerProfile | nu
   };
 }
 
+async function mockSyntheticCallBookings(page: Page, calls: CallInquiry[]) {
+  // These explicitly mocked calls do not exist in the disposable database and
+  // have no booking fixtures. Keep real inquiries on their actual protected API.
+  const syntheticIds = new Set(calls.map(call => call.id));
+  await page.route(/\/api\/admin\/calls\/\d+\/bookings(?:\?|$)/, async route => {
+    const match = new URL(route.request().url()).pathname.match(/^\/api\/admin\/calls\/(\d+)\/bookings$/);
+    if (route.request().method() !== 'GET' || !match || !syntheticIds.has(Number(match[1]))) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({ json: { bookings: [] } });
+  });
+}
+
 function isIncomingCallsResponse(response: Response): boolean {
   const url = new URL(response.url());
   return url.pathname === '/api/admin/calls' && url.searchParams.get('scope') === 'incoming';
@@ -1464,6 +1478,7 @@ test('a large incoming queue paginates, shares schedules and preserves edits whe
     occurredAt: timestamp, durationSeconds: 15, deviceName: 'Synthetic large-queue fixture',
     createdAt: timestamp, deletedAt: null, bookingId: null, phase: 'completed', passengerProfile: null,
   }));
+  await mockSyntheticCallBookings(page, calls);
   await page.route('**/api/admin/calls?*', async route => {
     if (new URL(route.request().url()).searchParams.get('scope') !== 'incoming') { await route.continue(); return; }
     await route.fulfill({ json: { calls } });
@@ -2164,6 +2179,7 @@ test('usual departure times use eligible hours for the chosen city and day and p
     'gori-tbilisi': ['08:30', '15:00', '20:00'],
     'tbilisi-gori': ['09:30', '16:00', '21:00'],
   }))];
+  await mockSyntheticCallBookings(page, calls);
   await page.clock.install({ time: new Date('2030-05-04T10:00:00Z') });
   await page.clock.pauseAt(new Date('2030-05-04T10:00:01Z'));
   await page.route('**/api/admin/calls?*', async route => {
@@ -2190,11 +2206,15 @@ test('usual departure times use eligible hours for the chosen city and day and p
   await expect(hours.getByRole('button', { name: '15:00', exact: true })).toHaveCount(0);
   await expect(row.getByRole('group', { name: 'დღე', exact: true }).getByRole('button', { name: /^დღეს(?:\s|\d|$)/ })).toHaveAttribute('aria-pressed', 'true');
   await expect(row.locator('.admin-call-time-note')).toContainText('დრო წინა მგზავრობებიდან');
+  // Large operator cards can place this section below the page fold. Bring the
+  // carousel itself into view without scrolling its selected hour horizontally.
+  await hours.scrollIntoViewIfNeeded();
   await expect(selected()).toBeInViewport();
   await expect(row.locator('.admin-call-booking-cell .admin-call-metadata')).toContainText(calls[0].deviceName);
 
   await chooseCallDay(row, 'ხვალ');
   await expect(selected()).toHaveText('08:30');
+  await hours.scrollIntoViewIfNeeded();
   await expect(selected()).toBeInViewport();
   await row.getByLabel('გამგზავრების ქალაქი', { exact: true }).selectOption('tbilisi-gori');
   await expect(selected()).toHaveText('09:30');
@@ -2214,6 +2234,7 @@ test('usual departure times use eligible hours for the chosen city and day and p
   await expect(hours.getByRole('button', { name: /^\d{2}:\d{2}$/ })).toHaveText(TIMES);
   await expect(selected()).toHaveText('21:00');
   // A usual hour at the end of the full-day carousel must scroll into the visible strip.
+  await hours.scrollIntoViewIfNeeded();
   await expect(selected()).toBeInViewport();
   await chooseCallDay(row, 'დღეს');
   await expect(selected()).toHaveText('21:00');
@@ -2236,6 +2257,7 @@ test('usual departure times arriving late fill only untouched rows and stay scop
   const heldPhone = '590890413';
   const currentPhone = '590890414';
   const calls = [usualTimeCall(902_011, firstPhone, null), usualTimeCall(902_012, manualPhone, null)];
+  await mockSyntheticCallBookings(page, calls);
   await page.clock.install({ time: new Date('2030-05-04T10:00:00Z') });
   await page.clock.pauseAt(new Date('2030-05-04T10:00:01Z'));
   await page.route('**/api/admin/calls?*', async route => {
@@ -2259,6 +2281,7 @@ test('usual departure times arriving late fill only untouched rows and stay scop
   expect((await lateProfile).ok()).toBeTruthy();
   await expect(firstHours.locator('button[aria-pressed="true"]')).toHaveText('20:00');
   await expect(manualHours.locator('button[aria-pressed="true"]')).toHaveText('18:00');
+  await firstHours.scrollIntoViewIfNeeded();
   await expect(firstHours.getByRole('button', { name: '20:00', exact: true })).toBeInViewport();
 
   let releaseHeld!: () => void;

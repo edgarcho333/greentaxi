@@ -7,8 +7,10 @@ export type User = { id: number; login: string; name: string };
 export type Stop = { id: number; name: string; address: string; active: boolean };
 export type PublicConfig = { stops: Stop[]; didubeName: string; didubeAddress: string };
 export type Slot = { time: string; active: boolean; bookingCount: number; seatCount: number };
+export type SeatPreference = 'front' | 'back' | 'middle';
 export type Booking = {
   id: number; name: string; phone: string; seats: number; direction: Direction;
+  callerPhone?: string | null; luggage?: boolean; dog?: boolean; seatPreference?: SeatPreference | null;
   goriAddress: string; pickupStopId: number | null; pickupStopName: string | null;
   didubeName: string; didubeAddress: string;
   requestedDate: string; requestedTime: string; assignedDate: string | null;
@@ -64,6 +66,7 @@ export type CallInquiry = {
   id: number; phone: string | null; occurredAt: string; durationSeconds: number;
   deviceName: string; createdAt: string; deletedAt: string | null; bookingId: number | null;
   phase: 'answered' | 'completed'; passengerProfile: PassengerProfile | null;
+  bookingPhone?: string | null;
 };
 export class ApiError extends Error {
   constructor(message: string, public status: number, public code?: string) { super(message); }

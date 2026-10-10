@@ -1,0 +1,58 @@
+/* Operator controls stay readable on screen; printed reports retain their compact layout. */
+@media screen {
+  .admin-shell :is(button, a, input, select, textarea):focus-visible {
+    outline: 3px solid #006d3a;
+    outline-offset: 3px;
+  }
+  .admin-shell :is(.admin-primary, .admin-secondary, .admin-confirm-button, .admin-restore-button, .admin-toolbar-primary, .admin-dialog-footer button, .admin-operator-group button, .admin-operator-restore-options button, .admin-trip-capacity-button, .admin-trip-capacity-toggle) {
+    min-height: 52px;
+    font-size: 16px;
+    font-weight: 600;
+    padding: 11px 15px;
+    line-height: 1.45;
+    white-space: normal;
+  }
+  .admin-shell :is(.admin-primary, .admin-confirm-button, .admin-restore-button, .admin-toolbar-primary, .admin-trip-capacity-button.primary) {
+    background: #087d43;
+    color: #fff;
+    border-color: #087d43;
+  }
+  .admin-shell :is(.admin-primary, .admin-confirm-button, .admin-restore-button, .admin-toolbar-primary, .admin-trip-capacity-button.primary):hover:not(:disabled) { background: #006b36; }
+  .admin-shell :is(.admin-secondary, .admin-trip-capacity-button, .admin-trip-capacity-toggle) { color: #155b34; border-color: #94bfa6; }
+  .admin-shell button:disabled { opacity: .72; }
+  .admin-shell :is(.admin-primary, .admin-confirm-button, .admin-restore-button, .admin-toolbar-primary):disabled { background: #dbe8e0; color: #3d5548; border-color: #a8beb1; opacity: 1; }
+  .admin-shell .admin-icon-button { min-width: 48px; min-height: 48px; width: 48px; height: 48px; border-color: #a9c5b5; color: #164e31; }
+  .admin-shell .admin-icon-button > svg { width: 22px; height: 22px; }
+  .admin-shell .admin-toolbar-refresh { flex: 0 0 48px; }
+  .admin-shell :is(.admin-row-time, .admin-time-chip) { min-height: 52px; height: auto; font-size: 16px; }
+  .admin-shell .admin-time-chip { min-width: 68px; flex-basis: 68px; border: 1px solid #b7cfbf; box-shadow: none; }
+  .admin-shell .admin-time-chip strong { font-size: 16px; }
+  .admin-shell .admin-time-chip.selected, .admin-shell .admin-date-chip.selected { background: #087d43; border-color: #087d43; color: #fff; }
+  .admin-shell :is(.admin-time-chip.selected > span, .admin-date-chip.selected span) { color: #e9fff1; }
+  .admin-shell .admin-date-picker { min-width: 48px; width: 48px; min-height: 52px; }
+  .admin-shell .admin-filters { height: auto; }
+  .admin-shell .admin-operator-booking-form :is(input, select, textarea) { min-height: 52px; font-size: 16px; }
+  .admin-shell .admin-operator-booking-form label { font-size: 14px; color: #3b5748; }
+  .admin-shell .admin-operator-group button[aria-pressed=true] { background: #087d43; border-color: #087d43; color: #fff; }
+  .admin-shell.admin-reference-view .admin-booking-table:not(.admin-calls-table) { min-width: 1380px; }
+  .admin-shell.admin-reference-view .admin-booking-table:not(.admin-calls-table) th:nth-child(3) { width: 15%; }
+  .admin-shell.admin-reference-view .admin-booking-table:not(.admin-calls-table) th:nth-child(5) { width: 17%; }
+  .admin-shell.admin-reference-view .admin-booking-table:not(.admin-calls-table) td { height: auto; min-height: 64px; padding-block: 10px; vertical-align: middle; }
+  .admin-shell.admin-reference-view .admin-booking-table:not(.admin-calls-table) :is(.admin-phone-cell, .admin-pickup-cell) { white-space: normal; overflow: visible; }
+  .admin-shell .admin-phone-cell a { font-size: 16px; font-weight: 600; white-space: nowrap; color: #174f32; }
+  .admin-shell .operator-booking-caller { display: block; margin-top: 5px; color: #3e5f4b; font-size: 13px; line-height: 1.5; white-space: normal; }
+  .admin-shell :is(.admin-page-buttons button, .admin-row-menu button, .admin-row-menu a, .admin-driver-roster button, .admin-config-button, .admin-config-icon-button, .admin-passenger-filters button, .admin-text-button) { min-height: 48px; font-size: 16px; }
+  .admin-shell .admin-settings :is(input, select, textarea) { min-height: 48px; font-size: 16px; }
+  .admin-shell .admin-driver-refresh { min-width: 48px; width: 48px; }
+  .admin-shell .admin-booking-table .operator-booking-options-summary { white-space: normal; margin-top: 7px; }
+  .admin-shell .admin-row-actions { flex-wrap: wrap; gap: 6px; }
+  .admin-shell .admin-row-time { min-width: 76px; color: #164e31; border: 1px solid #b7cfbf; }
+  @media (max-width: 600px) {
+    .admin-shell :is(.admin-primary, .admin-secondary, .admin-dialog-footer button, .admin-trip-capacity-button, .admin-trip-capacity-toggle) { padding-inline: 11px; }
+    .admin-shell .admin-operator-seats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .admin-shell .admin-header-actions { max-width: 100%; flex-wrap: wrap; }
+    .admin-shell .admin-trip-capacity-car-actions .admin-trip-capacity-button { flex-basis: calc(50% - 4px); min-width: 0; }
+    .admin-shell .admin-trip-capacity-editor-tabs { flex-wrap: wrap; }
+    .admin-shell .admin-trip-capacity-editor-buttons { width: 100%; }
+  }
+}

@@ -9,6 +9,7 @@ import { comparePassengerTrips, listPassengers, passengerBookings, passengerSumm
 import { readDriverSchedule } from './drivers.js';
 import { DRIVER_DIRECTION } from '../shared/driver-rotation.js';
 import { readTripCapacity } from './trip-capacity.js';
+import { callBookingRelated, readActiveCallBookings, readPreferredBookingPhones } from './call-bookings.js';
 
 const scrypt = promisify(scryptCallback);
 const DIRECTIONS: Direction[] = ['gori-tbilisi', 'tbilisi-gori'];
@@ -70,6 +71,16 @@ function seatCount(value: unknown, maximum = 4): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > maximum) reject(400, `ადგილების რაოდენობა უნდა იყოს 1-დან ${maximum}-მდე.`, 'VALIDATION');
   return value;
 }
+function bookingFlag(value: unknown, fallback: unknown = 0): boolean {
+  if (value === undefined) return Boolean(fallback);
+  if (typeof value !== 'boolean') reject(400, 'აირჩიეთ დამატებითი მომსახურება.', 'VALIDATION');
+  return value;
+}
+function seatPreference(value: unknown, fallback: unknown = null): 'front' | 'back' | 'middle' | null {
+  const selected = value === undefined ? fallback : value;
+  if (selected !== null && (typeof selected !== 'string' || !['front', 'back', 'middle'].includes(selected))) reject(400, 'აირჩიეთ სასურველი ადგილი.', 'VALIDATION');
+  return selected as 'front' | 'back' | 'middle' | null;
+}
 function login(value: unknown): string {
   const result = text(value, 'მომხმარებლის სახელი', 3, 64).toLowerCase();
   if (!/^[a-z0-9_.-]+$/.test(result)) reject(400, 'მომხმარებლის სახელში გამოიყენეთ ლათინური ასოები და ციფრები.', 'VALIDATION');
@@ -101,8 +112,8 @@ function stop(row: Row) { return { id: row.id, name: row.name, address: row.addr
 function callDevice(row: Row): CallDevice {
   return { id: row.id, name: row.name, active: Boolean(row.active), createdAt: row.created_at, lastSeenAt: row.last_seen_at };
 }
-function callInquiry(row: Row, passengerProfile: PassengerProfile | null = null): CallInquiry {
-  return { id: row.id, phone: row.phone === null ? null : normalizePhone(row.phone) ?? row.phone, occurredAt: row.occurred_at, durationSeconds: row.duration_seconds, phase: row.phase ?? 'completed', passengerProfile, deviceName: row.device_name, createdAt: row.created_at, deletedAt: row.deleted_at, bookingId: row.booking_id };
+function callInquiry(row: Row, passengerProfile: PassengerProfile | null = null, bookingPhone: string | null = null): CallInquiry {
+  return { id: row.id, phone: row.phone === null ? null : normalizePhone(row.phone) ?? row.phone, bookingPhone, occurredAt: row.occurred_at, durationSeconds: row.duration_seconds, phase: row.phase ?? 'completed', passengerProfile, deviceName: row.device_name, createdAt: row.created_at, deletedAt: row.deleted_at, bookingId: row.booking_id };
 }
 function occurredAt(value: unknown): string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value)) reject(400, 'მიუთითეთ ზარის სწორი დრო საათობრივი სარტყლით.', 'VALIDATION');
@@ -114,6 +125,8 @@ function occurredAt(value: unknown): string {
 function booking(row: Row): Booking {
   return {
     id: row.id, name: row.name, phone: normalizePhone(row.phone) ?? row.phone, seats: row.seats, direction: row.direction,
+    callerPhone: row.caller_phone === null || row.caller_phone === undefined ? null : normalizePhone(row.caller_phone) ?? row.caller_phone,
+    luggage: Boolean(row.luggage), dog: Boolean(row.dog), seatPreference: row.seat_preference ?? null,
     goriAddress: row.gori_address, pickupStopId: row.pickup_stop_id, pickupStopName: row.pickup_stop_name,
     didubeName: row.didube_name, didubeAddress: row.didube_address,
     requestedDate: row.requested_date, requestedTime: row.requested_time,
@@ -216,9 +229,12 @@ export async function createApp(options: Options = {}) {
     return new Date(`${day}T${slotTime}:00+04:00`).getTime() > now().getTime();
   }
   const tbilisiCalendar = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tbilisi', year: 'numeric', month: '2-digit', day: '2-digit' });
-  function staffDateWindow(day: string, calendarException = false) {
+  function todayInTbilisi(): string {
     const parts = tbilisiCalendar.formatToParts(now());
-    const today = ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)!.value).join('-');
+    return ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)!.value).join('-');
+  }
+  function staffDateWindow(day: string, calendarException = false) {
+    const today = todayInTbilisi();
     const lastDay = new Date(`${today}T12:00:00Z`);
     lastDay.setUTCDate(lastDay.getUTCDate() + 1);
     if (day < today || (!calendarException && day > lastDay.toISOString().slice(0, 10))) reject(400,
@@ -243,6 +259,12 @@ export async function createApp(options: Options = {}) {
     const name = text(body.name === undefined ? existing?.name ?? (employee ? '' : undefined) : body.name, 'სახელი', employee ? 0 : 2, 100);
     const number = phone(body.phone ?? existing?.phone);
     const seats = seatCount(body.seats ?? existing?.seats, employee ? 8 : 4);
+    // Public requests cannot create phone associations or operator-only notes.
+    const luggage = employee ? bookingFlag(body.luggage, existing?.luggage) : false;
+    const dog = employee ? bookingFlag(body.dog, existing?.dog) : false;
+    const preferredSeat = employee ? seatPreference(body.seatPreference, existing?.seat_preference) : null;
+    const caller = employee ? body.callerPhone === undefined ? existing?.caller_phone ?? null
+      : body.callerPhone === null || body.callerPhone === '' ? null : phone(body.callerPhone) : null;
     const address = text(body.goriAddress ?? existing?.gori_address, 'გორის მისამართი', 3, 500);
     let stopId: number | null = null;
     let stopName: string | null = null;
@@ -252,7 +274,8 @@ export async function createApp(options: Options = {}) {
       if (!selected || (!selected.active && stopId !== existing?.pickup_stop_id)) reject(400, 'აირჩიეთ მოქმედი გაჩერება თბილისში.', 'STOP_INACTIVE');
       stopName = existing && stopId === existing.pickup_stop_id ? existing.pickup_stop_name : selected.name;
     }
-    return { direction: d, name, phone: number, seats, goriAddress: address, pickupStopId: stopId, pickupStopName: stopName };
+    return { direction: d, name, phone: number, seats, goriAddress: address, pickupStopId: stopId, pickupStopName: stopName,
+      callerPhone: caller, luggage, dog, seatPreference: preferredSeat };
   }
   async function saveProfile(row: Row) {
     await savePassengerProfile(db, row);
@@ -268,8 +291,9 @@ export async function createApp(options: Options = {}) {
     (await activeSlot(input.direction, day, slotTime, true));
     const stamp = now().toISOString();
     const config = (await settings());
-    const result = (await db.prepare(`INSERT INTO bookings(name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,source,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(input.name, input.phone, input.seats, input.direction, input.goriAddress, input.pickupStopId, input.pickupStopName, config.didubeName, config.didubeAddress, day, slotTime, employee ? day : null, employee ? slotTime : null, employee ? 'confirmed' : 'waiting', source, stamp, stamp));
+    const result = (await db.prepare(`INSERT INTO bookings(name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,source,created_at,updated_at,caller_phone,luggage,dog,seat_preference)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(input.name, input.phone, input.seats, input.direction, input.goriAddress, input.pickupStopId, input.pickupStopName, config.didubeName, config.didubeAddress, day, slotTime, employee ? day : null, employee ? slotTime : null, employee ? 'confirmed' : 'waiting', source, stamp, stamp,
+      input.callerPhone, Number(input.luggage), Number(input.dog), input.seatPreference));
     const id = Number(result.lastInsertRowid);
     (await audit('create', employee, id, { source }));
     const created = await getBooking(id);
@@ -407,6 +431,10 @@ export async function createApp(options: Options = {}) {
           if (existing.occurred_at !== timestamp || (previousPhone !== null && previousPhone !== caller)) conflict();
           await db.prepare("UPDATE call_inquiries SET phone=?,duration_seconds=?,phase='completed',request_hash=? WHERE id=?")
             .run(caller, duration, hash, existing.id);
+          // Android can reveal a previously private number at completion. Preserve
+          // the already-entered contact while filling only the trusted missing caller.
+          if (caller !== null && existing.booking_id !== null) await db.prepare("UPDATE bookings SET caller_phone=? WHERE id=? AND source='android' AND caller_phone IS NULL")
+            .run(caller, existing.booking_id);
           await audit('call.complete', undefined, undefined, { callId: existing.id, deviceId: device.id });
         }
         return { id: existing.id as number, duplicate: true };
@@ -431,8 +459,19 @@ export async function createApp(options: Options = {}) {
     return row;
   }
   async function enrichedCalls(rows: Row[]): Promise<CallInquiry[]> {
-    const profiles = await readPassengerProfiles(db, rows.flatMap(row => row.phone === null ? [] : [row.phone]), now());
-    return rows.map(row => callInquiry(row, row.phone === null ? null : profiles.get(normalizePhone(row.phone) ?? row.phone) ?? null));
+    const contacts = await readPreferredBookingPhones(db, rows.flatMap(row => row.phone === null ? [] : [row.phone]));
+    const profiles = await readPassengerProfiles(db, [...contacts.values()], now());
+    return rows.map(row => {
+      const caller = row.phone === null ? null : normalizePhone(row.phone) ?? row.phone;
+      const contact = caller === null ? null : contacts.get(caller) ?? caller;
+      return callInquiry(row, contact === null ? null : profiles.get(contact) ?? null, contact);
+    });
+  }
+  async function callContact(inquiry: Row, explicitContact: unknown): Promise<{ caller: string | null; contact: string | null }> {
+    const caller = inquiry.phone === null ? null : normalizePhone(inquiry.phone) ?? inquiry.phone;
+    const contact = explicitContact === undefined ? caller === null ? null
+      : (await readPreferredBookingPhones(db, [caller])).get(caller) ?? caller : phone(explicitContact);
+    return { caller, contact };
   }
   app.get('/api/admin/devices', async (_req, res) => {
     res.json({ devices: ((await db.prepare('SELECT id,name,active,created_at,last_seen_at FROM call_devices ORDER BY id DESC').all()) as Row[]).map(callDevice) });
@@ -470,18 +509,41 @@ export async function createApp(options: Options = {}) {
     if (req.query.search) {
       const search = text(req.query.search, 'ძიება', 1, 100).toLocaleLowerCase('ka-GE');
       const phoneSearch = normalizePhone(search) ?? search.replace(/\D/g, '');
-      calls = calls.filter(call => Boolean(phoneSearch && call.phone?.includes(phoneSearch))
+      calls = calls.filter(call => Boolean(phoneSearch && (call.phone?.includes(phoneSearch) || call.bookingPhone?.includes(phoneSearch)))
         || call.deviceName.toLocaleLowerCase('ka-GE').includes(search)
         || Boolean(call.passengerProfile?.name.toLocaleLowerCase('ka-GE').includes(search)));
     }
     res.json({ calls });
+  });
+  app.get('/api/admin/calls/:id/bookings', async (req, res) => {
+    const rows = await transaction(async () => {
+      const inquiry = await getCall(numberId(req.params.id));
+      const { caller, contact } = await callContact(inquiry, req.query.phone);
+      return readActiveCallBookings(db, caller, contact, todayInTbilisi());
+    });
+    res.json({ bookings: rows.map(booking) });
+  });
+  app.post('/api/admin/calls/:callId/bookings/:bookingId/delete', async (req: ContextRequest, res) => {
+    const result = await transaction(async () => {
+      const inquiry = await getCall(numberId(req.params.callId));
+      const { caller, contact } = await callContact(inquiry, req.body.phone);
+      const row = await getBooking(numberId(req.params.bookingId));
+      if (!callBookingRelated(row, caller, contact)) reject(404, 'ჯავშანი ვერ მოიძებნა.', 'NOT_FOUND');
+      if (row.deleted_at) return booking(row);
+      if ((row.assigned_date ?? row.requested_date) < todayInTbilisi()) reject(409, 'ეს ჯავშანი აღარ არის აქტიური.', 'BOOKING_INACTIVE');
+      const stamp = now().toISOString();
+      await db.prepare('UPDATE bookings SET deleted_at=?,updated_at=? WHERE id=?').run(stamp, stamp, row.id);
+      await audit('delete', req.employee, row.id, { callId: inquiry.id, source: 'incoming-call' });
+      return booking(await getBooking(row.id));
+    });
+    res.json(result);
   });
   app.post('/api/admin/calls/:id/convert', async (req: ContextRequest, res) => {
     const result = await transaction(async () => {
       const inquiry = (await getCall(numberId(req.params.id)));
       if (inquiry.booking_id) return booking((await getBooking(inquiry.booking_id)));
       if (inquiry.deleted_at) reject(409, 'ზარი წაშლილია. ჯერ აღადგინეთ.', 'DELETED');
-      const created = (await createBooking(req.body, req.employee, 'android'));
+      const created = (await createBooking({ ...req.body, callerPhone: inquiry.phone }, req.employee, 'android'));
       (await db.prepare('UPDATE call_inquiries SET booking_id=? WHERE id=?').run(created.id, inquiry.id));
       (await audit('call.convert', req.employee, created.id, { callId: inquiry.id }));
       return created;
@@ -523,7 +585,7 @@ export async function createApp(options: Options = {}) {
     if (req.query.search) {
       const search = text(req.query.search, 'ძიება', 1, 100).replace(/[\\%_]/g, character => `\\${character}`);
       const digits = normalizePhone(search) ?? search.replace(/[^\d]/g, '');
-      conditions.push("(name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\')"); values.push(`%${search}%`, `%${digits || search}%`);
+      conditions.push("(name LIKE ? ESCAPE '\\' OR phone LIKE ? ESCAPE '\\' OR caller_phone LIKE ? ESCAPE '\\')"); values.push(`%${search}%`, `%${digits || search}%`, `%${digits || search}%`);
     }
     const rows = (await db.prepare(`SELECT * FROM bookings WHERE ${conditions.join(' AND ')} ORDER BY COALESCE(assigned_date,requested_date),COALESCE(assigned_time,requested_time),id DESC`).all(...values)) as Row[];
     res.json({ bookings: rows.map(booking) });
@@ -536,7 +598,10 @@ export async function createApp(options: Options = {}) {
       const row = (await activeBooking(numberId(req.params.id)));
       if (req.body.direction !== undefined && req.body.direction !== row.direction) reject(400, 'მიმართულების შეცვლა დაუშვებელია.', 'VALIDATION');
       const input = (await inputBooking(req.body, row, true));
-      (await db.prepare('UPDATE bookings SET name=?,phone=?,seats=?,gori_address=?,pickup_stop_id=?,pickup_stop_name=?,updated_at=? WHERE id=?').run(input.name, input.phone, input.seats, input.goriAddress, input.pickupStopId, input.pickupStopName, now().toISOString(), row.id));
+      const originalCaller = row.caller_phone === null ? null : normalizePhone(row.caller_phone) ?? row.caller_phone;
+      if (row.source === 'android' && input.callerPhone !== originalCaller && input.callerPhone !== row.caller_phone) reject(400, 'შემომავალი ზარის ნომრის შეცვლა დაუშვებელია.', 'CALLER_IMMUTABLE');
+      (await db.prepare('UPDATE bookings SET name=?,phone=?,seats=?,gori_address=?,pickup_stop_id=?,pickup_stop_name=?,updated_at=?,caller_phone=?,luggage=?,dog=?,seat_preference=? WHERE id=?').run(input.name, input.phone, input.seats, input.goriAddress, input.pickupStopId, input.pickupStopName, now().toISOString(), input.callerPhone,
+        Number(input.luggage), Number(input.dog), input.seatPreference, row.id));
       (await audit('edit', req.employee, row.id, { fields: Object.keys(req.body) }));
       const edited = await getBooking(row.id);
       await saveProfile(edited);

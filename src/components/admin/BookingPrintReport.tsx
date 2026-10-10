@@ -1,5 +1,6 @@
 import { directions, type Booking, type Direction, type Stop } from '../../api';
 import { formatPhone } from '../../../shared/phone';
+import { BookingOptionsSummary } from './BookingOptions';
 import './booking-print-report.css';
 
 type BookingPrintReportProps = {
@@ -19,7 +20,7 @@ function PickupAddress({ booking, stops }: { booking: Booking; stops: Stop[] }) 
   const stopAddress = booking.direction === 'tbilisi-gori' ? stops.find(stop => stop.id === booking.pickupStopId)?.address : null;
   const address = booking.direction === 'gori-tbilisi' ? booking.goriAddress
     : [booking.pickupStopName || 'პუნქტი არ არის მითითებული', stopAddress].filter(Boolean).join(' · ');
-  return <div className="booking-print-address">{address}</div>;
+  return <div className="booking-print-address">{address}<BookingOptionsSummary luggage={booking.luggage} dog={booking.dog} seatPreference={booking.seatPreference} /></div>;
 }
 
 export default function BookingPrintReport({ bookings, date, direction, time, stops = [] }: BookingPrintReportProps) {
@@ -50,7 +51,7 @@ export default function BookingPrintReport({ bookings, date, direction, time, st
           <td className="booking-print-number">{index + 1}</td>
           <td className="booking-print-time">{booking.assignedTime ?? booking.requestedTime}</td>
           <td className="booking-print-passenger">{booking.name}</td>
-          <td className="booking-print-phone">{formatPhone(booking.phone)}</td>
+          <td className="booking-print-phone">{formatPhone(booking.phone)}{booking.callerPhone && formatPhone(booking.callerPhone) !== formatPhone(booking.phone) && <small className="operator-booking-caller">ზარის ნომერი: {formatPhone(booking.callerPhone)}</small>}</td>
           <td className="booking-print-direction">{directions[booking.direction]}</td>
           <td className="booking-print-seats">{booking.seats}</td>
           <td><PickupAddress booking={booking} stops={stops} /></td>

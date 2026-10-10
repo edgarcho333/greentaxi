@@ -1631,6 +1631,178 @@ test('production initialization rejects a missing DATABASE_URL instead of creati
   await assert.rejects(createApp({ production: true, databaseUrl: '', dbPath: ':memory:' }), /DATABASE_URL/);
 });
 
+test('staff booking contacts and service notes persist, validate strictly and leave public requests unable to create associations', async () => {
+  const fresh = await fixture();
+  try {
+    const created = await successful(fresh, '/admin/bookings', 'POST', input({ phone: '+995599111222', callerPhone: '568 69 48 79', luggage: true, dog: true, seatPreference: 'front', seats: 3 }));
+    assert.equal(created.phone, '599111222');
+    assert.equal(created.callerPhone, '568694879');
+    assert.equal(created.luggage, true);
+    assert.equal(created.dog, true);
+    assert.equal(created.seatPreference, 'front');
+    assert.equal(created.seats, 3);
+    const changed = await successful(fresh, `/admin/bookings/${created.id}`, 'PATCH', { callerPhone: null, luggage: false, dog: false, seatPreference: 'middle' });
+    assert.equal(changed.callerPhone, null);
+    assert.equal(changed.seatPreference, 'middle');
+    assert.equal(changed.seats, 3);
+    assert.equal(changed.luggage, false);
+    for (const fields of [{ luggage: 1 }, { dog: 'true' }, { seatPreference: 'window' }, { seatPreference: ['front'] }, { callerPhone: 'invalid' }]) {
+      assert.equal((await fresh.request(`/admin/bookings/${created.id}`, 'PATCH', fields)).status, 400);
+    }
+    const publicOrder = await fresh.request('/bookings', 'POST', input({ phone: '599111223', callerPhone: '568694879', luggage: true, dog: true, seatPreference: 'front' }), {}, false);
+    assert.equal(publicOrder.status, 201);
+    const stored = await fresh.db.prepare('SELECT phone,caller_phone,luggage,dog,seat_preference,seats FROM bookings WHERE id=?').get(publicOrder.data.id);
+    assert.deepEqual({ ...stored }, { phone: '599111223', caller_phone: null, luggage: 0, dog: 0, seat_preference: null, seats: 2 });
+    const defaults = (await successful(fresh, '/admin/bookings')).bookings.find((order: any) => order.id === publicOrder.data.id);
+    assert.equal(defaults.callerPhone, null);
+    assert.equal(defaults.luggage, false);
+    assert.equal(defaults.dog, false);
+    assert.equal(defaults.seatPreference, null);
+    assert.equal((await successful(fresh, '/admin/bookings?search=568694879')).bookings.length, 0);
+    await successful(fresh, `/admin/bookings/${created.id}`, 'PATCH', { callerPhone: '568694879' });
+    assert.equal((await successful(fresh, '/admin/bookings?search=568694879')).bookings[0].id, created.id);
+  } finally { await fresh.close(); }
+});
+
+test('Android conversion preserves its actual caller, and a trusted completion can fill a caller revealed after conversion', async () => {
+  const fresh = await fixture();
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'Caller identity test' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const payload = callEvent({ eventId: 'distinct-contact', phone: '+995568694879', phase: 'answered', durationSeconds: 0 });
+    const call = await fresh.request('/integrations/android/calls', 'POST', payload, bearer, false);
+    const converted = await successful(fresh, `/admin/calls/${call.data.id}/convert`, 'POST', input({ phone: '599111222', callerPhone: '599000000', luggage: true, dog: true, seatPreference: 'back' }));
+    assert.equal(converted.phone, '599111222');
+    assert.equal(converted.callerPhone, '568694879');
+    assert.equal(converted.luggage, true);
+    assert.equal(converted.dog, true);
+    assert.equal(converted.seatPreference, 'back');
+    assert.equal((await fresh.request(`/admin/bookings/${converted.id}`, 'PATCH', { callerPhone: '599000000' })).data.code, 'CALLER_IMMUTABLE');
+    const equivalent = await successful(fresh, `/admin/bookings/${converted.id}`, 'PATCH', { callerPhone: '+995568694879', phone: '599111223' });
+    assert.equal(equivalent.callerPhone, '568694879');
+    assert.equal((await fresh.db.prepare('SELECT phone FROM call_inquiries WHERE id=?').get(call.data.id))?.phone, '568694879');
+    const hiddenPayload = callEvent({ eventId: 'revealed-after-convert', phone: null, phase: 'answered', durationSeconds: 0 });
+    const hidden = await fresh.request('/integrations/android/calls', 'POST', hiddenPayload, bearer, false);
+    const hiddenBooking = await successful(fresh, `/admin/calls/${hidden.data.id}/convert`, 'POST', input({ phone: '599111224', callerPhone: '599000000' }));
+    assert.equal(hiddenBooking.callerPhone, null);
+    const before = await fresh.db.prepare('SELECT * FROM bookings WHERE id=?').get(hiddenBooking.id);
+    const complete = await fresh.request('/integrations/android/calls', 'POST', { ...hiddenPayload, phone: '568694880', phase: 'completed', durationSeconds: 33 }, bearer, false);
+    assert.equal(complete.status, 200);
+    const after = await fresh.db.prepare('SELECT * FROM bookings WHERE id=?').get(hiddenBooking.id);
+    assert.equal(after?.caller_phone, '568694880');
+    assert.deepEqual({ ...after, caller_phone: null }, { ...before });
+    const next = await fresh.request('/integrations/android/calls', 'POST', callEvent({ eventId: 'next-revealed', phone: '568694880', phase: 'answered', durationSeconds: 0 }), bearer, false);
+    const enriched = (await successful(fresh, '/admin/calls')).calls.find((inquiry: any) => inquiry.id === next.data.id);
+    assert.equal(enriched.bookingPhone, '599111224');
+    assert.equal(enriched.passengerProfile.phone, '599111224');
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM passenger_profiles WHERE phone=?').get('568694880'))?.count, 0);
+  } finally { await fresh.close(); }
+});
+
+test('incoming callers prefer the last created trusted contact and active orders remain exact one-hop associations', async () => {
+  let clock = new Date('2030-01-01T00:00:00Z');
+  const fresh = await fixture({ now: () => clock });
+  try {
+    const caller = '568694879', oldContact = '599111222', newContact = '599111223', unrelated = '599111224';
+    const oldPair = await successful(fresh, '/admin/bookings', 'POST', input({ phone: oldContact, callerPhone: caller, goriAddress: 'Old contact address' }));
+    const oldContactOnly = await successful(fresh, '/admin/bookings', 'POST', input({ phone: oldContact }));
+    clock = new Date('2030-01-01T01:00:00Z');
+    const newPair = await successful(fresh, '/admin/bookings', 'POST', input({ phone: newContact, callerPhone: '+995' + caller, goriAddress: 'New contact address' }));
+    const newContactOnly = await successful(fresh, '/admin/bookings', 'POST', input({ phone: newContact }));
+    const transitive = await successful(fresh, '/admin/bookings', 'POST', input({ phone: unrelated, callerPhone: newContact }));
+    const callerOnly = await successful(fresh, '/admin/bookings', 'POST', input({ phone: caller }));
+    const waiting = await fresh.request('/bookings', 'POST', input({ phone: newContact }), {}, false);
+    clock = new Date('2030-01-01T02:00:00Z');
+    await successful(fresh, `/admin/bookings/${oldPair.id}`, 'PATCH', { dog: true });
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'Household association test' });
+    const received = await fresh.request('/integrations/android/calls', 'POST', callEvent({ eventId: 'household', phone: caller, phase: 'answered', durationSeconds: 0 }), { Authorization: `Bearer ${paired.token}` }, false);
+    const inquiry = (await successful(fresh, '/admin/calls')).calls[0];
+    assert.equal(inquiry.bookingPhone, newContact);
+    assert.equal(inquiry.passengerProfile.phone, newContact);
+    assert.equal((await successful(fresh, '/admin/passengers/profile?phone=' + caller)).profile.phone, caller);
+    const active = await successful(fresh, `/admin/calls/${received.data.id}/bookings`);
+    assert.deepEqual(active.bookings.map((order: any) => order.id).sort((a: number, b: number) => a - b),
+      [oldPair.id, newPair.id, newContactOnly.id, callerOnly.id, waiting.data.id].sort((a, b) => a - b));
+    assert.equal(active.bookings.some((order: any) => order.id === oldContactOnly.id || order.id === transitive.id), false);
+    const explicit = await successful(fresh, `/admin/calls/${received.data.id}/bookings?phone=${oldContact}`);
+    assert.ok(explicit.bookings.some((order: any) => order.id === oldContactOnly.id));
+    assert.equal(explicit.bookings.some((order: any) => order.id === newContactOnly.id), false);
+    await successful(fresh, `/admin/bookings/${newPair.id}/delete`, 'POST', {});
+    assert.equal((await successful(fresh, '/admin/calls')).calls[0].bookingPhone, newContact);
+    assert.equal((await fresh.request(`/admin/calls/${received.data.id}/bookings?phone=123`)).status, 400);
+    assert.equal((await fresh.request(`/admin/calls/${received.data.id}/bookings`, 'GET', undefined, {}, false)).status, 401);
+    assert.equal((await fresh.request(`/admin/calls/${received.data.id}/bookings/${transitive.id}/delete`, 'POST', {})).status, 404);
+    assert.equal((await fresh.db.prepare('SELECT deleted_at FROM bookings WHERE id=?').get(transitive.id))?.deleted_at, null);
+    // A booking may change after it was displayed: cancellation must verify its
+    // current association inside the write transaction, rather than trust the card.
+    await successful(fresh, `/admin/bookings/${newContactOnly.id}`, 'PATCH', { phone: unrelated });
+    assert.equal((await fresh.request(`/admin/calls/${received.data.id}/bookings/${newContactOnly.id}/delete`, 'POST', {})).status, 404);
+    assert.equal((await fresh.db.prepare('SELECT deleted_at FROM bookings WHERE id=?').get(newContactOnly.id))?.deleted_at, null);
+  } finally { await fresh.close(); }
+});
+
+test('quick cancellation uses the Tbilisi day, includes earlier hours and waiting orders, and frees seats without consuming the incoming call', async () => {
+  let clock = new Date('2030-01-01T21:30:00Z');
+  const fresh = await fixture({ now: () => clock });
+  let second: Awaited<ReturnType<typeof createApp>> | undefined;
+  let secondServer: Server | undefined;
+  try {
+    const caller = '568694881';
+    const current = await successful(fresh, '/admin/bookings', 'POST', input({ phone: caller, requestedTime: '06:00', seats: 3 }));
+    const past = await successful(fresh, '/admin/bookings', 'POST', input({ phone: caller }));
+    await fresh.db.prepare('UPDATE bookings SET assigned_date=?,requested_date=? WHERE id=?').run('2030-01-01', '2030-01-01', past.id);
+    const waiting = await fresh.request('/bookings', 'POST', input({ phone: caller, requestedTime: '07:00' }), {}, false);
+    const stop = (await successful(fresh, '/public/config')).stops[0];
+    const reverse = await successful(fresh, '/admin/bookings', 'POST', input({ phone: caller, direction: 'tbilisi-gori', pickupStopId: stop.id, requestedDate: '2030-01-03' }));
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'Cancellation date test' });
+    const received = await fresh.request('/integrations/android/calls', 'POST', callEvent({ phone: caller, eventId: 'quick-cancel', phase: 'answered', durationSeconds: 0 }), { Authorization: `Bearer ${paired.token}` }, false);
+    const endpoint = `/admin/calls/${received.data.id}/bookings`;
+    const initial = await successful(fresh, endpoint);
+    // The local day is January 2 while the UTC host is still January 1.
+    assert.deepEqual(initial.bookings.map((row: any) => row.id), [current.id, waiting.data.id, reverse.id]);
+    clock = new Date('2030-01-02T04:00:00Z');
+    assert.ok((await successful(fresh, endpoint)).bookings.some((row: any) => row.id === current.id));
+    assert.equal((await fresh.request(`${endpoint}/${past.id}/delete`, 'POST', {})).data.code, 'BOOKING_INACTIVE');
+    assert.equal((await fresh.request(`${endpoint}/${current.id}/delete`, 'POST', {}, {}, false)).status, 401);
+    let alternateBase = fresh.base;
+    if (fresh.databaseUrl) {
+      second = await createApp({ databaseUrl: fresh.databaseUrl, now: () => clock });
+      secondServer = await new Promise<Server>(resolve => {
+        const listener = second!.app.listen(0, '127.0.0.1', () => resolve(listener));
+      });
+      const address = secondServer.address();
+      assert.ok(address && typeof address !== 'string');
+      alternateBase = `http://127.0.0.1:${address.port}`;
+    }
+    const signedIn = await fresh.request('/auth/login', 'POST', { login: 'operator', password: PASSWORD });
+    const cookie = signedIn.headers.get('set-cookie')!.split(';')[0];
+    const results = await Promise.all(Array.from({ length: 6 }, async (_, index) => {
+      const response = await fetch(`${index % 2 ? alternateBase : fresh.base}/api${endpoint}/${current.id}/delete`, {
+        method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: '{}',
+      });
+      return { status: response.status, data: await response.json() as any };
+    }));
+    assert.ok(results.every(response => response.status === 200 && response.data.deletedAt));
+    assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE booking_id=? AND action='delete'").get(current.id))?.count, 1);
+    const audit = await fresh.db.prepare("SELECT details FROM audit_log WHERE booking_id=? AND action='delete'").get(current.id);
+    assert.equal(JSON.parse(audit!.details).callId, received.data.id);
+    const capacity = await successful(fresh, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=06:00`);
+    assert.equal(capacity.bookedSeats, 0);
+    const inquiry = await fresh.db.prepare('SELECT booking_id,deleted_at FROM call_inquiries WHERE id=?').get(received.data.id);
+    assert.deepEqual({ ...inquiry }, { booking_id: null, deleted_at: null });
+    assert.equal((await successful(fresh, endpoint)).bookings.some((row: any) => row.id === current.id), false);
+    assert.equal((await successful(fresh, '/admin/bookings?scope=deleted')).bookings.some((row: any) => row.id === current.id), true);
+    await successful(fresh, `/admin/bookings/${current.id}/restore`, 'POST', {});
+    assert.equal((await successful(fresh, endpoint)).bookings.some((row: any) => row.id === current.id), true);
+    await successful(fresh, `${endpoint}/${waiting.data.id}/delete`, 'POST', {});
+    assert.equal((await successful(fresh, endpoint)).bookings.some((row: any) => row.id === waiting.data.id), false);
+  } finally {
+    if (secondServer) await new Promise<void>((resolve, reject) => secondServer!.close(error => error ? reject(error) : resolve()));
+    if (second) await second.close();
+    await fresh.close();
+  }
+});
+
 test('login throttling shares an atomic window across application instances, survives restart, and expires without deleting users', async () => {
   let clock = new Date('2030-01-01T00:00:00Z');
   const fresh = await fixture({ now: () => clock });

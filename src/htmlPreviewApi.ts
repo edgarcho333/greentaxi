@@ -3,6 +3,7 @@ import { canonicalPassengerPhone } from './components/admin/usePassengerProfile'
 import { passengerDepartureTimes } from '../shared/passenger-departure-times';
 import { buildDriverSchedule } from '../shared/driver-rotation';
 import { calculateTripCapacity } from '../shared/trip-capacity';
+import { bookingMatchesCall, isActiveCallBooking } from '../shared/call-bookings';
 
 export const previewUser: User = { id: 1, login: 'preview', name: 'სატესტო ოპერატორი' };
 export const previewOnlyMessage = 'ამ HTML ფაილში მხოლოდ დიზაინის ნახვაა შესაძლებელი. რეალური მოქმედებებისთვის გაუშვით აპლიკაციის სერვერი.';
@@ -32,6 +33,7 @@ function sampleBookings(day: string): Booking[] {
     const stop = config.stops[index % config.stops.length];
     return {
       id: index + 1, name: `სატესტო ${names[index % names.length]}`, phone: `0000000${String(index + 1).padStart(2, '0')}`,
+      callerPhone: index === 0 ? '000000099' : null, luggage: index % 3 === 0, dog: index === 0, seatPreference: index === 0 ? 'front' : null,
       seats: sample.seats, direction: sample.direction, goriAddress: `სატესტო ქ. №${index + 1}`,
       pickupStopId: sample.direction === 'tbilisi-gori' ? stop.id : null,
       pickupStopName: sample.direction === 'tbilisi-gori' ? stop.name : null,
@@ -150,7 +152,7 @@ export function installPreviewApi(): void {
   const day = today();
   const bookings = sampleBookings(day);
   const caller = bookings.find(booking => booking.direction === 'gori-tbilisi' && booking.status === 'confirmed')!;
-  const sampleCall: CallInquiry = { id: 1, phone: caller.phone, occurredAt: `${day}T08:00:00+04:00`, durationSeconds: 0, phase: 'answered', passengerProfile: passengerProfile(bookings, caller.phone), deviceName: 'სატესტო Redmi — რეალური ზარი არ არის', createdAt: `${day}T08:00:00+04:00`, deletedAt: null, bookingId: null };
+  const sampleCall: CallInquiry = { id: 1, phone: caller.callerPhone || caller.phone, bookingPhone: caller.phone, occurredAt: `${day}T08:00:00+04:00`, durationSeconds: 0, phase: 'answered', passengerProfile: passengerProfile(bookings, caller.phone), deviceName: 'სატესტო Redmi — რეალური ზარი არ არის', createdAt: `${day}T08:00:00+04:00`, deletedAt: null, bookingId: null };
   const reply = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
   window.fetch = async (input, init) => {
     const isRequest = input instanceof Request;
@@ -181,7 +183,7 @@ export function installPreviewApi(): void {
         const cars = plan.drivers.filter(driver => !driver.declined && driver.assignedTime === time).map(driver => ({ key: `roster:${driver.id}`, driverId: driver.id, kind: 'roster' as const, name: driver.name, capacity: driver.capacity, active: active && driver.assignmentActive }));
         return reply({ direction: 'gori-tbilisi', date: saved.date, time, active, bookingCount: rows.length, ...calculateTripCapacity(cars, rows.reduce((total, row) => total + row.seats, 0)), revision: '0'.repeat(64), availableDrivers: plan.drivers });
       }
-      case '/api/admin/calls': return reply({ calls: (params.get('scope') ?? 'incoming') === 'incoming' && matchesSearch(sampleCall.passengerProfile?.name || '', sampleCall.phone || '', params.get('search') ?? '') ? [sampleCall] : [] });
+      case '/api/admin/calls': return reply({ calls: (params.get('scope') ?? 'incoming') === 'incoming' && (matchesSearch(sampleCall.passengerProfile?.name || '', sampleCall.phone || '', params.get('search') ?? '') || matchesSearch('', sampleCall.bookingPhone || '', params.get('search') ?? '')) ? [sampleCall] : [] });
       case '/api/admin/devices': return reply({ devices: [] });
       case '/api/admin/settings': return reply({ didubeName: config.didubeName, didubeAddress: config.didubeAddress });
       case '/api/admin/stops': return reply({ stops: config.stops });
@@ -190,6 +192,8 @@ export function installPreviewApi(): void {
       case '/api/admin/passengers': return reply({ passengers: passengers(bookings, params.get('search') ?? '') });
       case '/api/admin/analytics': return reply(analytics(bookings, params));
       default: {
+        const callBookings = url.pathname.match(/^\/api\/admin\/calls\/(\d+)\/bookings$/);
+        if (callBookings) return Number(callBookings[1]) === sampleCall.id ? reply({ bookings: bookings.filter(row => isActiveCallBooking(row, today()) && bookingMatchesCall(row, sampleCall.phone, params.get('phone') || sampleCall.bookingPhone || null)) }) : reply({ error: 'ზარი ვერ მოიძებნა.', code: 'NOT_FOUND' }, 404);
         const detail = url.pathname.match(/^\/api\/admin\/passengers\/([^/]+)$/);
         if (detail) {
           const phone = canonicalPassengerPhone(decodeURIComponent(detail[1]));

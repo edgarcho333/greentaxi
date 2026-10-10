@@ -1,0 +1,34 @@
+.operator-booking-options { display: grid; gap: 14px; margin: 12px 0 16px; min-width: 0; }
+.operator-booking-options-group { margin: 0; padding: 0; border: 0; min-width: 0; }
+.operator-booking-options-group legend { margin: 0 0 7px; padding: 0; color: #294d39; font-size: 14px; font-weight: 600; }
+.operator-booking-options-services, .operator-booking-options-preferences { display: grid; gap: 8px; }
+.operator-booking-options-services { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.operator-booking-options-preferences { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.operator-booking-options-group button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-width: 0; min-height: 50px; padding: 10px 8px; border: 2px solid #8cc9a4; border-radius: 8px; background: #f1fff5; color: #174f32; font-size: 16px; font-weight: 600; line-height: 1.4; cursor: pointer; }
+.operator-booking-options-group button:hover:not(:disabled) { border-color: #007d3f; background: #dff9e9; }
+.operator-booking-options-group button[aria-pressed=true] { border-color: #006e36; background: #007f40; color: #fff; box-shadow: 0 2px 5px #007d3f22; }
+.operator-booking-options-group button[aria-pressed=true]:hover:not(:disabled) { border-color: #005e2e; background: #006e36; color: #fff; }
+.operator-booking-options-group button:focus-visible { outline: 3px solid #d6a900; outline-offset: 2px; }
+.operator-booking-options-group button:disabled { opacity: .55; cursor: default; }
+.operator-booking-options-group button svg { flex-shrink: 0; }
+.operator-booking-options-summary { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; font-size: 12px; font-weight: 600; line-height: 1.5; color: #145a36; }
+.operator-booking-options-summary > span { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #b9dfc6; border-radius: 5px; background: #edf9f1; padding: 3px 6px; }
+.operator-booking-options-summary svg { flex-shrink: 0; }
+.admin-operator-booking-form .operator-booking-phone-fields { display: grid; gap: 10px; margin-bottom: 12px; }
+.admin-operator-booking-form .operator-booking-phone-fields > label { display: flex; flex-direction: column; gap: 5px; color: #294d39; font-size: 14px; font-weight: 600; }
+.admin-operator-booking-form .operator-booking-phone-fields > label > small { color: #617d6b; font-size: 12px; font-weight: 400; }
+.operator-booking-caller { display: block; margin-top: 5px; font-size: 12px; line-height: 1.5; color: #617d6b; font-weight: 400; }
+.operator-booking-caller a { color: #2e6746; white-space: nowrap; }
+.passenger-trip-contact { display: block; margin-top: 5px; color: #39654c; font-size: 12px; line-height: 1.6; }
+.booking-print-report .operator-booking-options-summary { gap: 3px; margin-top: 4px; font-size: 8px; line-height: 1.3; }
+.booking-print-report .operator-booking-options-summary > span { padding: 1px 3px; border-color: #b9cec0; background: transparent; color: #163d26; }
+.booking-print-report .operator-booking-options-summary svg { display: none; }
+.booking-print-report .operator-booking-caller { margin-top: 3px; font-size: 7px; white-space: normal; color: #234c32; }
+@media (max-width: 760px) {
+  .operator-booking-options { gap: 12px; margin-bottom: 14px; }
+  .operator-booking-options-services, .operator-booking-options-preferences { gap: 6px; }
+  .operator-booking-options-group button { min-height: 50px; padding-inline: 5px; }
+}
+@media print {
+  .booking-print-report .operator-booking-options-summary > span { background: transparent; box-shadow: none; }
+}
