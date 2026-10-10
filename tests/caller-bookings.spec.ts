@@ -1,9 +1,10 @@
 import { test as base, expect, type APIRequestContext, type Locator, type Page, type Response } from '@playwright/test';
-import { existsSync } from 'node:fs';
+import { chmodSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Booking, CallInquiry, PassengerDetail, TripCapacity } from '../src/api';
 import { createDatabase } from '../server/database';
+import { operatorSessionPath } from './helpers/operator-session';
 
 // This suite uses the existing employee and the disposable Playwright database.
 // Soft-delete every created inquiry/order so other suites retain their own fixtures.
@@ -22,12 +23,15 @@ let sequence = 0;
 const inquiryIds: number[] = [];
 const bookingIds: number[] = [];
 
-test.beforeAll(async ({ playwright, baseURL }) => {
+test.beforeAll(async ({ playwright, baseURL }, testInfo) => {
   adminApi = await playwright.request.newContext({ baseURL });
   const session = await adminApi.get('/api/auth/session');
   expect(session.ok()).toBeTruthy();
   const { needsSetup } = await session.json() as { needsSetup: boolean };
   expect((await adminApi.post(needsSetup ? '/api/auth/setup' : '/api/auth/login', { data: EMPLOYEE })).ok()).toBeTruthy();
+  const sessionPath = operatorSessionPath(testInfo.config.metadata.fixtureDatabasePath);
+  writeFileSync(sessionPath, JSON.stringify(await adminApi.storageState()), { mode: 0o600 });
+  chmodSync(sessionPath, 0o600);
   const response = await adminApi.post('/api/admin/devices', { data: { name: 'Caller/contact disposable Redmi fixture' } });
   expect(response.status()).toBe(201);
   const { token } = await response.json() as { token: string };

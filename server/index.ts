@@ -150,6 +150,9 @@ export async function createApp(options: Options = {}) {
     next();
   });
   app.use('/api', async (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  // Several independent passengers can include long Georgian addresses in one
+  // request. Keep the larger bounded body allowance on this staff-only route.
+  app.post('/api/admin/calls/:id/convert-group', express.json({ limit: '256kb' }));
   app.use(express.json({ limit: '16kb' }));
   app.use('/api', async (req, _res, next) => {
     if (req.body === undefined) req.body = {};
@@ -433,8 +436,10 @@ export async function createApp(options: Options = {}) {
             .run(caller, duration, hash, existing.id);
           // Android can reveal a previously private number at completion. Preserve
           // the already-entered contact while filling only the trusted missing caller.
-          if (caller !== null && existing.booking_id !== null) await db.prepare("UPDATE bookings SET caller_phone=? WHERE id=? AND source='android' AND caller_phone IS NULL")
-            .run(caller, existing.booking_id);
+          if (caller !== null && existing.booking_id !== null) await db.prepare(`UPDATE bookings SET caller_phone=?
+            WHERE (id IN (SELECT booking_id FROM call_booking_links WHERE call_id=?) OR id=?)
+              AND source='android' AND caller_phone IS NULL`)
+            .run(caller, existing.id, existing.booking_id);
           await audit('call.complete', undefined, undefined, { callId: existing.id, deviceId: device.id });
         }
         return { id: existing.id as number, duplicate: true };
@@ -544,11 +549,38 @@ export async function createApp(options: Options = {}) {
       if (inquiry.booking_id) return booking((await getBooking(inquiry.booking_id)));
       if (inquiry.deleted_at) reject(409, 'ზარი წაშლილია. ჯერ აღადგინეთ.', 'DELETED');
       const created = (await createBooking({ ...req.body, callerPhone: inquiry.phone }, req.employee, 'android'));
+      await db.prepare('INSERT INTO call_booking_links(call_id,booking_id) VALUES (?,?)').run(inquiry.id, created.id);
       (await db.prepare('UPDATE call_inquiries SET booking_id=? WHERE id=?').run(created.id, inquiry.id));
       (await audit('call.convert', req.employee, created.id, { callId: inquiry.id }));
       return created;
     });
     res.json(result);
+  });
+  app.post('/api/admin/calls/:id/convert-group', async (req: ContextRequest, res) => {
+    const callId = numberId(req.params.id);
+    // A lost group response must be safe to retry without creating any sibling twice.
+    // The call ID scopes the key across operators who share access to this inquiry.
+    if (!req.get('Idempotency-Key')) reject(400, 'მოთხოვნის იდენტიფიკატორი აუცილებელია.', 'VALIDATION');
+    await idempotent(req, res, `call-convert-group:${callId}`, async () => {
+      const inquiry = await getCall(callId);
+      if (inquiry.booking_id !== null) reject(409, 'ამ ზარის ჯავშნები უკვე შექმნილია.', 'CALL_CONVERTED');
+      if (inquiry.deleted_at) reject(409, 'ზარი წაშლილია. ჯერ აღადგინეთ.', 'DELETED');
+      if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) reject(400, 'მოთხოვნის მონაცემები არასწორია.', 'VALIDATION');
+      const inputs: unknown = req.body.bookings;
+      if (!Array.isArray(inputs) || !inputs.length || inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input))) {
+        reject(400, 'დაამატეთ მგზავრების ჯავშნები.', 'VALIDATION');
+      }
+      const created: Booking[] = [];
+      for (const input of inputs) {
+        const child = await createBooking({ ...input, callerPhone: inquiry.phone }, req.employee, 'android');
+        await db.prepare('INSERT INTO call_booking_links(call_id,booking_id) VALUES (?,?)').run(inquiry.id, child.id);
+        await audit('call.convert', req.employee, child.id, { callId: inquiry.id });
+        created.push(child);
+      }
+      // Retain the first-booking sentinel for existing queue/history and old clients.
+      await db.prepare('UPDATE call_inquiries SET booking_id=? WHERE id=?').run(created[0].id, inquiry.id);
+      return { bookings: created };
+    });
   });
   app.post('/api/admin/calls/:id/delete', async (req: ContextRequest, res) => {
     const result = await transaction(async () => {
