@@ -1,0 +1,14 @@
+{
+  "applicationId": "ge.greentaxi.calls.samsung",
+  "label": "Green Taxi Samsung",
+  "versionName": "0.2.1",
+  "versionCode": 4,
+  "minSdk": 26,
+  "targetSdk": 35,
+  "liveMonitoringMinSdk": 30,
+  "apk": "GreenTaxi-Samsung-Android.apk",
+  "bytes": 42776,
+  "sha256": "b4e78d9717ad4313b06ab092505600f6da259ce1d79d043dbb1d18fccc1cd466",
+  "certificateSha256": "44e8dc7c71ac84523091169d571231b1f5a9a84bf568e63c37c9c6d92ac07846",
+  "publishedDate": "2026-10-10"
+}

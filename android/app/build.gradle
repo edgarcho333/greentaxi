@@ -1,16 +1,41 @@
 plugins { id 'com.android.application' }
 
+// A separate, explicitly selected Samsung application keeps the installed 0.2.0
+// bridge and its encrypted pairing/queue intact when its original key is unavailable.
+def samsungBridge = providers.gradleProperty('greenTaxiSamsung').orElse('false').get() == 'true'
+
 android {
     namespace 'ge.greentaxi.calls'
     compileSdk 35
     buildToolsVersion '35.0.0'
 
     defaultConfig {
-        applicationId 'ge.greentaxi.calls'
+        applicationId samsungBridge ? 'ge.greentaxi.calls.samsung' : 'ge.greentaxi.calls'
         minSdk 26
         targetSdk 35
-        versionCode 3
-        versionName '0.2.0'
+        versionCode 4
+        versionName '0.2.1'
+        manifestPlaceholders = [appLabel: samsungBridge ? 'Green Taxi Samsung' : 'Green Taxi']
+    }
+
+    if (samsungBridge) {
+        signingConfigs {
+            samsung {
+                def keyPath = providers.environmentVariable('GREENTAXI_SAMSUNG_KEYSTORE').orNull
+                def samsungPassword = providers.environmentVariable('GREENTAXI_SAMSUNG_KEY_PASSWORD').orNull
+                if (!keyPath || !samsungPassword) {
+                    throw new GradleException('Samsung signing identity is missing. Restore the existing private key; do not regenerate it for updates.')
+                }
+                storeFile file(keyPath)
+                storePassword samsungPassword
+                keyAlias 'greentaxi-samsung'
+                keyPassword samsungPassword
+            }
+        }
+        buildTypes {
+            debug { applicationIdSuffix '.debug' }
+            release { signingConfig signingConfigs.samsung }
+        }
     }
 
     compileOptions {

@@ -14,7 +14,7 @@
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
-        android:label="Green Taxi"
+        android:label="${appLabel}"
         android:icon="@drawable/ic_taxi"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">

@@ -153,8 +153,10 @@ public final class CallMonitorService extends Service {
 
     @SuppressWarnings("deprecation")
     private void startLiveMonitoring() {
-        // Subscription-scoped current-state checks begin at API 31; older devices retain log sync.
-        if (Build.VERSION.SDK_INT < 31) {
+        // Android 11 also provides subscription-scoped mobile-call callbacks. Its public
+        // getCallState() includes other ConnectionServices, so it must not be used as a
+        // substitute for the state of this SIM. Older releases retain verified log sync.
+        if (Build.VERSION.SDK_INT < 30) {
             liveDiagnostic = "ვიყენებთ ზარების ჟურნალს — პასუხისას დამატება ამ Android-ზე მიუწვდომელია. ";
             return;
         }
@@ -175,7 +177,7 @@ public final class CallMonitorService extends Service {
     }
 
     @SuppressWarnings("deprecation")
-    @android.annotation.TargetApi(31)
+    @android.annotation.TargetApi(30)
     private void configureSubscriptions() {
         if (worker.isShutdown() || !settings.enabled()) return;
         Set<Integer> next = new HashSet<>();
@@ -212,13 +214,16 @@ public final class CallMonitorService extends Service {
                         final long observedElapsed = SystemClock.elapsedRealtime();
                         if (generation != listenerGeneration || !settings.enabled() || !permissionsGranted(CallMonitorService.this)) return;
                         int observedState = state;
-                        if (state == TelephonyManager.CALL_STATE_OFFHOOK) {
+                        if (Build.VERSION.SDK_INT >= 31 && state == TelephonyManager.CALL_STATE_OFFHOOK) {
                             try {
                                 // Use the actual state for delayed callbacks; never invent IDLE during call waiting.
                                 observedState = manager.getCallStateForSubscription();
                             } catch (SecurityException unavailable) { return; }
                             catch (RuntimeException unavailable) { return; }
                         }
+                        // On Android 11 the explicit subscription listener is the mobile-only
+                        // authority. The same idle-first state machine rejects outgoing calls,
+                        // call waiting and observation gaps on both Android versions.
                         final int currentState = observedState;
                         final String phone = CallerPhone.normalize(number);
                         submitLive(() -> applyLiveActions(liveState.onState(subId, currentState, phone, observedWall, observedElapsed)));
