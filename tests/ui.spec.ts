@@ -1484,6 +1484,9 @@ test('a large incoming queue paginates, shares schedules and preserves edits whe
     await route.fulfill({ json: { calls } });
   });
   await openAuthenticatedAdmin(page);
+  // The scheduled dashboard loads eight dates on entry. Count only requests
+  // made by the incoming queue after that unrelated initial load has finished.
+  await expect(page.locator('.admin-date-chip > span')).toHaveText(Array.from({ length: 8 }, () => /^\d+ ჯავშანი$/));
   const scheduleRequests: string[] = [];
   page.on('request', request => {
     const url = new URL(request.url());

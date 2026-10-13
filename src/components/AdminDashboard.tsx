@@ -100,17 +100,22 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
       if (document.visibilityState === 'hidden' || inFlight) return;
       inFlight = true; controller = new AbortController();
       const signal = controller.signal;
-      return Promise.allSettled([request<{ bookings: Booking[] }>('/admin/bookings?scope=incoming', { signal }), request<PublicConfig>('/public/config', { signal }), request<{ calls: CallInquiry[] }>('/admin/calls?scope=incoming', { signal })]).then(results => {
-        if (!active || signal.aborted) return;
-        if (results[0].status === 'fulfilled' && results[2].status === 'fulfilled') setIncomingCount(results[0].value.bookings.length + results[2].value.calls.length);
-        if (results[1].status === 'fulfilled') setConfig(results[1].value);
-      }).finally(() => { inFlight = false; });
+      return request<{ calls: number; bookings: number; total: number }>('/admin/incoming-counts', { signal }).then(result => {
+        if (active && !signal.aborted) setIncomingCount(result.total);
+      }).catch(() => { /* Keep the last count while a refresh is unavailable. */ }).finally(() => { inFlight = false; });
     };
     void load();
     const refreshVisible = () => { if (document.visibilityState !== 'hidden') void load(); };
     const timer = window.setInterval(refreshVisible, 5_000);
     window.addEventListener('focus', refreshVisible); document.addEventListener('visibilitychange', refreshVisible);
     return () => { active = false; controller?.abort(); window.clearInterval(timer); window.removeEventListener('focus', refreshVisible); document.removeEventListener('visibilitychange', refreshVisible); };
+  }, [refresh]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void request<PublicConfig>('/public/config', { signal: controller.signal }).then(result => {
+      if (!controller.signal.aborted) setConfig(result);
+    }).catch(() => { /* Retain the last configuration until a later refresh. */ });
+    return () => controller.abort();
   }, [refresh]);
   useEffect(() => {
     if (view !== 'scheduled') return;

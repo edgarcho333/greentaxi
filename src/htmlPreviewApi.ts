@@ -183,7 +183,14 @@ export function installPreviewApi(): void {
         const cars = plan.drivers.filter(driver => !driver.declined && driver.assignedTime === time).map(driver => ({ key: `roster:${driver.id}`, driverId: driver.id, kind: 'roster' as const, name: driver.name, capacity: driver.capacity, active: active && driver.assignmentActive }));
         return reply({ direction: 'gori-tbilisi', date: saved.date, time, active, bookingCount: rows.length, ...calculateTripCapacity(cars, rows.reduce((total, row) => total + row.seats, 0)), revision: '0'.repeat(64), availableDrivers: plan.drivers });
       }
-      case '/api/admin/calls': return reply({ calls: (params.get('scope') ?? 'incoming') === 'incoming' && (matchesSearch(sampleCall.passengerProfile?.name || '', sampleCall.phone || '', params.get('search') ?? '') || matchesSearch('', sampleCall.bookingPhone || '', params.get('search') ?? '')) ? [sampleCall] : [] });
+      case '/api/admin/incoming-counts': {
+        const waiting = bookings.filter(booking => !booking.deletedAt && booking.status === 'waiting').length;
+        return reply({ calls: 1, bookings: waiting, total: waiting + 1 });
+      }
+      case '/api/admin/calls': {
+        const calls = (params.get('scope') ?? 'incoming') === 'incoming' && (matchesSearch(sampleCall.passengerProfile?.name || '', sampleCall.phone || '', params.get('search') ?? '') || matchesSearch('', sampleCall.bookingPhone || '', params.get('search') ?? '')) ? [sampleCall] : [];
+        return reply({ calls, ...(params.has('page') || params.has('pageSize') ? { total: calls.length, page: 1, pageSize: Number(params.get('pageSize') || 15) } : {}) });
+      }
       case '/api/admin/devices': return reply({ devices: [] });
       case '/api/admin/settings': return reply({ didubeName: config.didubeName, didubeAddress: config.didubeAddress });
       case '/api/admin/stops': return reply({ stops: config.stops });

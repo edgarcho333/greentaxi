@@ -15,6 +15,8 @@ type Draft = BookingOptionsValue & {
 };
 type ScheduleEntry = { schedule?: Schedule; loading: boolean; loadedAt: number; error?: string };
 type ActiveBookingsEntry = { bookings?: Booking[]; loading: boolean; loadedAt: number; error?: string };
+type CallsResponse = { calls: CallInquiry[]; total?: number; page?: number; pageSize?: number };
+type CallsResult = CallsResponse & { context: string; requestedPage: number };
 const callDate = (value: string) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tbilisi', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value));
 const shortDate = (value: string) => value.split('-').reverse().slice(0, 2).join('/');
 const duration = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
@@ -82,9 +84,7 @@ function withContext(draft: Draft, direction: Direction, date: string): Draft {
 }
 
 export default function CallQueue({ scope, search, refresh, config, onChange }: Props) {
-  const [callResult, setCallResult] = useState<{ scope: Props['scope']; calls: CallInquiry[] }>({ scope, calls: [] });
-  const calls = callResult.scope === scope ? callResult.calls : [];
-  const waitingForScope = callResult.scope !== scope;
+  const [callResult, setCallResult] = useState<CallsResult>({ context: '', requestedPage: 1, calls: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [completionNotice, setCompletionNotice] = useState('');
@@ -97,8 +97,20 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
   const [profileLoadingIds, setProfileLoadingIds] = useState<Set<string>>(new Set());
   const groupAttempts = useRef(new Map<number, { body: string; key: string; call: CallInquiry; search: string }>());
-  const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
+  const context = JSON.stringify([scope, search, pageSize]);
+  const [pagination, setPagination] = useState({ context, page: 1 });
+  // Deriving the first page from the context prevents a search/scope change
+  // from briefly requesting the previous filter's later page.
+  const requestedPage = pagination.context === context ? pagination.page : 1;
+  const setPage = (page: number) => setPagination({ context, page });
+  const waitingForPage = callResult.context !== context || callResult.requestedPage !== requestedPage;
+  const calls = waitingForPage ? [] : callResult.calls;
+  const serverPaged = !waitingForPage && callResult.total !== undefined && callResult.page !== undefined && callResult.pageSize !== undefined;
+  const totalCalls = callResult.context === context ? callResult.total ?? calls.length : 0;
+  const pageCount = Math.max(1, Math.ceil(totalCalls / pageSize));
+  const currentPage = Math.min(serverPaged ? callResult.page! : requestedPage, pageCount);
+  const visibleCalls = useMemo(() => serverPaged ? calls : calls.slice((currentPage - 1) * pageSize, currentPage * pageSize), [calls, currentPage, pageSize, serverPaged]);
   const [pendingRestore, setPendingRestore] = useState<CallInquiry | null>(null);
   const [restoreError, setRestoreError] = useState('');
   const lockedIds = useRef(new Set<number>());
@@ -125,7 +137,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
       inFlight = true; controller = new AbortController();
       const startedEpoch = mutationEpoch.current;
       const signal = controller.signal;
-      return request<{ calls: CallInquiry[] }>(`/admin/calls?${new URLSearchParams({ scope, ...(search ? { search } : {}) })}`, { signal }).then(result => {
+      return request<CallsResponse>(`/admin/calls?${new URLSearchParams({ scope, page: String(requestedPage), pageSize: String(pageSize), ...(search ? { search } : {}) })}`, { signal }).then(result => {
         if (!active || signal.aborted) return;
         const incoming = result.calls.filter(call => (settledIds.current.get(`${scope}:${call.id}`) || 0) <= startedEpoch);
         // A committed request may lose its response. Keep that call visible until
@@ -133,7 +145,12 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
         if (scope === 'incoming') for (const attempt of groupAttempts.current.values()) {
           if (attempt.search === search && !incoming.some(call => call.id === attempt.call.id)) incoming.unshift(attempt.call);
         }
-        setCallResult({ scope, calls: incoming });
+        const paged = Number.isInteger(result.total) && result.total! >= 0 && Number.isInteger(result.page) && result.page! >= 1 && result.pageSize === pageSize;
+        const responsePage = paged ? result.page! : requestedPage;
+        // The server may clamp the last page after another operator processes
+        // its final call. Keep the controls and subsequent polls on that page.
+        if (paged && responsePage !== requestedPage) setPagination({ context, page: responsePage });
+        setCallResult({ context, requestedPage: responsePage, calls: incoming, ...(paged ? { total: result.total, page: result.page, pageSize: result.pageSize } : {}) });
         for (const [key, epoch] of settledIds.current) if (key.startsWith(`${scope}:`) && epoch <= startedEpoch) settledIds.current.delete(key);
         setError(''); setNow(Date.now());
       }).catch(cause => { if (active && !signal.aborted) setError(message(cause)); }).finally(() => { inFlight = false; if (active && !signal.aborted) setLoading(false); });
@@ -143,11 +160,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
     const timer = scope === 'incoming' ? window.setInterval(refreshVisible, 2_000) : undefined;
     window.addEventListener('focus', refreshVisible); document.addEventListener('visibilitychange', refreshVisible);
     return () => { active = false; controller?.abort(); if (timer) window.clearInterval(timer); window.removeEventListener('focus', refreshVisible); document.removeEventListener('visibilitychange', refreshVisible); };
-  }, [scope, search, refresh, version]);
-  useEffect(() => { setPage(1); }, [scope, search, pageSize]);
-  const pageCount = Math.max(1, Math.ceil(calls.length / pageSize));
-  const currentPage = Math.min(page, pageCount);
-  const visibleCalls = useMemo(() => calls.slice((currentPage - 1) * pageSize, currentPage * pageSize), [calls, currentPage, pageSize]);
+  }, [scope, search, refresh, version, context, requestedPage, pageSize]);
 
   useEffect(() => {
     if (scope !== 'incoming') return;
@@ -388,10 +401,10 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
   const restore = (event: FormEvent) => { event.preventDefault(); if (pendingRestore) void act(pendingRestore, 'restore'); };
 
   return <section className="admin-table-card admin-calls-card">
-    <div className="admin-table-heading"><div><h2><Smartphone size={17} />{scope === 'incoming' ? 'სატელეფონო განაცხადები' : 'წაშლილი სატელეფონო განაცხადები'}<span className="admin-call-count">{calls.length}</span></h2><span>{scope === 'incoming' ? 'აირჩიეთ მისამართი, დღე და დრო · ჯავშანი ავტომატურად დადასტურდება' : 'ზარის აღდგენა მას შემოსულ განაცხადებში დააბრუნებს'}</span></div><button className="admin-text-button" onClick={() => setVersion(value => value + 1)} disabled={loading}>განახლება</button></div>
+    <div className="admin-table-heading"><div><h2><Smartphone size={17} />{scope === 'incoming' ? 'სატელეფონო განაცხადები' : 'წაშლილი სატელეფონო განაცხადები'}<span className="admin-call-count">{totalCalls}</span></h2><span>{scope === 'incoming' ? 'აირჩიეთ მისამართი, დღე და დრო · ჯავშანი ავტომატურად დადასტურდება' : 'ზარის აღდგენა მას შემოსულ განაცხადებში დააბრუნებს'}</span></div><button className="admin-text-button" onClick={() => setVersion(value => value + 1)} disabled={loading}>განახლება</button></div>
     {completionNotice && <div className="admin-call-completion-notice" role="status">{completionNotice}</div>}
     {error && <div className="admin-error" role="alert">{error}<button onClick={() => setVersion(value => value + 1)}>ხელახლა ცდა</button></div>}
-    {(loading || (waitingForScope && !error)) && !calls.length ? <div className="admin-call-empty"><Loader2 size={18} className="admin-spin" />ზარები იტვირთება…</div> : !calls.length ? <div className="admin-call-empty"><Phone size={17} /><span>{scope === 'incoming' ? 'სატელეფონო განაცხადები ჯერ არ არის. ტელეფონის დაკავშირება შეგიძლიათ პარამეტრებში.' : 'წაშლილი სატელეფონო განაცხადები არ არის.'}</span></div> : <>
+    {(loading || (waitingForPage && !error)) && !calls.length ? <div className="admin-call-empty"><Loader2 size={18} className="admin-spin" />ზარები იტვირთება…</div> : !calls.length ? <div className="admin-call-empty"><Phone size={17} /><span>{scope === 'incoming' ? 'სატელეფონო განაცხადები ჯერ არ არის. ტელეფონის დაკავშირება შეგიძლიათ პარამეტრებში.' : 'წაშლილი სატელეფონო განაცხადები არ არის.'}</span></div> : <>
       <div className="admin-table-scroll admin-call-table-scroll"><table className={`admin-booking-table admin-calls-table admin-calls-inline-table ${scope === 'deleted' ? 'is-history' : ''}`}><thead><tr><th>ქალაქი</th><th>ტელეფონი</th><th>მისამართი</th><th>ჯავშანი</th></tr></thead><tbody>{visibleCalls.map(call => {
         if (scope === 'deleted') return <HistoryCallRow key={call.id} call={call} busy={busyIds.has(call.id)} onRestore={() => { setPendingRestore(call); setRestoreError(''); }} />;
         const passengers = drafts[call.id] || [newDraft(call)];
@@ -406,7 +419,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
         } : undefined;
         return <Fragment key={call.id}>{passengers.map((draft, index) => <IncomingCallRow key={draft.id} call={call} draft={draft} passengerIndex={index} passengerCount={passengers.length} initialized={!!drafts[call.id]} entry={schedules[scheduleKey(draft.direction, draft.date)]} activeEntry={activeEntry} config={config} now={now} busy={busyIds.has(call.id)} pendingGroup={groupAttempts.current.has(call.id) && !busyIds.has(call.id)} error={rowErrors[call.id] || ''} groupValid={groupValid} update={update => updateDraft(call.id, draft.id, update)} setProfileLoading={setProfileLoading} retry={() => { const current = draftsRef.current[call.id]?.find(item => item.id === draft.id); if (current) loadSchedule(current.direction, current.date, true); }} retryActive={() => { for (const current of draftsRef.current[call.id] || []) loadActiveBookings(call, current, true); }} onCancelBooking={booking => cancelBooking(call, booking)} onConfirm={() => void act(call, 'convert')} onReject={() => void act(call, 'delete')} onAddPassenger={() => addPassenger(call.id)} onRemovePassenger={() => removePassenger(call.id, draft.id)} />)}</Fragment>;
       })}</tbody></table></div>
-      <nav className="admin-pagination admin-call-pagination" aria-label="სატელეფონო განაცხადების გვერდები"><div className="admin-page-buttons"><button className="admin-icon-button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)} aria-label="წინა გვერდი"><ChevronLeft size={17} /></button><span>{currentPage} / {pageCount}</span><button className="admin-icon-button" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)} aria-label="შემდეგი გვერდი"><ChevronRight size={17} /></button><span>{(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, calls.length)} / {calls.length}</span></div><label>გვერდზე<select aria-label="ზარები გვერდზე" value={pageSize} onChange={event => setPageSize(Number(event.target.value))}><option>15</option><option>30</option><option>50</option></select></label></nav>
+      <nav className="admin-pagination admin-call-pagination" aria-label="სატელეფონო განაცხადების გვერდები"><div className="admin-page-buttons"><button className="admin-icon-button" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)} aria-label="წინა გვერდი"><ChevronLeft size={17} /></button><span>{currentPage} / {pageCount}</span><button className="admin-icon-button" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)} aria-label="შემდეგი გვერდი"><ChevronRight size={17} /></button><span>{totalCalls ? (currentPage - 1) * pageSize + 1 : 0}–{Math.min(currentPage * pageSize, totalCalls)} / {totalCalls}</span></div><label>გვერდზე<select aria-label="ზარები გვერდზე" value={pageSize} onChange={event => setPageSize(Number(event.target.value))}><option>15</option><option>30</option><option>50</option></select></label></nav>
     </>}
     {pendingRestore && <div className="admin-modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget && !restoreBusy) setPendingRestore(null); }}><section className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-call-dialog-title"><header><div><h2 id="admin-call-dialog-title">სატელეფონო განაცხადის აღდგენა</h2><p>{pendingRestore.phone ? formatPhone(pendingRestore.phone) : 'დამალული ნომერი'} · {callDate(pendingRestore.occurredAt)}</p></div><button className="admin-icon-button" disabled={restoreBusy} onClick={() => setPendingRestore(null)} aria-label="დახურვა"><X size={20} /></button></header><form className="admin-booking-form" onSubmit={restore}><p className="admin-call-dialog-copy">ზარი დაბრუნდება შემოსულებში. მგზავრობის მონაცემებს ოპერატორი შეავსებს.</p>{restoreError && <div className="admin-error" role="alert">{restoreError}</div>}<footer className="admin-dialog-footer"><button type="button" className="admin-secondary" disabled={restoreBusy} onClick={() => setPendingRestore(null)}>გაუქმება</button><button className="admin-primary" disabled={restoreBusy}>{restoreBusy && <Loader2 size={16} className="admin-spin" />}აღდგენა</button></footer></form></section></div>}
   </section>;

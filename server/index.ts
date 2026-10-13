@@ -463,8 +463,8 @@ export async function createApp(options: Options = {}) {
     if (!row) reject(404, 'ზარი ვერ მოიძებნა.', 'NOT_FOUND');
     return row;
   }
-  async function enrichedCalls(rows: Row[]): Promise<CallInquiry[]> {
-    const contacts = await readPreferredBookingPhones(db, rows.flatMap(row => row.phone === null ? [] : [row.phone]));
+  async function enrichedCalls(rows: Row[], suppliedContacts?: Map<string, string>): Promise<CallInquiry[]> {
+    const contacts = suppliedContacts ?? await readPreferredBookingPhones(db, rows.flatMap(row => row.phone === null ? [] : [row.phone]));
     const profiles = await readPassengerProfiles(db, [...contacts.values()], now());
     return rows.map(row => {
       const caller = row.phone === null ? null : normalizePhone(row.phone) ?? row.phone;
@@ -503,12 +503,85 @@ export async function createApp(options: Options = {}) {
     });
     res.json(device);
   });
+  app.get('/api/admin/incoming-counts', async (_req, res) => {
+    // Header polling needs counts, not every call's passenger history and address.
+    const row = await db.prepare(`SELECT
+      (SELECT COUNT(*) FROM call_inquiries WHERE deleted_at IS NULL AND booking_id IS NULL) AS calls,
+      (SELECT COUNT(*) FROM bookings WHERE deleted_at IS NULL AND status='waiting') AS bookings`).get();
+    const calls = Number(row?.calls ?? 0);
+    const bookings = Number(row?.bookings ?? 0);
+    res.json({ calls, bookings, total: calls + bookings });
+  });
   app.get('/api/admin/calls', async (req, res) => {
     const scope = req.query.scope ?? 'incoming';
     if (!['incoming', 'deleted', 'converted'].includes(String(scope))) reject(400, 'არასწორი ფილტრი.', 'VALIDATION');
     const conditions = [scope === 'deleted' ? 'call_inquiries.deleted_at IS NOT NULL' : 'call_inquiries.deleted_at IS NULL'];
     if (scope === 'incoming') conditions.push('booking_id IS NULL');
     if (scope === 'converted') conditions.push('booking_id IS NOT NULL');
+    if (req.query.page !== undefined || req.query.pageSize !== undefined) {
+      const requestedPage = req.query.page === undefined ? 1 : numberId(req.query.page);
+      const pageSize = req.query.pageSize === undefined ? 15 : numberId(req.query.pageSize);
+      if (![15, 30, 50].includes(pageSize)) reject(400, 'არასწორი გვერდის ზომა.', 'VALIDATION');
+      const escaped = (value: string) => value.replace(/[\\%_]/g, character => `\\${character}`);
+      const values: string[] = [];
+      const filters: string[] = [];
+      // Phone aliases remain readable during rolling deployments, without following
+      // a caller/contact pair into a different passenger identity.
+      const canonicalPhoneSql = (field: string) => {
+        const compact = `REPLACE(REPLACE(REPLACE(REPLACE(TRIM(${field}),' ',''),'(',''),')',''),'-','')`;
+        const digits = `REPLACE(${compact},'+','')`;
+        const international = `CASE WHEN LENGTH(${digits})>=11 AND SUBSTR(${digits},1,2)='00' THEN SUBSTR(${digits},3) ELSE ${digits} END`;
+        const nonDigits = [...'0123456789'].reduce((value, digit) => `REPLACE(${value},'${digit}','')`, digits);
+        return `CASE WHEN ${compact} IS NULL OR LENGTH(${nonDigits})<>0
+            OR (${compact}<>${digits} AND ${compact}<>('+'||${digits})) THEN NULL
+          WHEN LENGTH(${international})=12 AND SUBSTR(${international},1,3)='995' THEN SUBSTR(${international},4)
+          WHEN LENGTH(${digits})=9 AND SUBSTR(${compact},1,1)<>'+' THEN ${digits}
+          WHEN LENGTH(${international}) BETWEEN 9 AND 15 AND SUBSTR(${international},1,1)<>'0' THEN '+'||(${international})
+          ELSE NULL END`;
+      };
+      const aliasesSql = (field: string) => `${field},'+995'||${field},'995'||${field},'00995'||${field}`;
+      const columns = 'id,phone,occurred_at,duration_seconds,phase,created_at,deleted_at,booking_id,device_name';
+      const query = `WITH queue_calls AS (
+        SELECT call_inquiries.id,call_inquiries.phone,call_inquiries.occurred_at,call_inquiries.duration_seconds,
+          call_inquiries.phase,call_inquiries.created_at,call_inquiries.deleted_at,call_inquiries.booking_id,
+          call_devices.name AS device_name,${canonicalPhoneSql('call_inquiries.phone')} AS caller_key
+        FROM call_inquiries JOIN call_devices ON call_devices.id=call_inquiries.device_id
+        WHERE ${conditions.join(' AND ')}
+      ), queue_contacts AS (
+        SELECT queue_calls.*,COALESCE((
+          SELECT ${canonicalPhoneSql('bookings.phone')} FROM bookings
+          WHERE status='confirmed' AND caller_phone IN (${aliasesSql('queue_calls.caller_key')})
+            AND ${canonicalPhoneSql('bookings.phone')} IS NOT NULL
+          ORDER BY created_at DESC,id DESC LIMIT 1
+        ),caller_key) AS contact_key FROM queue_calls
+      )`;
+      if (req.query.search) {
+        const search = text(req.query.search, 'ძიება', 1, 100).toLocaleLowerCase('ka-GE');
+        const phoneSearch = normalizePhone(search) ?? search.replace(/\D/g, '');
+        if (phoneSearch) {
+          filters.push("(caller_key LIKE ? ESCAPE '\\' OR contact_key LIKE ? ESCAPE '\\')");
+          values.push(`%${escaped(phoneSearch)}%`, `%${escaped(phoneSearch)}%`);
+        }
+        filters.push("LOWER(device_name) LIKE ? ESCAPE '\\'");
+        values.push(`%${escaped(search)}%`);
+        filters.push(`LOWER(COALESCE((SELECT name FROM passenger_profiles
+          WHERE passenger_profiles.phone IN (${aliasesSql('queue_contacts.contact_key')}) AND TRIM(name)<>''
+          ORDER BY updated_at DESC,CASE WHEN passenger_profiles.phone=queue_contacts.contact_key THEN 0 ELSE 1 END,phone
+          LIMIT 1),'')) LIKE ? ESCAPE '\\'`);
+        values.push(`%${escaped(search)}%`);
+      }
+      const where = filters.length ? ` WHERE (${filters.join(' OR ')})` : '';
+      const counted = await db.prepare(`${query} SELECT COUNT(*) AS total FROM queue_contacts${where}`).get(...values);
+      const total = Number(counted?.total ?? 0);
+      const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / pageSize)));
+      const rows = await db.prepare(`${query} SELECT ${columns},contact_key FROM queue_contacts${where}
+        ORDER BY occurred_at DESC,id DESC LIMIT ? OFFSET ?`).all(...values, pageSize, (page - 1) * pageSize) as Row[];
+      const contacts = new Map(rows.flatMap(row => row.phone === null ? []
+        : [[normalizePhone(row.phone) ?? row.phone, typeof row.contact_key === 'string'
+          ? normalizePhone(row.contact_key) ?? row.contact_key : normalizePhone(row.phone) ?? row.phone] as [string, string]]));
+      res.json({ calls: await enrichedCalls(rows, contacts), total, page, pageSize });
+      return;
+    }
     const rows = (await db.prepare(`SELECT call_inquiries.*,call_devices.name AS device_name FROM call_inquiries JOIN call_devices ON call_devices.id=call_inquiries.device_id WHERE ${conditions.join(' AND ')} ORDER BY occurred_at DESC,call_inquiries.id DESC`).all()) as Row[];
     let calls = await enrichedCalls(rows);
     if (req.query.search) {
