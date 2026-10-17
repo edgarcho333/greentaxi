@@ -50,7 +50,7 @@ function additionalDraft(first: Draft): Draft {
 }
 function bookingInput(draft: Draft) {
   return {
-    phone: normalizePhone(draft.phone), seats: draft.bookingType === 'parcel' ? 0 : draft.seats, bookingType: draft.bookingType, assignedVehicleKey: draft.assignedVehicleKey || null, direction: draft.direction,
+    phone: normalizePhone(draft.phone), seats: draft.bookingType === 'parcel' ? 0 : draft.seats, bookingType: draft.bookingType, assignedVehicleKey: draft.assignedVehicleKey || null, expectedVehicleRevision: draft.expectedVehicleRevision, direction: draft.direction,
     luggage: draft.luggage, dog: draft.dog, seatPreference: draft.seatPreference,
     goriAddress: (draft.direction === 'gori-tbilisi' ? draft.goriPickupAddress : draft.goriDestinationAddress).trim(),
     pickupStopId: draft.direction === 'tbilisi-gori' ? Number(draft.pickupStopId) : null,
@@ -81,7 +81,7 @@ function withPhone(draft: Draft, phone: string): Draft {
   };
 }
 function withContext(draft: Draft, direction: Direction, date: string): Draft {
-  return draft.direction === direction && draft.date === date ? draft : { ...draft, assignedVehicleKey: '', direction, date, time: '', timeSource: 'empty' };
+  return draft.direction === direction && draft.date === date ? draft : { ...draft, assignedVehicleKey: '', expectedVehicleRevision: undefined, direction, date, time: '', timeSource: 'empty' };
 }
 
 export default function CallQueue({ scope, search, refresh, config, onChange }: Props) {
@@ -270,7 +270,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
             const preferred = updated.departureTimes?.[updated.direction]?.find(time => futureTime(updated.date, time, now) && entry.schedule!.slots.some(slot => slot.active && slot.time === time));
             if (preferred) updated = { ...updated, time: preferred, timeSource: 'profile' };
           }
-          return updated;
+          return updated.date !== draft.date || updated.time !== draft.time ? { ...updated, assignedVehicleKey: '', expectedVehicleRevision: undefined } : updated;
         });
         if (updatedPassengers.some((draft, index) => draft !== passengers[index])) { next[Number(id)] = updatedPassengers; changed = true; }
       }
@@ -283,7 +283,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
     setDrafts(previous => previous[id] ? { ...previous, [id]: previous[id].map(draft => {
       if (draft.id !== passengerId) return draft;
       const next = update(draft);
-      return next.direction !== draft.direction || next.date !== draft.date || next.time !== draft.time ? { ...next, assignedVehicleKey: '' } : next;
+      return next.direction !== draft.direction || next.date !== draft.date || next.time !== draft.time ? { ...next, assignedVehicleKey: '', expectedVehicleRevision: undefined } : next;
     }) } : previous);
     setRowErrors(previous => previous[id] ? { ...previous, [id]: '' } : previous);
   }, []);
@@ -431,7 +431,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
 }
 
 function validDraft(draft: Draft, entry: ScheduleEntry | undefined, config: PublicConfig, now: number) {
-  return !!normalizePhone(draft.phone) && (draft.bookingType === 'parcel' || (draft.bookingType === 'whole_car' ? !!draft.assignedVehicleKey : draft.seats >= 1 && draft.seats <= 8)) &&
+  return !!normalizePhone(draft.phone) && (draft.bookingType === 'parcel' || (draft.bookingType === 'whole_car' ? !!draft.assignedVehicleKey && !!draft.expectedVehicleRevision : draft.seats >= 1 && draft.seats <= 8)) &&
     (draft.direction === 'gori-tbilisi' ? draft.goriPickupAddress : draft.goriDestinationAddress).trim().length >= 3 &&
     (draft.direction === 'gori-tbilisi' || config.stops.some(stop => stop.active && stop.id === Number(draft.pickupStopId))) &&
     !!entry?.schedule && !entry.loading && !entry.error && entry.schedule.slots.some(slot => slot.active && slot.time === draft.time) && futureTime(draft.date, draft.time, now);

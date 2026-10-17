@@ -115,7 +115,7 @@ test('whole car reserves the selected assigned vehicle exclusively and release/r
     assert.equal((await f.request('/admin/bookings', 'POST', input(whole))).data.code, 'VEHICLE_RESERVED');
     assert.equal((await f.request('/admin/bookings', 'POST', input({ ...whole, assignedVehicleKey: 'roster:9999' }))).data.code, 'VEHICLE_UNAVAILABLE');
     await successful(f, `/admin/bookings/${created.id}`, 'PATCH', { phone: '599222333' });
-    assert.equal((await f.request(`/admin/bookings/${created.id}/move`, 'POST', { date: DAY, time: '09:30' })).data.code, 'VEHICLE_UNAVAILABLE');
+    assert.equal((await f.request(`/admin/bookings/${created.id}/move`, 'POST', { date: DAY, time: '09:30' })).data.code, 'TRIP_CHANGED');
     assert.equal((await f.request('/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: DAY, time: '08:30', expectedRevision: plan.revision, action: 'remove', removeKey: car.key })).data.code, 'VEHICLE_RESERVED');
     await successful(f, `/admin/bookings/${created.id}/delete`, 'POST', {});
     const replacement = await successful(f, '/admin/bookings', 'POST', input(whole));
@@ -211,5 +211,234 @@ test('base schedule changes retain historical whole-car assignments without bloc
     assert.equal(capacity.uncoveredSeats, 0);
     const stored = await successful(f, '/admin/bookings');
     assert.equal(stored.bookings.find((row: any) => row.id === created.id).assignedVehicleName, car.name);
+  });
+});
+
+async function wholeOptions(f: Fixture, time = '08:30', date = DAY): Promise<import('../src/api.js').WholeCarOptions> {
+  return successful(f, `/admin/trips/whole-car-options?direction=gori-tbilisi&date=${date}&time=${time}`);
+}
+function rosterChoice(options: import('../src/api.js').WholeCarOptions, id: number) {
+  const driver = options.drivers.find(driver => driver.driverId === id);
+  assert.ok(driver, `Roster driver ${id} must be offered`);
+  return { bookingType: 'whole_car', assignedVehicleKey: driver.key, expectedVehicleRevision: driver.revision };
+}
+async function inquiry(f: Fixture, eventId: string) {
+  const device = await successful(f, '/admin/devices', 'POST', { name: 'Whole-car picker test' });
+  const result = await f.request('/integrations/android/calls', 'POST', { eventId, kind: 'incoming', phase: 'answered', phone: '599800100', occurredAt: '2030-01-01T10:00:00+04:00', durationSeconds: 0 }, { Authorization: `Bearer ${device.token}` }, false);
+  assert.equal(result.status, 201);
+  return result.data.id as number;
+}
+
+test('whole-car options expose the complete daily queue including nonworking drivers without changing any data', async () => {
+  await isolated(async f => {
+    const context = { direction: 'gori-tbilisi', date: DAY, time: '08:30' };
+    const original = await wholeOptions(f);
+    const daily = await successful(f, `/admin/drivers/schedule?direction=gori-tbilisi&date=${DAY}`);
+    assert.deepEqual(original.drivers.map(driver => driver.driverId), daily.drivers.map((driver: any) => driver.id));
+    assert.equal(original.active, true);
+    assert.equal(original.drivers.length, 43);
+    assert.equal(original.drivers.find(driver => driver.driverId === 3)?.assignedTime, null);
+    assert.equal(original.drivers.find(driver => driver.driverId === 2)?.assignedTime, '09:30');
+    const capacity = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=08:30`);
+    const added = await successful(f, '/admin/trips/drivers', 'POST', { ...context, expectedRevision: capacity.revision, action: 'add', driver: { kind: 'temporary', name: 'სხვა მანქანა', capacity: 6 } });
+    const temporary = added.drivers.find((driver: any) => driver.kind === 'temporary');
+    await successful(f, '/admin/drivers/5/day', 'PATCH', { direction: context.direction, date: DAY, declined: true });
+    const before = JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all());
+    const options = await wholeOptions(f);
+    assert.equal(options.drivers.length, 44);
+    assert.equal(options.drivers.find(driver => driver.driverId === 5)?.declined, true);
+    assert.deepEqual(options.drivers.filter(driver => driver.kind === 'roster').map(driver => driver.driverId), daily.drivers.map((driver: any) => driver.id));
+    assert.deepEqual(options.drivers.at(-1), { key: temporary.key, driverId: null, kind: 'temporary', name: 'სხვა მანქანა', capacity: 6, queuePosition: null, assignedTime: '08:30', declined: false, revision: options.drivers.at(-1)!.revision });
+    assert.equal((await wholeOptions(f, '09:30')).drivers.some(driver => driver.key === temporary.key), false);
+    assert.equal(options.drivers.find(driver => driver.driverId === 3)?.revision, original.drivers.find(driver => driver.driverId === 3)?.revision, 'Other drivers and temporary cars must not invalidate a selected driver');
+    assert.notEqual(rosterChoice(await wholeOptions(f, '09:30'), 3).expectedVehicleRevision, rosterChoice(options, 3).expectedVehicleRevision);
+    assert.notEqual(rosterChoice(await wholeOptions(f, '08:30', '2030-01-01'), 3).expectedVehicleRevision, rosterChoice(options, 3).expectedVehicleRevision);
+    assert.equal(JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all()), before);
+    assert.equal((await f.request('/admin/trips/whole-car-options?direction=gori-tbilisi&date=2030-01-02&time=08:30', 'GET', undefined, {}, false)).status, 401);
+    for (const query of ['direction=tbilisi-gori&date=2030-01-02&time=08:30', 'direction=gori-tbilisi&date=2030-02-30&time=08:30', 'direction=gori-tbilisi&date=2030-01-02&time=25:00']) {
+      assert.equal((await f.request(`/admin/trips/whole-car-options?${query}`)).status, 400);
+    }
+  });
+});
+
+test('saving an unassigned whole-car choice assigns and reserves its actual capacity atomically, while invalid forms leave no assignment', async () => {
+  await isolated(async f => {
+    const choice = rosterChoice(await wholeOptions(f), 3);
+    const before = JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all());
+    const auditBefore = await f.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get();
+    const missing = { ...choice }; delete (missing as Partial<typeof missing>).expectedVehicleRevision;
+    assert.equal((await f.request('/admin/bookings', 'POST', input(missing))).data.code, 'TRIP_CHANGED');
+    assert.equal((await f.request('/admin/bookings', 'POST', input({ ...choice, goriAddress: 'x' }))).status, 400);
+    assert.equal(JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all()), before);
+    assert.deepEqual(await f.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get(), auditBefore);
+    const created = await successful(f, '/admin/bookings', 'POST', input({ ...choice, seats: 1 }));
+    assert.equal(created.seats, 8);
+    assert.equal(created.assignedVehicleName, 'გოჩა');
+    const assigned = await f.db.prepare('SELECT declined,assignment_mode,manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(3, DAY);
+    assert.deepEqual({ ...assigned }, { declined: 0, assignment_mode: 'manual', manual_time: '08:30' });
+    const plan = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=08:30`);
+    assert.equal(plan.drivers.find((driver: any) => driver.key === choice.assignedVehicleKey).reservedBookingId, created.id);
+    assert.equal(plan.drivers.find((driver: any) => driver.key === choice.assignedVehicleKey).freeSeats, 0);
+    await successful(f, `/admin/bookings/${created.id}/delete`, 'POST', {});
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 3)?.reservedBookingId, undefined);
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 3)?.assignedTime, '08:30');
+  });
+});
+
+test('a whole-car choice can transfer an active driver from another hour but cannot steal a foreign whole-car reservation', async () => {
+  await isolated(async f => {
+    const choice = rosterChoice(await wholeOptions(f), 2);
+    const created = await successful(f, '/admin/bookings', 'POST', input(choice));
+    assert.equal(created.seats, 7);
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 2)?.assignedTime, '08:30');
+    assert.equal((await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=09:30`)).drivers.some((driver: any) => driver.driverId === 2), false);
+    const otherHour = await wholeOptions(f, '09:30');
+    assert.equal(otherHour.drivers.find(driver => driver.driverId === 2)?.reservedBookingId, created.id);
+    const stolen = await f.request('/admin/bookings', 'POST', input({ ...rosterChoice(otherHour, 2), requestedTime: '09:30' }));
+    assert.equal(stolen.data.code, 'VEHICLE_RESERVED');
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 2)?.assignedTime, '08:30');
+  });
+});
+
+test('stale whole-car selections and revisions replayed for another date or hour cannot move a driver', async () => {
+  await isolated(async f => {
+    const choice = rosterChoice(await wholeOptions(f), 3);
+    const plan = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=10:00`);
+    await successful(f, '/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: DAY, time: '10:00', expectedRevision: plan.revision, action: 'add', driver: { kind: 'roster', id: 3 } });
+    assert.equal((await f.request('/admin/bookings', 'POST', input(choice))).data.code, 'TRIP_CHANGED');
+    const current = rosterChoice(await wholeOptions(f), 3);
+    for (const override of [{ requestedTime: '09:30' }, { requestedDate: '2030-01-01' }]) {
+      assert.equal((await f.request('/admin/bookings', 'POST', input({ ...current, ...override }))).data.code, 'TRIP_CHANGED');
+    }
+    await successful(f, '/admin/drivers/3/day', 'PATCH', { direction: 'gori-tbilisi', date: DAY, declined: true });
+    assert.equal((await f.request('/admin/bookings', 'POST', input(current))).data.code, 'TRIP_CHANGED');
+    assert.equal((await f.db.prepare('SELECT manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(3, DAY))?.manual_time, '10:00');
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 0);
+  });
+});
+
+test('waiting whole-car edits store only a choice and confirmation explicitly binds the selected driver', async () => {
+  await isolated(async f => {
+    await successful(f, '/admin/drivers/3/day', 'PATCH', { direction: 'gori-tbilisi', date: DAY, declined: true });
+    const incoming = await f.request('/bookings', 'POST', input({ name: 'მომავალი მგზავრი' }), {}, false);
+    assert.equal(incoming.status, 201);
+    const choice = rosterChoice(await wholeOptions(f), 3);
+    const edited = await successful(f, `/admin/bookings/${incoming.data.id}`, 'PATCH', choice);
+    assert.equal(edited.status, 'waiting'); assert.equal(edited.seats, 8);
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 3)?.assignedTime, null);
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 3)?.declined, true);
+    await successful(f, `/admin/bookings/${edited.id}`, 'PATCH', { phone: '599333444' });
+    const noChoice = await f.request(`/admin/bookings/${edited.id}/confirm`, 'POST', { date: DAY, time: '08:30' });
+    assert.equal(noChoice.data.code, 'TRIP_CHANGED');
+    const confirmed = await successful(f, `/admin/bookings/${edited.id}/confirm`, 'POST', { date: DAY, time: '08:30', ...rosterChoice(await wholeOptions(f), 3) });
+    assert.equal(confirmed.status, 'confirmed'); assert.equal(confirmed.seats, 8);
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 3)?.assignedTime, '08:30');
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 3)?.declined, false);
+  });
+});
+
+test('moving and restoring a whole-car booking may reassign its own driver across hours and dates without retaining a reservation on the old trip', async () => {
+  await isolated(async f => {
+    const created = await successful(f, '/admin/bookings', 'POST', input(rosterChoice(await wholeOptions(f), 3)));
+    const moved = await successful(f, `/admin/bookings/${created.id}/move`, 'POST', { date: DAY, time: '09:30', ...rosterChoice(await wholeOptions(f, '09:30'), 3) });
+    assert.equal(moved.assignedTime, '09:30');
+    const oldTrip = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=08:30`);
+    assert.equal(oldTrip.drivers.some((driver: any) => driver.reservedBookingId === created.id), false);
+    const targetDay = '2030-01-01';
+    const nextDate = await successful(f, `/admin/bookings/${created.id}/move`, 'POST', { date: targetDay, time: '10:00', ...rosterChoice(await wholeOptions(f, '10:00', targetDay), 3) });
+    assert.equal(nextDate.assignedDate, targetDay);
+    assert.equal((await wholeOptions(f, '09:30')).drivers.find(driver => driver.driverId === 3)?.assignedTime, '09:30', 'Moving dates preserves the old explicit day plan');
+    assert.equal((await wholeOptions(f, '09:30')).drivers.find(driver => driver.driverId === 3)?.reservedBookingId, undefined);
+    await successful(f, `/admin/bookings/${created.id}/delete`, 'POST', {});
+    const plan = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${targetDay}&time=12:00`);
+    await successful(f, '/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: targetDay, time: '12:00', expectedRevision: plan.revision, action: 'add', driver: { kind: 'roster', id: 3 } });
+    f.setNow('2030-01-03T00:00:00Z');
+    assert.equal((await f.request(`/admin/bookings/${created.id}/restore`, 'POST', {})).data.code, 'TRIP_CHANGED');
+    const restored = await successful(f, `/admin/bookings/${created.id}/restore`, 'POST', { ...rosterChoice(await wholeOptions(f, '10:00', targetDay), 3) });
+    assert.equal(restored.deletedAt, null); assert.equal(restored.assignedTime, '10:00');
+  });
+});
+
+test('confirmed edits and individual call conversion bind a chosen unassigned driver in the same transaction', async () => {
+  await isolated(async f => {
+    const passenger = await successful(f, '/admin/bookings', 'POST', input());
+    const changed = await successful(f, `/admin/bookings/${passenger.id}`, 'PATCH', rosterChoice(await wholeOptions(f), 3));
+    assert.equal(changed.seats, 8); assert.equal(changed.bookingType, 'whole_car');
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 3)?.reservedBookingId, passenger.id);
+    const callId = await inquiry(f, 'whole-car-single');
+    const converted = await successful(f, `/admin/calls/${callId}/convert`, 'POST', input(rosterChoice(await wholeOptions(f), 4)));
+    assert.equal(converted.seats, 7);
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 4)?.reservedBookingId, converted.id);
+  });
+});
+
+test('group conversion accepts distinct unassigned drivers from one snapshot and replays without duplicate assignments', async () => {
+  await isolated(async f => {
+    const callId = await inquiry(f, 'whole-car-siblings');
+    const options = await wholeOptions(f);
+    const children = [3, 4].map(id => input(rosterChoice(options, id)));
+    const result = await successful(f, `/admin/calls/${callId}/convert-group`, 'POST', { bookings: children }, groupKey('whole-car-siblings'));
+    assert.deepEqual(result.bookings.map((row: any) => row.seats), [8, 7]);
+    const replay = await successful(f, `/admin/calls/${callId}/convert-group`, 'POST', { bookings: children }, groupKey('whole-car-siblings'));
+    assert.deepEqual(replay.bookings.map((row: any) => row.id), result.bookings.map((row: any) => row.id));
+    const bindings = await f.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='trip.driver.add' AND details LIKE '%whole-car-booking%'").get();
+    assert.equal(bindings?.count, 2);
+  });
+});
+
+test('group conflicts roll back sibling bookings, assignments and contact changes together', async () => {
+  await isolated(async f => {
+    const callId = await inquiry(f, 'whole-car-group-conflict');
+    const oldTrip = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=10:00`);
+    await successful(f, '/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: DAY, time: '10:00', expectedRevision: oldTrip.revision, action: 'add', driver: { kind: 'roster', id: 3 } });
+    await successful(f, '/admin/drivers/3/day', 'PATCH', { direction: 'gori-tbilisi', date: DAY, declined: true });
+    const choice = rosterChoice(await wholeOptions(f), 3);
+    const before = JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all());
+    const audit = await f.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get();
+    const failed = await f.request(`/admin/calls/${callId}/convert-group`, 'POST', { bookings: [input(choice), input(choice)] }, groupKey('whole-car-conflict'));
+    assert.equal(failed.data.code, 'VEHICLE_RESERVED');
+    assert.equal(JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all()), before);
+    assert.deepEqual(await f.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get(), audit);
+    for (const table of ['bookings', 'call_booking_links', 'passenger_profiles', 'passenger_addresses', 'idempotency']) assert.equal((await f.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get())?.count, 0, table);
+    assert.equal((await f.db.prepare('SELECT booking_id FROM call_inquiries WHERE id=?').get(callId))?.booking_id, null);
+  });
+});
+
+test('inactive departures retain an existing whole-car choice but reject fresh selections', async () => {
+  await isolated(async f => {
+    const created = await successful(f, '/admin/bookings', 'POST', input(rosterChoice(await wholeOptions(f), 3)));
+    const schedule = await successful(f, `/admin/schedule?direction=gori-tbilisi&date=${DAY}`);
+    await successful(f, '/admin/schedule/date', 'PUT', { direction: 'gori-tbilisi', date: DAY, times: schedule.baseTimes.filter((time: string) => time !== '08:30') });
+    const options = await wholeOptions(f);
+    assert.equal(options.active, false);
+    assert.equal(options.drivers.find(driver => driver.driverId === 3)?.reservedBookingId, created.id);
+    await successful(f, `/admin/bookings/${created.id}`, 'PATCH', { phone: '599222333' });
+    assert.equal((await f.request(`/admin/bookings/${created.id}`, 'PATCH', rosterChoice(options, 4))).data.code, 'SLOT_INACTIVE');
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 4)?.assignedTime, null);
+  });
+});
+
+test('an explicit whole-car save activates only the selected driver day, and invalid forms never activate it', async () => {
+  await isolated(async f => {
+    const oldTrip = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=10:00`);
+    await successful(f, '/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: DAY, time: '10:00', expectedRevision: oldTrip.revision, action: 'add', driver: { kind: 'roster', id: 3 } });
+    for (const date of [DAY, '2030-01-01']) await successful(f, '/admin/drivers/3/day', 'PATCH', { direction: 'gori-tbilisi', date, declined: true });
+    const options = await wholeOptions(f);
+    assert.equal(options.drivers.find(driver => driver.driverId === 3)?.declined, true);
+    const choice = rosterChoice(options, 3);
+    const before = JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides WHERE driver_id=? ORDER BY date').all(3));
+    assert.equal((await f.request('/admin/bookings', 'POST', input({ ...choice, goriAddress: 'x' }))).status, 400);
+    const missingRevision = { bookingType: choice.bookingType, assignedVehicleKey: choice.assignedVehicleKey };
+    assert.equal((await f.request('/admin/bookings', 'POST', input(missingRevision))).data.code, 'TRIP_CHANGED');
+    assert.equal(JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides WHERE driver_id=? ORDER BY date').all(3)), before);
+    const saved = await successful(f, '/admin/bookings', 'POST', input(choice));
+    assert.equal(saved.seats, 8);
+    const today = await f.db.prepare('SELECT declined,manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(3, DAY);
+    assert.deepEqual({ ...today }, { declined: 0, manual_time: '08:30' });
+    assert.equal((await f.db.prepare('SELECT declined FROM driver_day_overrides WHERE driver_id=? AND date=?').get(3, '2030-01-01'))?.declined, 1);
+    const audit = await f.db.prepare("SELECT details FROM audit_log WHERE action='trip.driver.add' AND details LIKE '%whole-car-booking%' ORDER BY id DESC").get();
+    assert.equal(JSON.parse(audit!.details).activated, true);
+    const trip = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=08:30`);
+    assert.equal(trip.drivers.find((driver: any) => driver.driverId === 3).reservedBookingId, saved.id);
   });
 });

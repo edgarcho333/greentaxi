@@ -1,0 +1,27 @@
+.whole-car-selection { display: grid; gap: 8px; grid-column: 1 / -1; min-width: 0; }
+.whole-car-selection-label { color: #264d35; font-size: 15px; font-weight: 600; }
+.whole-car-selection .whole-car-selection-trigger { display: flex; align-items: center; justify-content: flex-start; gap: 12px; width: 100%; min-width: 0; min-height: 70px; padding: 13px 15px; border: 2px solid #4b9866; border-radius: 11px; color: #16452a; background: #edf8f1; text-align: left; line-height: 1.6; }
+.whole-car-selection .whole-car-selection-trigger:hover:not(:disabled) { color: #123c24; border-color: #176238; background: #dcefe3; }
+.whole-car-selection-trigger > span { display: grid; min-width: 0; gap: 4px; }
+.whole-car-selection-trigger strong { font-size: 19px; font-weight: 700; overflow-wrap: anywhere; }
+.whole-car-selection-trigger > span > span { font-size: 15px; font-weight: 400; }
+.whole-car-selection > small { color: #3f5d49; font-size: 13px; font-weight: 400; line-height: 1.7; }
+.whole-car-selection > small.whole-car-confirmation-needed { padding: 9px 11px; background: #fff4dd; border: 1px solid #c9a158; border-radius: 8px; color: #694515; font-size: 15px; font-weight: 600; }
+.whole-car-selection-error { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px; color: #8c2f26; background: #fff0ed; border: 1px solid #dca89f; border-radius: 9px; font-size: 14px; line-height: 1.7; }
+.whole-car-selection-error button { display: inline-flex; align-items: center; gap: 7px; min-height: 50px; padding: 10px 12px; color: inherit; border: 1px solid #c68d84; background: #fff; border-radius: 8px; }
+.whole-car-picker-backdrop { z-index: 1200; }
+.whole-car-picker-dialog .admin-driver-choice.declined:not(.reserved) { color: #614215; border-color: #b99654; background: #fff7e7; }
+.whole-car-picker-dialog .admin-driver-choice.declined:not(.reserved) small { color: #75521d; font-weight: 600; }
+.whole-car-picker-dialog .admin-driver-choice.declined:not(.reserved) .admin-driver-choice-position { color: #644616; background: #f3e4c4; }
+.whole-car-picker-dialog .admin-driver-choice.reserved { color: #6e3d34; border-color: #cba79e; background: #fff1ed; opacity: 1; }
+.whole-car-picker-dialog .admin-driver-choice.reserved small { color: #8a392c; }
+.whole-car-picker-dialog .admin-driver-choice.selected { border-color: #2a8250; background: #dff1e5; color: #16462a; }
+.whole-car-picker-dialog .admin-driver-choice.selected:disabled { background: #eef0ec; color: #4d574c; }
+.whole-car-picker-status { display: flex; align-items: center; gap: 10px; padding: 18px 0; color: #33583f; font-size: 17px; line-height: 1.7; }
+.whole-car-picker-dialog .admin-driver-dialog-description { font-size: 15px; }
+.whole-car-picker-dialog .admin-driver-choice-info strong { font-size: 20px; }
+@media (max-width: 540px) {
+  .whole-car-picker-dialog .admin-driver-dialog-heading h2 { font-size: 19px; }
+  .whole-car-picker-dialog .admin-driver-choice-info strong { font-size: 19px; }
+  .whole-car-picker-dialog .admin-driver-dialog-description { font-size: 14px; }
+}

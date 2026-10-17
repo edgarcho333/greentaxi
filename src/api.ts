@@ -39,6 +39,13 @@ export type TripCapacity = {
   uncoveredSeats: number; revision: string; drivers: TripDriver[]; availableDrivers: DriverDay[];
 };
 export type TripDriverSelection = { kind: 'roster'; id: number } | { kind: 'temporary'; name: string; capacity: number };
+export type WholeCarDriver = {
+  key: string; driverId: number | null; kind: 'roster' | 'temporary'; name: string; capacity: number;
+  queuePosition: number | null; assignedTime: string | null; declined: boolean; revision: string; reservedBookingId?: number;
+};
+export type WholeCarOptions = {
+  direction: 'gori-tbilisi'; date: string; time: string; active: boolean; revision: string; drivers: WholeCarDriver[];
+};
 export type TripDriverMutation = {
   direction: 'gori-tbilisi'; date: string; time: string; expectedRevision: string;
   action: 'add' | 'remove' | 'replace'; removeKey?: string; driver?: TripDriverSelection;

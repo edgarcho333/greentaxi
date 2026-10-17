@@ -198,7 +198,7 @@ function Loading() { return <div className="admin-loading" role="status"><Loader
 function Empty({ icon: Icon, title, text }: { icon: typeof Inbox; title: string; text: string }) { return <div className="admin-empty"><span><Icon size={30} /></span><h3>{title}</h3><p>{text}</p></div>; }
 
 function Dialog({ title, subtitle, children, onClose, className, busy = false }: { title: string; subtitle?: string; children: ReactNode; onClose: () => void; className?: string; busy?: boolean }) {
-  useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); }; const previous = document.body.style.overflow; document.body.style.overflow = 'hidden'; document.addEventListener('keydown', onKey); return () => { document.body.style.overflow = previous; document.removeEventListener('keydown', onKey); }; }, [onClose]);
+  useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape' && !event.defaultPrevented) onClose(); }; const previous = document.body.style.overflow; document.body.style.overflow = 'hidden'; document.addEventListener('keydown', onKey); return () => { document.body.style.overflow = previous; document.removeEventListener('keydown', onKey); }; }, [onClose]);
   return <div className="admin-modal-overlay" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className={`admin-dialog${className ? ` ${className}` : ''}`} role="dialog" aria-modal="true" aria-labelledby="admin-dialog-title"><header><div><h2 id="admin-dialog-title">{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button type="button" className="admin-icon-button" disabled={busy} onClick={onClose} aria-label="დახურვა"><X size={21} /></button></header>{children}</section></div>;
 }
 
@@ -262,8 +262,8 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
   useEffect(() => {
     if (!needsSchedule || busyRef.current) return;
     setFields(current => {
-      if (!staffDateAllowed(current.requestedDate, anchor)) { autoPick.current = false; return { ...current, requestedDate: anchor, requestedTime: '' }; }
-      if (current.requestedTime && !staffFutureTime(current.requestedDate, current.requestedTime, clockNow)) { autoPick.current = false; return { ...current, requestedTime: '' }; }
+      if (!staffDateAllowed(current.requestedDate, anchor)) { autoPick.current = false; return { ...current, requestedDate: anchor, requestedTime: '', assignedVehicleKey: '', expectedVehicleRevision: undefined }; }
+      if (current.requestedTime && !staffFutureTime(current.requestedDate, current.requestedTime, clockNow)) { autoPick.current = false; return { ...current, requestedTime: '', assignedVehicleKey: '', expectedVehicleRevision: undefined }; }
       return current;
     });
   }, [anchor, clockNow, needsSchedule]);
@@ -293,7 +293,7 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
   function update<K extends keyof BookingFields>(key: K, value: BookingFields[K]) {
     if (busyRef.current) return;
     const reset: Partial<BookingFields> = {};
-    if (['direction', 'requestedDate', 'requestedTime'].includes(key) && fields[key] !== value) reset.assignedVehicleKey = '';
+    if (['direction', 'requestedDate', 'requestedTime'].includes(key) && fields[key] !== value) { reset.assignedVehicleKey = ''; reset.expectedVehicleRevision = undefined; }
     if (modal.kind === 'create') {
       if (key === 'goriAddress' || key === 'pickupStopId') provenance.current[key as keyof typeof provenance.current] = 'manual';
       if (key === 'goriAddress') addressDrafts.current[fields.direction] = { value: String(value), provenance: 'manual' };
@@ -333,7 +333,8 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
         if (`${current.direction}:${current.requestedDate}` !== key) return current;
         const available = result.slots.filter(slot => slot.active && staffFutureTime(current.requestedDate, slot.time));
         const selected = available.some(slot => slot.time === current.requestedTime);
-        return { ...current, requestedTime: selected ? current.requestedTime : shouldAutoPick ? available[0]?.time || '' : '' };
+        const requestedTime = selected ? current.requestedTime : shouldAutoPick ? available[0]?.time || '' : '';
+        return requestedTime === current.requestedTime ? current : { ...current, requestedTime, assignedVehicleKey: '', expectedVehicleRevision: undefined };
       });
     }).catch(cause => { if (!controller.signal.aborted) setScheduleError(errorMessage(cause)); }).finally(() => { if (!controller.signal.aborted) setScheduleLoading(false); });
     return () => controller.abort();
@@ -345,7 +346,7 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
       if (controller.signal.aborted) return;
       const available = result.slots.some(slot => slot.active && slot.time === (booking.assignedTime || booking.requestedTime));
       setOriginalAvailable(available); setRestoreMode(available ? 'original' : 'select');
-      if (!available) { autoPick.current = false; setFields(current => ({ ...current, requestedDate: staffDefaultDate(current.requestedDate), requestedTime: '' })); }
+      if (!available) { autoPick.current = false; setFields(current => ({ ...current, requestedDate: staffDefaultDate(current.requestedDate), requestedTime: '', assignedVehicleKey: '', expectedVehicleRevision: undefined })); }
     }).catch(cause => { if (!controller.signal.aborted) setOriginalError(errorMessage(cause)); }).finally(() => { if (!controller.signal.aborted) setOriginalChecking(false); });
     return () => controller.abort();
   }, [modal.kind, booking?.id, originalRevision]);
@@ -353,12 +354,14 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
   function chooseRestoreTime() {
     if (busyRef.current || originalChecking) return;
     autoPick.current = false; setRestoreMode('select'); setError('');
-    setFields(current => ({ ...current, requestedDate: staffDefaultDate(current.requestedDate), requestedTime: '' }));
+    setFields(current => ({ ...current, requestedDate: staffDefaultDate(current.requestedDate), requestedTime: '', assignedVehicleKey: '', expectedVehicleRevision: undefined }));
   }
   const title = { create: 'ახალი ჯავშანი', edit: 'ჯავშნის რედაქტირება', confirm: 'განაცხადის დამატება', move: 'ჯავშნის გადატანა', delete: 'ჯავშნის წაშლა', restore: 'ჯავშნის აღდგენა' }[modal.kind];
   const actionLabel = { create: 'შექმნა და დადასტურება', edit: 'ცვლილებების შენახვა', confirm: 'დამატება და დადასტურება', move: 'გადატანა', delete: 'წაშლა', restore: 'აღდგენა' }[modal.kind];
   const scheduleValid = !!schedule && !scheduleLoading && !scheduleError && days.includes(fields.requestedDate) && activeTimes.includes(fields.requestedTime);
-  const vehicleValid = !needsSchedule || fields.bookingType !== 'whole_car' || !!fields.assignedVehicleKey;
+  const restoringWaiting = modal.kind === 'restore' && booking?.status === 'waiting';
+  const needsVehicleRevision = needsSchedule || modal.kind === 'restore' && !restoringWaiting;
+  const vehicleValid = modal.kind === 'delete' || restoringWaiting || fields.bookingType !== 'whole_car' || !!fields.assignedVehicleKey && (!needsVehicleRevision || !!fields.expectedVehicleRevision);
   const detailsValid = !isDetails || (!!normalizePhone(fields.phone) && (!fields.callerPhone.trim() || !!normalizePhone(fields.callerPhone)) && (fields.bookingType === 'parcel' || (fields.bookingType === 'whole_car' ? !!fields.assignedVehicleKey : Number.isInteger(fields.seats) && fields.seats >= 1 && fields.seats <= 8)) && fields.goriAddress.trim().length >= 3 && fields.goriAddress.trim().length <= 500 && (fields.direction === 'gori-tbilisi' || activeStops.some(stop => stop.id === fields.pickupStopId) || (modal.kind === 'edit' && !!booking?.pickupStopId && fields.pickupStopId === booking.pickupStopId)));
   const restoreReady = modal.kind !== 'restore' || booking?.status === 'waiting' || (!originalChecking && (restoreMode === 'select' || (restoreMode === 'original' && originalAvailable)));
   async function submit(event: FormEvent) {
@@ -370,27 +373,31 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
     if (isDetails && fields.bookingType === 'passenger' && (!Number.isInteger(fields.seats) || fields.seats < 1 || fields.seats > 8)) { setError('აირჩიეთ 1-დან 8-მდე ადგილი.'); return; }
     if (!detailsValid || !vehicleValid || !restoreReady) { setError('შეავსეთ მგზავრობის მონაცემები.'); return; }
     if (needsSchedule && (!scheduleValid || !staffDateAllowed(fields.requestedDate) || !staffFutureTime(fields.requestedDate, fields.requestedTime))) {
-      autoPick.current = false; setClockNow(Date.now()); setFields(current => ({ ...current, requestedDate: staffDefaultDate(current.requestedDate), requestedTime: '' }));
+      autoPick.current = false; setClockNow(Date.now()); setFields(current => ({ ...current, requestedDate: staffDefaultDate(current.requestedDate), requestedTime: '', assignedVehicleKey: '', expectedVehicleRevision: undefined }));
       setError('აირჩიეთ მომავალი მოქმედი დრო დღეს ან ხვალ.'); return;
     }
     busyRef.current = true; setBusy(true); setError('');
     try {
       if (modal.kind === 'create') {
         const path = inquiry ? `/admin/calls/${inquiry.id}/convert` : '/admin/bookings';
-        const body = JSON.stringify({ phone: submittedPhone, callerPhone: submittedCallerPhone, luggage: fields.luggage, dog: fields.dog, seatPreference: fields.seatPreference, bookingType: fields.bookingType, assignedVehicleKey: fields.assignedVehicleKey || null, seats: fields.bookingType === 'parcel' ? 0 : fields.seats, direction: fields.direction, requestedDate: fields.requestedDate, requestedTime: fields.requestedTime, goriAddress: fields.goriAddress, pickupStopId: fields.direction === 'tbilisi-gori' ? fields.pickupStopId : null });
+        const body = JSON.stringify({ phone: submittedPhone, callerPhone: submittedCallerPhone, luggage: fields.luggage, dog: fields.dog, seatPreference: fields.seatPreference, bookingType: fields.bookingType, assignedVehicleKey: fields.assignedVehicleKey || null, expectedVehicleRevision: fields.expectedVehicleRevision, seats: fields.bookingType === 'parcel' ? 0 : fields.seats, direction: fields.direction, requestedDate: fields.requestedDate, requestedTime: fields.requestedTime, goriAddress: fields.goriAddress, pickupStopId: fields.direction === 'tbilisi-gori' ? fields.pickupStopId : null });
         const identity = `${path}:${body}`;
         let key = createAttempts.current.get(identity);
         if (!key) { key = crypto.randomUUID(); createAttempts.current.set(identity, key); }
         await request<Booking>(path, { method: 'POST', headers: { 'Idempotency-Key': key }, body });
-      } else if (modal.kind === 'edit') await request<Booking>(`/admin/bookings/${modal.booking.id}`, { method: 'PATCH', body: JSON.stringify({ phone: submittedPhone, luggage: fields.luggage, dog: fields.dog, seatPreference: fields.seatPreference, bookingType: fields.bookingType, assignedVehicleKey: fields.assignedVehicleKey || null, seats: fields.bookingType === 'parcel' ? 0 : fields.seats, goriAddress: fields.goriAddress, pickupStopId: fields.direction === 'tbilisi-gori' ? fields.pickupStopId : null }) });
-      else await request<Booking>(`/admin/bookings/${modal.booking.id}/${modal.kind}`, { method: 'POST', body: JSON.stringify(modal.kind === 'delete' || (modal.kind === 'restore' && !needsSchedule) ? {} : { date: fields.requestedDate, time: fields.requestedTime, ...(fields.bookingType === 'whole_car' ? { assignedVehicleKey: fields.assignedVehicleKey } : {}) }) });
+      } else if (modal.kind === 'edit') await request<Booking>(`/admin/bookings/${modal.booking.id}`, { method: 'PATCH', body: JSON.stringify({ phone: submittedPhone, luggage: fields.luggage, dog: fields.dog, seatPreference: fields.seatPreference, bookingType: fields.bookingType, assignedVehicleKey: fields.assignedVehicleKey || null, expectedVehicleRevision: fields.expectedVehicleRevision, seats: fields.bookingType === 'parcel' ? 0 : fields.seats, goriAddress: fields.goriAddress, pickupStopId: fields.direction === 'tbilisi-gori' ? fields.pickupStopId : null }) });
+      else {
+        const vehicle = fields.bookingType === 'whole_car' && !restoringWaiting ? { assignedVehicleKey: fields.assignedVehicleKey, expectedVehicleRevision: fields.expectedVehicleRevision } : {};
+        const body = modal.kind === 'delete' ? {} : modal.kind === 'restore' && !needsSchedule ? vehicle : { date: fields.requestedDate, time: fields.requestedTime, ...vehicle };
+        await request<Booking>(`/admin/bookings/${modal.booking.id}/${modal.kind}`, { method: 'POST', body: JSON.stringify(body) });
+      }
       if (activeRef.current) onComplete({ create: 'ჯავშანი შეიქმნა და დადასტურდა', edit: 'ცვლილებები შენახულია', confirm: 'ჯავშანი დაემატა და დადასტურდა', move: 'ჯავშანი გადატანილია', delete: 'ჯავშანი გადატანილია ისტორიაში', restore: 'ჯავშანი აღდგენილია' }[modal.kind]);
     } catch (cause) {
       if (!activeRef.current) return;
       setError(errorMessage(cause));
       if (cause instanceof ApiError && ['SLOT_INACTIVE', 'SLOT_PAST', 'DATE_OUT_OF_RANGE'].includes(cause.code || '')) {
         autoPick.current = false; setClockNow(Date.now());
-        setFields(current => ({ ...current, requestedDate: staffDefaultDate(current.requestedDate), requestedTime: '' }));
+        setFields(current => ({ ...current, requestedDate: staffDefaultDate(current.requestedDate), requestedTime: '', assignedVehicleKey: '', expectedVehicleRevision: undefined }));
         if (modal.kind === 'restore' && !needsSchedule) { setOriginalAvailable(false); setRestoreMode('select'); }
         setScheduleRevision(value => value + 1);
       }
@@ -416,11 +423,11 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
         {fields.bookingType === 'passenger' && <fieldset className="admin-operator-group" role="group" aria-label="ადგილების რაოდენობა"><legend>ადგილების რაოდენობა</legend><div className="admin-operator-seats">{Array.from({ length: 8 }, (_, index) => index + 1).map(count => <button type="button" key={count} aria-label={`${count} ადგილი`} aria-pressed={fields.seats === count} disabled={busy} onClick={() => update('seats', count)}>{count}</button>)}</div></fieldset>}
         {fields.direction === 'gori-tbilisi' && <div className="admin-operator-fixed-stop"><MapPin size={16} /><span>თბილისში: <strong>{booking?.didubeName || config.didubeName}</strong>{(booking?.didubeAddress || config.didubeAddress) && ` · ${booking?.didubeAddress || config.didubeAddress}`}</span></div>}
       </>}
-      {!isDetails && needsSchedule && fields.bookingType === 'whole_car' && <BookingTypeFields lockType value={fields} direction={fields.direction} date={fields.requestedDate} time={fields.requestedTime} bookingId={booking?.id} disabled={busy} onChange={value => setFields(current => ({ ...current, ...value }))} />}
+      {!isDetails && !restoringWaiting && fields.bookingType === 'whole_car' && <BookingTypeFields lockType value={fields} direction={fields.direction} date={modal.kind === 'restore' && !needsSchedule ? booking!.assignedDate || booking!.requestedDate : fields.requestedDate} time={modal.kind === 'restore' && !needsSchedule ? booking!.assignedTime || booking!.requestedTime : fields.requestedTime} bookingId={booking?.id} disabled={busy} onChange={value => setFields(current => ({ ...current, ...value }))} />}
       {!isDetails && <div className="admin-order-summary"><ArrowRightLeft size={18} /><strong>{directions[fields.direction]}</strong><span>{fields.bookingType !== 'passenger' ? <BookingTypeSummary bookingType={fields.bookingType} assignedVehicleName={booking?.assignedVehicleName} /> : `${fields.seats} ადგილი`}</span></div>}
       {modal.kind === 'restore' && booking?.status === 'confirmed' && <div className="admin-operator-restore">
         {originalChecking ? <p role="status"><Loader2 size={16} className="admin-spin" />თავდაპირველი დრო მოწმდება…</p> : <>
-          <div className="admin-operator-restore-options" role="group" aria-label="აღდგენის დრო"><button type="button" aria-label="თავდაპირველი დროის შენარჩუნება" aria-pressed={restoreMode === 'original'} disabled={busy || !originalAvailable} onClick={() => { setRestoreMode('original'); setError(''); }}>თავდაპირველი დრო</button><button type="button" aria-label="ახალი დროის არჩევა" aria-pressed={restoreMode === 'select'} disabled={busy} onClick={chooseRestoreTime}>ახალი დროის არჩევა</button></div>
+          <div className="admin-operator-restore-options" role="group" aria-label="აღდგენის დრო"><button type="button" aria-label="თავდაპირველი დროის შენარჩუნება" aria-pressed={restoreMode === 'original'} disabled={busy || !originalAvailable} onClick={() => { setRestoreMode('original'); setError(''); setFields(current => ({ ...current, assignedVehicleKey: booking?.assignedVehicleKey || '', expectedVehicleRevision: undefined })); }}>თავდაპირველი დრო</button><button type="button" aria-label="ახალი დროის არჩევა" aria-pressed={restoreMode === 'select'} disabled={busy} onClick={chooseRestoreTime}>ახალი დროის არჩევა</button></div>
           {restoreMode === 'original' && <p>ჯავშანი აღდგება უცვლელად: {dateLabel(booking.assignedDate || booking.requestedDate, { year: 'numeric' })} · {booking.assignedTime || booking.requestedTime}</p>}
           {!originalAvailable && !originalError && <p>თავდაპირველი დრო გამორთულია. აირჩიეთ ახალი მომავალი დრო.</p>}
           {originalError && <div className="admin-error">{originalError}<button type="button" disabled={busy} onClick={() => setOriginalRevision(value => value + 1)}>თავდაპირველი დროის ხელახლა შემოწმება</button></div>}

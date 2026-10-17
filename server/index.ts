@@ -2,13 +2,14 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { createDatabase, type Database } from './database.js';
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { Analytics, Booking, CallDevice, CallInquiry, Direction, PassengerProfile, Schedule, Slot, User } from '../src/api.js';
+import type { Analytics, Booking, CallDevice, CallInquiry, Direction, PassengerProfile, Schedule, Slot, User, WholeCarDriver } from '../src/api.js';
 import { normalizePhone, legacyPhoneKey } from '../shared/phone.js';
 import { migratePassengerAddresses, migratePhoneStorage, migratePickupMemory, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from './passenger-profiles.js';
 import { comparePassengerTrips, listPassengers, passengerBookings, passengerSummary } from './passengers.js';
 import { readDriverSchedule } from './drivers.js';
 import { DRIVER_DIRECTION } from '../shared/driver-rotation.js';
 import { readTripCapacity } from './trip-capacity.js';
+import { readWholeCarOptions } from './whole-car-options.js';
 import { callBookingRelated, readActiveCallBookings, readPreferredBookingPhones } from './call-bookings.js';
 
 const scrypt = promisify(scryptCallback);
@@ -270,11 +271,37 @@ export async function createApp(options: Options = {}) {
   async function validateWholeCar(row: Row, day: string, slotTime: string) {
     if (row.booking_type === 'whole_car') await availableWholeCar(row.direction, day, slotTime, row.assigned_vehicle_key, row.id, false);
   }
-  async function reassignWholeCar(row: Row, day: string, slotTime: string, suppliedKey: unknown) {
+  async function selectWholeCar(d: Direction, day: unknown, slotTime: unknown, key: string, exceptId: number | undefined, expectedRevision: unknown, requireAssignment: boolean, requireActive = true) {
+    if (d !== DRIVER_DIRECTION) reject(400, 'ამ მიმართულებაზე მძღოლების სია არ არის.', 'VEHICLE_UNAVAILABLE');
+    const selectedDay = date(day); const selectedTime = time(slotTime);
+    const effective = (await configuredTimes(d, selectedDay)).effective;
+    const options = await readWholeCarOptions(db, selectedDay, selectedTime, effective);
+    const car = options.drivers.find(driver => driver.key === key);
+    if (!car) reject(409, 'მძღოლი ან მანქანა აღარ არის ხელმისაწვდომი. განაახლეთ სია.', 'VEHICLE_UNAVAILABLE');
+    if (car.reservedBookingId && car.reservedBookingId !== exceptId) reject(409, 'მანქანა უკვე მთლიანად დაჯავშნილია.', 'VEHICLE_RESERVED');
+    if (expectedRevision !== undefined) {
+      const revision = text(expectedRevision, 'მანქანის ვერსია', 64, 64);
+      if (!/^[a-f0-9]{64}$/.test(revision)) reject(400, 'მანქანის ვერსია არასწორია.', 'VALIDATION');
+      if (revision !== car.revision) reject(409, 'მძღოლის მონაცემები შეიცვალა. განაახლეთ არჩევანი და სცადეთ ხელახლა.', 'TRIP_CHANGED');
+    }
+    const changesAssignment = car.kind === 'roster' && (car.declined || car.assignedTime !== selectedTime);
+    if ((requireActive || changesAssignment) && !effective.includes(selectedTime)) reject(409, 'არჩეული დრო გამორთულია. აირჩიეთ მოქმედი დრო.', 'SLOT_INACTIVE');
+    if (requireAssignment && changesAssignment && expectedRevision === undefined) reject(409, 'მძღოლის მისაბმელად განაახლეთ მანქანის არჩევანი.', 'TRIP_CHANGED');
+    return { car, date: selectedDay, time: selectedTime, changesAssignment };
+  }
+  async function assignWholeCar(choice: { car: WholeCarDriver; date: string; time: string; changesAssignment: boolean }, employee?: User) {
+    if (!choice.changesAssignment) return;
+    await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,0,'manual',?,?)
+      ON CONFLICT(driver_id,date) DO UPDATE SET declined=0,assignment_mode='manual',manual_time=excluded.manual_time,updated_at=excluded.updated_at`)
+      .run(choice.car.driverId, choice.date, choice.time, now().toISOString());
+    await audit('trip.driver.add', employee, undefined, { direction: DRIVER_DIRECTION, date: choice.date, time: choice.time, addedKey: choice.car.key, fromTime: choice.car.assignedTime, activated: choice.car.declined, source: 'whole-car-booking' });
+  }
+  async function reassignWholeCar(row: Row, day: string, slotTime: string, suppliedKey: unknown, expectedRevision: unknown, employee?: User) {
     if (row.booking_type !== 'whole_car') return;
     const key = suppliedKey === undefined ? row.assigned_vehicle_key : text(suppliedKey, 'დანიშნული მანქანა', 1, 100);
-    const car = await availableWholeCar(row.direction, day, slotTime, key, row.id);
-    await db.prepare('UPDATE bookings SET assigned_vehicle_key=?,assigned_vehicle_name=?,seats=? WHERE id=?').run(key, car.name, car.capacity, row.id);
+    const choice = await selectWholeCar(row.direction, day, slotTime, key, row.id, expectedRevision, true);
+    await assignWholeCar(choice, employee);
+    await db.prepare('UPDATE bookings SET assigned_vehicle_key=?,assigned_vehicle_name=?,seats=? WHERE id=?').run(key, choice.car.name, choice.car.capacity, row.id);
   }
   async function protectWholeCars(day: string) {
     const rows = await db.prepare("SELECT * FROM bookings WHERE booking_type='whole_car' AND status='confirmed' AND deleted_at IS NULL AND assigned_date=?").all(day);
@@ -289,13 +316,14 @@ export async function createApp(options: Options = {}) {
     let seats = bookingType === 'parcel' || bookingType === 'whole_car' ? 0 : seatCount(body.seats ?? existing?.seats, employee ? 8 : 4);
     let assignedVehicleKey: string | null = null;
     let assignedVehicleName: string | null = null;
+    let wholeCarChoice: Awaited<ReturnType<typeof selectWholeCar>> | undefined;
     if (bookingType === 'whole_car') {
       assignedVehicleKey = text(body.assignedVehicleKey ?? existing?.assigned_vehicle_key, 'დანიშნული მანქანა', 1, 100);
       const day = existing?.assigned_date ?? existing?.requested_date ?? body.requestedDate;
       const slotTime = existing?.assigned_time ?? existing?.requested_time ?? body.requestedTime;
       const retainsCar = existing?.booking_type === 'whole_car' && existing.assigned_vehicle_key === assignedVehicleKey;
-      const car = await availableWholeCar(d, day, slotTime, assignedVehicleKey, existing?.id, !retainsCar);
-      seats = car.capacity; assignedVehicleName = car.name;
+      wholeCarChoice = await selectWholeCar(d, day, slotTime, assignedVehicleKey, existing?.id, body.expectedVehicleRevision, existing?.status !== 'waiting', !retainsCar);
+      seats = wholeCarChoice.car.capacity; assignedVehicleName = wholeCarChoice.car.name;
     }
     // Public requests cannot create phone associations or operator-only notes.
     const luggage = employee ? bookingFlag(body.luggage, existing?.luggage) : false;
@@ -313,7 +341,7 @@ export async function createApp(options: Options = {}) {
       stopName = existing && stopId === existing.pickup_stop_id ? existing.pickup_stop_name : selected.name;
     }
     return { direction: d, name, phone: number, seats, goriAddress: address, pickupStopId: stopId, pickupStopName: stopName,
-      callerPhone: caller, luggage, dog, seatPreference: preferredSeat, bookingType, assignedVehicleKey, assignedVehicleName };
+      callerPhone: caller, luggage, dog, seatPreference: preferredSeat, bookingType, assignedVehicleKey, assignedVehicleName, wholeCarChoice };
   }
   async function saveProfile(row: Row) {
     await savePassengerProfile(db, row);
@@ -327,6 +355,7 @@ export async function createApp(options: Options = {}) {
     const slotTime = time(body.requestedTime);
     if (employee) staffDateWindow(day, source === 'android');
     (await activeSlot(input.direction, day, slotTime, true));
+    if (input.wholeCarChoice) await assignWholeCar(input.wholeCarChoice, employee);
     const stamp = now().toISOString();
     const config = (await settings());
     const result = (await db.prepare(`INSERT INTO bookings(name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,source,created_at,updated_at,caller_phone,luggage,dog,seat_preference,booking_type,assigned_vehicle_key,assigned_vehicle_name)
@@ -335,6 +364,7 @@ export async function createApp(options: Options = {}) {
     const id = Number(result.lastInsertRowid);
     (await audit('create', employee, id, { source }));
     const created = await getBooking(id);
+    if (input.wholeCarChoice) await protectWholeCars(day);
     if (employee) await saveProfile(created);
     return booking(created);
   }
@@ -740,10 +770,12 @@ export async function createApp(options: Options = {}) {
       const input = (await inputBooking(req.body, row, true));
       const originalCaller = row.caller_phone === null ? null : normalizePhone(row.caller_phone) ?? row.caller_phone;
       if (row.source === 'android' && input.callerPhone !== originalCaller && input.callerPhone !== row.caller_phone) reject(400, 'შემომავალი ზარის ნომრის შეცვლა დაუშვებელია.', 'CALLER_IMMUTABLE');
+      if (input.wholeCarChoice && row.status === 'confirmed') await assignWholeCar(input.wholeCarChoice, req.employee);
       (await db.prepare('UPDATE bookings SET name=?,phone=?,seats=?,gori_address=?,pickup_stop_id=?,pickup_stop_name=?,updated_at=?,caller_phone=?,luggage=?,dog=?,seat_preference=?,booking_type=?,assigned_vehicle_key=?,assigned_vehicle_name=? WHERE id=?').run(input.name, input.phone, input.seats, input.goriAddress, input.pickupStopId, input.pickupStopName, now().toISOString(), input.callerPhone,
         Number(input.luggage), Number(input.dog), input.seatPreference, input.bookingType, input.assignedVehicleKey, input.assignedVehicleName, row.id));
       (await audit('edit', req.employee, row.id, { fields: Object.keys(req.body) }));
       const edited = await getBooking(row.id);
+      if (input.wholeCarChoice && row.status === 'confirmed') await protectWholeCars(row.assigned_date);
       await saveProfile(edited);
       return booking(edited);
     });
@@ -760,8 +792,9 @@ export async function createApp(options: Options = {}) {
       }
       staffDateWindow(day);
       (await activeSlot(row.direction, day, slotTime, true));
-      await reassignWholeCar(row, day, slotTime, req.body.assignedVehicleKey);
+      await reassignWholeCar(row, day, slotTime, req.body.assignedVehicleKey, req.body.expectedVehicleRevision, req.employee);
       (await db.prepare("UPDATE bookings SET assigned_date=?,assigned_time=?,status='confirmed',updated_at=? WHERE id=?").run(day, slotTime, now().toISOString(), row.id));
+      if (row.booking_type === 'whole_car') await protectWholeCars(day);
       (await audit('confirm', req.employee, row.id, { date: day, time: slotTime }));
       const confirmed = await getBooking(row.id);
       await saveProfile(confirmed);
@@ -776,8 +809,9 @@ export async function createApp(options: Options = {}) {
       const slotTime = time(req.body.time);
       staffDateWindow(day);
       (await activeSlot(row.direction, day, slotTime, true));
-      await reassignWholeCar(row, day, slotTime, req.body.assignedVehicleKey);
+      await reassignWholeCar(row, day, slotTime, req.body.assignedVehicleKey, req.body.expectedVehicleRevision, req.employee);
       (await db.prepare('UPDATE bookings SET assigned_date=?,assigned_time=?,updated_at=? WHERE id=?').run(day, slotTime, now().toISOString(), row.id));
+      if (row.booking_type === 'whole_car') await protectWholeCars(day);
       (await audit('move', req.employee, row.id, { fromDate: row.assigned_date, fromTime: row.assigned_time, date: day, time: slotTime }));
       return booking((await getBooking(row.id)));
     });
@@ -807,9 +841,10 @@ export async function createApp(options: Options = {}) {
         slotTime = time(req.body.time === undefined ? row.assigned_time : req.body.time);
         if (rescheduling) staffDateWindow(day);
         (await activeSlot(row.direction, day, slotTime, rescheduling));
-        await reassignWholeCar(row, day, slotTime, req.body.assignedVehicleKey);
+        await reassignWholeCar(row, day, slotTime, req.body.assignedVehicleKey, req.body.expectedVehicleRevision, req.employee);
       }
       (await db.prepare('UPDATE bookings SET deleted_at=NULL,assigned_date=?,assigned_time=?,updated_at=? WHERE id=?').run(day, slotTime, now().toISOString(), row.id));
+      if (row.booking_type === 'whole_car' && row.status === 'confirmed') await protectWholeCars(day!);
       (await audit('restore', req.employee, row.id, { date: day, time: slotTime }));
       return booking((await getBooking(row.id)));
     });
@@ -833,6 +868,13 @@ export async function createApp(options: Options = {}) {
     const day = date(req.query.date);
     const slotTime = time(req.query.time);
     const result = await transaction(async () => readTripCapacity(db, day, slotTime, (await configuredTimes(d, day)).effective));
+    res.json(result);
+  });
+  app.get('/api/admin/trips/whole-car-options', async (req, res) => {
+    const d = driverDirection(req.query.direction);
+    const day = date(req.query.date);
+    const slotTime = time(req.query.time);
+    const result = await transaction(async () => readWholeCarOptions(db, day, slotTime, (await configuredTimes(d, day)).effective));
     res.json(result);
   });
   app.post('/api/admin/trips/drivers', async (req: ContextRequest, res) => {
