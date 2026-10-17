@@ -49,6 +49,13 @@ async function fixture() {
   const setup = await request('/auth/setup', 'POST', { name: 'ჯგუფის ოპერატორი', login: 'group_operator', password: PASSWORD });
   assert.equal(setup.status, 201);
   cookie = setup.headers.get('set-cookie')!.split(';')[0];
+  // Whole-car bookings require concrete cars explicitly assigned by an operator.
+  for (const [id, time] of [[1, '08:30'], [2, '09:30']] as const) {
+    const current = await request(`/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=${time}`);
+    assert.equal(current.data.drivers.length, 0);
+    const assigned = await request('/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: DAY, time, expectedRevision: current.data.revision, action: 'add', driver: { kind: 'roster', id } });
+    assert.equal(assigned.status, 201);
+  }
   return {
     ...service, request, base, databaseUrl,
     setNow(value: string) { currentTime = new Date(value); },
@@ -156,7 +163,7 @@ test('an operator can turn an incoming passenger request into a whole-car bookin
   });
 });
 
-test('schedule updates cannot silently move a reserved car, while a disabled departure retains its booking', async () => {
+test('schedule updates retain explicitly assigned reserved cars, including disabled departures', async () => {
   await isolated(async f => {
     const path = `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=08:30`;
     const car = (await successful(f, path)).drivers[0];
@@ -165,19 +172,12 @@ test('schedule updates cannot silently move a reserved car, while a disabled dep
     const shiftedTimes = ['07:30', ...original.baseTimes];
     const change = (times: string[]) => ({ direction: 'gori-tbilisi', date: DAY, times });
 
-    const dateChange = await f.request('/admin/schedule/date', 'PUT', change(shiftedTimes));
-    assert.equal(dateChange.status, 409); assert.equal(dateChange.data.code, 'VEHICLE_UNAVAILABLE');
-    const baseChange = await f.request('/admin/schedule/base', 'PUT', change(shiftedTimes));
-    assert.equal(baseChange.status, 409); assert.equal(baseChange.data.code, 'VEHICLE_UNAVAILABLE');
-    const unchanged = await successful(f, `/admin/schedule?direction=gori-tbilisi&date=${DAY}`);
-    assert.deepEqual(unchanged.baseTimes, original.baseTimes); assert.equal(unchanged.overrideTimes, null);
-
-    // A date override isolates this day's reservation from changes to the base.
-    await successful(f, '/admin/schedule/date', 'PUT', change(original.baseTimes));
+    // Adding/removing unrelated departures never reflows explicit assignments.
+    await successful(f, '/admin/schedule/date', 'PUT', change(shiftedTimes));
     await successful(f, '/admin/schedule/base', 'PUT', change(shiftedTimes));
-    const reset = await f.request(`/admin/schedule/date?direction=gori-tbilisi&date=${DAY}`, 'DELETE');
-    assert.equal(reset.status, 409); assert.equal(reset.data.code, 'VEHICLE_UNAVAILABLE');
-    assert.deepEqual((await successful(f, `/admin/schedule?direction=gori-tbilisi&date=${DAY}`)).overrideTimes, original.baseTimes);
+    await successful(f, `/admin/schedule/date?direction=gori-tbilisi&date=${DAY}`, 'DELETE');
+    const retained = await successful(f, path);
+    assert.equal(retained.drivers.find((row: any) => row.key === car.key).reservedBookingId, created.id);
 
     await successful(f, '/admin/schedule/date', 'PUT', change(original.baseTimes.filter((value: string) => value !== '08:30')));
     const closed = await successful(f, path);

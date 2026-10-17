@@ -103,3 +103,94 @@
   .admin-trip-capacity-editor-buttons { width: 100%; }
   .admin-trip-capacity-editor-buttons > button { flex: 1; }
 }
+
+/* Keep the common assignment action visible without opening management controls. */
+.admin-trip-capacity-heading-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.admin-trip-capacity .admin-trip-assign-button { min-height: 60px; padding: 15px 20px; font-size: 18px; background: #08773e; border-color: #08773e; }
+.admin-trip-capacity .admin-trip-assign-button:hover { background: #075f33; }
+.admin-trip-capacity-title p { color: #496451; font-size: 13px; }
+.admin-trip-capacity-toggle { color: #28543a; border-color: #aac4b3; font-size: 14px; min-height: 52px; }
+.admin-trip-capacity-car-name { color: #1e4c32; font-size: 18px; }
+.admin-trip-capacity-car small { color: #3c5b47; font-size: 13px; }
+.admin-trip-capacity-car-count { color: #315d3f; font-size: 16px; }
+.admin-trip-capacity-car-actions .admin-trip-capacity-button { min-height: 52px; font-size: 15px; color: #225b38; }
+.admin-trip-capacity-car-actions .admin-trip-capacity-button.danger { color: #912f29; }
+.admin-trip-capacity-empty { color: #365942; font-size: 15px; }
+.admin-trip-capacity-feedback, .admin-trip-capacity-warning { font-size: 14px; }
+.admin-trip-capacity-stat { color: #3d5a47; font-size: 13px; }
+
+.admin-driver-dialog-backdrop { position: fixed; z-index: 1100; inset: 0; display: flex; justify-content: center; align-items: center; padding: 24px; background: #10251bd6; overflow-y: auto; overscroll-behavior: contain; }
+.admin-driver-dialog { --driver-dialog-padding: 24px; box-sizing: border-box; width: 760px; max-width: 100%; max-height: calc(100dvh - 48px); overflow-y: auto; overscroll-behavior: contain; padding: var(--driver-dialog-padding); border-radius: 18px; border: 2px solid #bbd3c4; box-shadow: 0 20px 70px #071a1259; background: #fff; color: #193d29; font-family: var(--font-body); }
+.admin-driver-dialog :is(button, input, select) { box-sizing: border-box; font: inherit; }
+.admin-driver-dialog button { cursor: pointer; }
+.admin-driver-dialog button:disabled { cursor: default; }
+.admin-driver-dialog :is(button, input, select):focus-visible { outline: 3px solid #1446a0; outline-offset: 3px; }
+.admin-driver-dialog-heading { position: sticky; top: calc(-1 * var(--driver-dialog-padding)); z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin: calc(-1 * var(--driver-dialog-padding)) calc(-1 * var(--driver-dialog-padding)) 0; padding: var(--driver-dialog-padding) var(--driver-dialog-padding) 12px; background: #fff; }
+.admin-driver-dialog-heading > div { min-width: 0; }
+.admin-driver-dialog-heading h2 { margin: 0 0 8px; font-family: var(--font-heading); font-size: 23px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
+.admin-driver-dialog-heading p { margin: 0; color: #3d5c48; font-size: 16px; line-height: 1.7; }
+.admin-driver-dialog-heading p strong { color: #115b32; font-size: 21px; }
+.admin-driver-dialog-close { flex: 0 0 56px; display: grid; place-items: center; width: 56px; height: 56px; padding: 0; border-radius: 12px; border: 1px solid #9fb9a8; background: #f3f7f4; color: #284d36; }
+.admin-driver-dialog-close:hover { background: #e1eee5; }
+.admin-driver-dialog-description { margin: 18px 0; font-size: 15px; line-height: 1.8; color: #385a44; }
+.admin-driver-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+.admin-driver-dialog .admin-driver-choice { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 112px; padding: 15px; border: 2px solid #7ea98e; border-radius: 13px; background: #eff8f2; color: #18452a; text-align: left; }
+.admin-driver-dialog .admin-driver-choice:hover:not(:disabled) { border-color: #1a743f; background: #dcefe3; }
+.admin-driver-choice-position { flex: 0 0 38px; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 9px; background: #d0e9d9; color: #214f33; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.admin-driver-choice-info { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 5px; }
+.admin-driver-choice-info strong { font-size: 20px; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
+.admin-driver-choice-info > span { font-size: 16px; line-height: 1.5; }
+.admin-driver-choice-info small { font-size: 13px; line-height: 1.7; color: #3d5d47; }
+.admin-driver-choice > svg { flex-shrink: 0; }
+.admin-driver-dialog .admin-driver-choice.selected { background: #e8eeea; border-color: #a8b9ae; color: #3b5142; }
+.admin-driver-dialog .admin-driver-choice:disabled:not(.selected) { opacity: .6; }
+.admin-driver-dialog .admin-driver-other-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 56px; margin-top: 22px; padding: 12px 17px; border: 1px solid #8cae97; border-radius: 10px; background: #fff; color: #28583a; font-size: 16px; }
+.admin-driver-dialog .admin-driver-other-button:hover { background: #eef6f1; }
+.admin-driver-dialog .admin-trip-capacity-feedback { font-size: 15px; color: #175331; }
+.admin-driver-dialog .admin-trip-capacity-feedback.error { color: #8e3026; }
+.admin-driver-dialog .admin-trip-capacity-feedback .admin-trip-capacity-button { min-height: 48px; font-size: 14px; }
+.admin-driver-dialog .admin-trip-capacity-warning { color: #865018; font-size: 15px; }
+.admin-driver-dialog .admin-trip-capacity-editor { padding: 18px; margin-top: 20px; border-color: #b6ccbe; }
+.admin-driver-dialog .admin-trip-capacity-editor h3 { color: #244f34; font-size: 18px; line-height: 1.7; }
+.admin-driver-dialog .admin-trip-capacity-editor-fields { align-items: flex-start; }
+.admin-driver-dialog .admin-trip-capacity-editor-fields label { color: #2a5139; font-size: 16px; }
+.admin-driver-dialog .admin-trip-capacity-editor :is(input, select) { min-height: 56px; padding: 12px; font-size: 18px; color: #244b32; border-color: #9dbba8; }
+.admin-driver-dialog-buttons { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.admin-driver-dialog .admin-driver-dialog-buttons .admin-trip-capacity-button { min-height: 58px; padding: 13px 19px; color: #225338; border-color: #9cbda8; font-size: 17px; }
+.admin-driver-dialog .admin-driver-dialog-buttons .admin-trip-capacity-button.primary { color: #fff; background: #08773e; border-color: #08773e; font-weight: 600; }
+.admin-driver-dialog .admin-trip-capacity-button:disabled { opacity: .55; }
+.admin-driver-dialog-empty, .admin-driver-dialog-saving { padding: 16px 0; color: #3b5c47; font-size: 16px; line-height: 1.8; }
+.admin-driver-dialog-saving { display: flex; align-items: center; gap: 9px; }
+.admin-driver-transfer { margin-top: 20px; padding: 20px; background: #fff7e9; border: 2px solid #be944f; border-radius: 13px; }
+.admin-driver-transfer h3 { margin: 0 0 10px; color: #573b16; font-size: 22px; }
+.admin-driver-transfer p { color: #5a411e; font-size: 17px; line-height: 1.8; }
+.admin-driver-transfer .admin-driver-transfer-times { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; font-size: 25px; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  .admin-trip-capacity-heading-actions { width: 100%; }
+  .admin-trip-capacity .admin-trip-assign-button { flex: 1 1 100%; }
+  .admin-trip-capacity-heading-actions .admin-trip-capacity-toggle { width: 100%; }
+  .admin-driver-dialog-backdrop { padding: 12px; }
+  .admin-driver-dialog { --driver-dialog-padding: 18px; max-height: calc(100dvh - 24px); border-radius: 14px; }
+  .admin-driver-dialog-heading h2 { font-size: 21px; }
+  .admin-driver-dialog-heading p { font-size: 14px; }
+  .admin-driver-choice-grid { gap: 10px; }
+  .admin-driver-dialog .admin-driver-choice { padding: 12px; gap: 10px; }
+}
+@media (max-width: 540px) {
+  .admin-driver-choice-grid { grid-template-columns: minmax(0, 1fr); }
+  .admin-driver-dialog .admin-driver-choice { min-height: 104px; }
+  .admin-driver-dialog-backdrop { padding: 8px; }
+  .admin-driver-dialog { --driver-dialog-padding: 14px; max-height: calc(100dvh - 16px); }
+  .admin-driver-dialog-heading { gap: 9px; }
+  .admin-driver-dialog-heading h2 { font-size: 20px; }
+  .admin-driver-dialog-close { flex-basis: 52px; width: 52px; height: 52px; }
+  .admin-driver-choice-info strong { font-size: 19px; }
+  .admin-driver-dialog-description { font-size: 14px; }
+  .admin-driver-dialog .admin-trip-capacity-editor { padding: 12px; }
+  .admin-driver-dialog-buttons > button { flex: 1 1 100%; }
+  .admin-driver-dialog .admin-driver-other-button { width: 100%; }
+  .admin-driver-transfer { padding: 14px; }
+  .admin-trip-capacity-car-name { font-size: 18px; }
+  .admin-trip-capacity-title h2 { font-size: 18px; }
+  .admin-trip-capacity-stat { font-size: 12px; }
+}

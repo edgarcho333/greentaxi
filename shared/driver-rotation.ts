@@ -95,7 +95,7 @@ export function availableDriverQueue<T extends { id: number }>(
   return rotateDriverQueue(drivers, anchorDate, date).filter(driver => !declinedIds.has(driver.id));
 }
 
-/** The daily plan is a projection; it never changes the permanent queue or bookings. */
+/** The daily queue never assigns a departure; only explicit trip choices do. */
 export function buildDriverSchedule(
   date: string,
   times: readonly string[],
@@ -108,19 +108,18 @@ export function buildDriverSchedule(
   const queue = rotateDriverQueue(permanent, DRIVER_ROTATION_ANCHOR, date);
   if (queue.length === 0) throw new RangeError('Driver roster is empty.');
   const preferences = new Map(overrides.map(override => [override.driverId, override]));
-  let availablePosition = 0;
   const plan: DriverDay[] = queue.map((driver, index) => {
     const preference = preferences.get(driver.id);
     const declined = preference?.declined ?? false;
-    const assignmentMode = preference?.assignmentMode ?? 'auto';
-    const automaticTime = declined ? null : effectiveTimes[availablePosition++] ?? null;
-    const assignedTime = declined ? null : assignmentMode === 'manual' ? preference?.manualTime ?? null : automaticTime;
+    // Legacy `auto` rows are attendance records only. Configured departure times
+    // must never implicitly seat drivers, even after a refusal or schedule edit.
+    const assignedTime = declined || preference?.assignmentMode !== 'manual' ? null : preference.manualTime;
     return {
       ...driver,
       queuePosition: index + 1,
       declined,
-      assignmentMode,
-      automaticTime,
+      assignmentMode: 'manual',
+      automaticTime: null,
       assignedTime,
       assignmentActive: assignedTime !== null && effectiveTimes.includes(assignedTime),
     };

@@ -280,20 +280,6 @@ export async function createApp(options: Options = {}) {
     const rows = await db.prepare("SELECT * FROM bookings WHERE booking_type='whole_car' AND status='confirmed' AND deleted_at IS NULL AND assigned_date=?").all(day);
     for (const row of rows) await validateWholeCar(row, day, row.assigned_time);
   }
-  async function retainWholeCarsForScheduleChange(d: Direction, day: string, nextTimes: readonly string[]) {
-    if (d !== DRIVER_DIRECTION) return;
-    const rows = await db.prepare("SELECT * FROM bookings WHERE direction=? AND booking_type='whole_car' AND status='confirmed' AND deleted_at IS NULL AND assigned_date=?").all(d, day);
-    for (const row of rows) {
-      if ((day >= todayInTbilisi() && nextTimes.includes(row.assigned_time)) || !/^roster:[1-9]\d*$/.test(row.assigned_vehicle_key)) continue;
-      // Closing a departure must retain its existing bookings, and changing the
-      // base schedule must preserve past assignments. Pin those reserved cars
-      // before the automatic queue is recalculated for the remaining times.
-      await validateWholeCar(row, day, row.assigned_time);
-      await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,0,'manual',?,?)
-        ON CONFLICT(driver_id,date) DO UPDATE SET assignment_mode='manual',manual_time=excluded.manual_time,updated_at=excluded.updated_at`)
-        .run(Number(row.assigned_vehicle_key.slice('roster:'.length)), day, row.assigned_time, now().toISOString());
-    }
-  }
   async function inputBooking(body: Row, existing?: Row, employee = false) {
     const d = existing ? existing.direction as Direction : direction(body.direction);
     const name = text(body.name === undefined ? existing?.name ?? (employee ? '' : undefined) : body.name, 'სახელი', employee ? 0 : 2, 100);
@@ -887,8 +873,8 @@ export async function createApp(options: Options = {}) {
       }
       const timestamp = now().toISOString();
       async function manuallyAssign(id: number, manualTime: string | null) {
-        // Updating this one manual preference does not decline a driver or reflow
-        // the automatic positions of the remaining drivers for this date.
+        // Only the trip editor changes assignments. Attendance and queue order
+        // remain independent from this explicit departure choice.
         await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,0,'manual',?,?)
           ON CONFLICT(driver_id,date) DO UPDATE SET assignment_mode='manual',manual_time=excluded.manual_time,updated_at=excluded.updated_at`)
           .run(id, day, manualTime, timestamp);
@@ -918,31 +904,16 @@ export async function createApp(options: Options = {}) {
     const day = date(req.body.date);
     const id = numberId(req.params.id);
     const hasDeclined = Object.hasOwn(req.body, 'declined');
-    const hasAssignment = Object.hasOwn(req.body, 'assignment');
-    if (!hasDeclined && !hasAssignment) reject(400, 'აირჩიეთ მძღოლის ცვლილება.', 'VALIDATION');
-    if (hasDeclined && typeof req.body.declined !== 'boolean') reject(400, 'მძღოლის სტატუსი არასწორია.', 'VALIDATION');
-    let assignment: { mode: 'auto' | 'manual'; time: string | null } | undefined;
-    if (hasAssignment) {
-      const input = req.body.assignment;
-      if (!input || typeof input !== 'object' || Array.isArray(input) || !['auto', 'manual'].includes(input.mode)) reject(400, 'მძღოლის დროის არჩევანი არასწორია.', 'VALIDATION');
-      if (input.mode === 'auto') {
-        if (Object.hasOwn(input, 'time')) reject(400, 'ავტომატურ დროს ხელით დრო არ სჭირდება.', 'VALIDATION');
-        assignment = { mode: 'auto', time: null };
-      } else assignment = { mode: 'manual', time: input.time === null ? null : time(input.time) };
-    }
+    if (Object.hasOwn(req.body, 'assignment')) reject(400, 'მძღოლი რეისზე ჯავშნების გვერდიდან დანიშნეთ.', 'VALIDATION');
+    if (!hasDeclined || typeof req.body.declined !== 'boolean') reject(400, 'მძღოლის სტატუსი არასწორია.', 'VALIDATION');
     const result = await transaction(async () => {
       if (!await db.prepare('SELECT id FROM drivers WHERE id=?').get(id)) reject(404, 'მძღოლი ვერ მოიძებნა.', 'NOT_FOUND');
       const effective = (await configuredTimes(d, day)).effective;
-      if (assignment?.time !== null && assignment?.time !== undefined && !effective.includes(assignment.time)) reject(409, 'არჩეული დრო გამორთულია. აირჩიეთ მოქმედი დრო.', 'SLOT_INACTIVE');
-      const previous = await db.prepare('SELECT declined,assignment_mode,manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(id, day);
-      const declined = hasDeclined ? Number(req.body.declined) : previous?.declined ?? 0;
-      const mode = assignment?.mode ?? previous?.assignment_mode ?? 'auto';
-      const manualTime = assignment ? assignment.time : previous?.manual_time ?? null;
-      await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,?,?,?,?)
-        ON CONFLICT(driver_id,date) DO UPDATE SET declined=excluded.declined,assignment_mode=excluded.assignment_mode,manual_time=excluded.manual_time,updated_at=excluded.updated_at`)
-        .run(id, day, declined, mode, manualTime, now().toISOString());
+      await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,?,'manual',NULL,?)
+        ON CONFLICT(driver_id,date) DO UPDATE SET declined=excluded.declined,updated_at=excluded.updated_at`)
+        .run(id, day, Number(req.body.declined), now().toISOString());
       await protectWholeCars(day);
-      await audit('driver.day', req.employee, undefined, { driverId: id, direction: d, date: day, ...(hasDeclined ? { declined: req.body.declined } : {}), ...(assignment ? { assignment: { mode: assignment.mode, ...(assignment.mode === 'manual' ? { time: assignment.time } : {}) } } : {}) });
+      await audit('driver.day', req.employee, undefined, { driverId: id, direction: d, date: day, declined: req.body.declined });
       return readDriverSchedule(db, day, effective);
     });
     res.json(result);
@@ -955,7 +926,6 @@ export async function createApp(options: Options = {}) {
         WHERE direction=? AND booking_type='whole_car' AND status='confirmed' AND deleted_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM date_schedule WHERE date_schedule.direction=bookings.direction AND date_schedule.date=bookings.assigned_date)`)
         .all(d) : [];
-      for (const row of reservedDays) await retainWholeCarsForScheduleChange(d, row.date, list);
       (await db.prepare('UPDATE base_schedule SET times=? WHERE direction=?').run(JSON.stringify(list), d));
       for (const row of reservedDays) await protectWholeCars(row.date);
       (await audit('schedule.base', req.employee, undefined, { direction: d, times: list }));
@@ -967,7 +937,6 @@ export async function createApp(options: Options = {}) {
     const day = date(req.body.date);
     const list = times(req.body.times);
     await transaction(async () => {
-      await retainWholeCarsForScheduleChange(d, day, list);
       (await db.prepare('INSERT INTO date_schedule(direction,date,times) VALUES (?,?,?) ON CONFLICT(direction,date) DO UPDATE SET times=excluded.times').run(d, day, JSON.stringify(list)));
       if (d === DRIVER_DIRECTION) await protectWholeCars(day);
       (await audit('schedule.date', req.employee, undefined, { direction: d, date: day, times: list }));
@@ -978,7 +947,6 @@ export async function createApp(options: Options = {}) {
     const d = direction(req.query.direction);
     const day = date(req.query.date);
     await transaction(async () => {
-      await retainWholeCarsForScheduleChange(d, day, (await configuredTimes(d, day)).baseTimes);
       (await db.prepare('DELETE FROM date_schedule WHERE direction=? AND date=?').run(d, day));
       if (d === DRIVER_DIRECTION) await protectWholeCars(day);
       (await audit('schedule.reset', req.employee, undefined, { direction: d, date: day }));

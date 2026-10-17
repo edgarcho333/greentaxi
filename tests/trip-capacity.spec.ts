@@ -56,23 +56,28 @@ async function driverDay(date: string): Promise<DriverSchedule> {
 async function fixtureDay(date: string, times = ['09:00', '10:00']): Promise<TripCapacity> {
   const saved = await adminApi.put('/api/admin/schedule/date', { data: { direction: 'gori-tbilisi', date, times } });
   expect(saved.ok()).toBeTruthy();
-  const initial = await driverDay(date);
-  // Limit just this synthetic date to two provided seven-seat cars. Global queue,
-  // attendance and other dates retain their normal rotating schedule.
-  for (const driver of initial.drivers.filter(value => value.assignmentActive || [1, 2].includes(value.id))) {
-    const result = await adminApi.patch(`/api/admin/drivers/${driver.id}/day`, { data: {
-      direction: 'gori-tbilisi', date, declined: false,
-      assignment: { mode: 'manual', time: [1, 2].includes(driver.id) ? '09:00' : null },
-    } });
-    expect(result.ok()).toBeTruthy();
-  }
+  // Synthetic trip fixtures opt in to each car through the same revision-guarded
+  // endpoint as operators. A daily queue alone must never create capacity.
+  expect((await driverDay(date)).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
+  await assignRoster(date, '09:00', 1);
+  await assignRoster(date, '09:00', 2);
   const result = await capacity(date);
   expect(result.totalSeats).toBe(14);
   expect(result.drivers.map(driver => driver.driverId).sort((left, right) => left! - right!)).toEqual([1, 2]);
   return result;
 }
 
-async function seedTripSeats(date: string, seats: number[], options: { time?: string; differentRequestedDate?: boolean } = {}): Promise<Booking[]> {
+async function assignRoster(date: string, time: string, id: number): Promise<TripCapacity> {
+  const current = await capacity(date, time);
+  const saved = await adminApi.post('/api/admin/trips/drivers', { data: {
+    direction: 'gori-tbilisi', date, time, expectedRevision: current.revision,
+    action: 'add', driver: { kind: 'roster', id },
+  } });
+  expect(saved.ok()).toBeTruthy();
+  return await saved.json() as TripCapacity;
+}
+
+async function seedTripSeats(date: string, seats: number[], options: { time?: string; differentRequestedDate?: boolean; wholeCarKey?: string } = {}): Promise<Booking[]> {
   const bookings: Booking[] = [];
   for (const count of seats) {
     const phone = `55586${String(++phoneSequence).padStart(4, '0')}`;
@@ -94,12 +99,16 @@ async function seedTripSeats(date: string, seats: number[], options: { time?: st
   expect(dbPath).toBe(join(directory, 'greentaxi.sqlite'));
   const databaseUrl = process.env.E2E_DATABASE_URL;
   if (!databaseUrl) expect(existsSync(dbPath)).toBeTruthy();
+  const reservedCar = options.wholeCarKey
+    ? (await capacity(date, options.time ?? '09:00')).drivers.find(driver => driver.key === options.wholeCarKey)
+    : null;
+  if (options.wholeCarKey) expect(reservedCar).toBeTruthy();
   const database = await createDatabase({ dbPath, databaseUrl, production: false });
   try {
     for (const [index, booking] of bookings.entries()) {
       const requested = index === 0 && options.differentRequestedDate ? tomorrow() : date;
-      const changed = await database.prepare("UPDATE bookings SET requested_date=?,requested_time=?,assigned_date=?,assigned_time=? WHERE id=? AND status='confirmed' AND source='employee'")
-        .run(requested, options.time ?? '09:00', date, options.time ?? '09:00', booking.id);
+      const changed = await database.prepare("UPDATE bookings SET requested_date=?,requested_time=?,assigned_date=?,assigned_time=?,booking_type=?,assigned_vehicle_key=?,assigned_vehicle_name=? WHERE id=? AND status='confirmed' AND source='employee'")
+        .run(requested, options.time ?? '09:00', date, options.time ?? '09:00', options.wholeCarKey ? 'whole_car' : 'passenger', options.wholeCarKey ?? null, reservedCar?.name ?? null, booking.id);
       expect(changed.changes).toBe(1);
     }
   } finally { await database.close(); }
@@ -128,21 +137,27 @@ async function expectCounts(page: Page, total: number, booked: number, free: num
 }
 
 async function manage(page: Page) {
-  const toggle = capacityPanel(page).getByRole('button', { name: 'მძღოლების მართვა', exact: true });
+  const toggle = capacityPanel(page).getByRole('button', { name: 'შეცვლა / მოხსნა', exact: true });
   if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 }
+function driverDialog(page: Page): Locator { return page.locator('[data-driver-dialog]'); }
+async function openDriverPicker(page: Page) {
+  await capacityPanel(page).getByRole('button', { name: 'მძღოლის მიბმა', exact: true }).click();
+  await expect(driverDialog(page)).toBeVisible();
+}
 async function temporaryEditor(page: Page, name: string, seats: number, replaces?: string) {
-  await manage(page);
-  if (replaces) await capacityPanel(page).getByRole('button', { name: `${replaces} — რეისის მძღოლის შეცვლა`, exact: true }).click();
-  else await capacityPanel(page).getByRole('button', { name: 'მძღოლის დამატება', exact: true }).click();
-  await capacityPanel(page).getByRole('button', { name: 'სხვა მძღოლი', exact: true }).click();
-  await capacityPanel(page).getByRole('textbox', { name: 'სხვა მძღოლის სახელი', exact: true }).fill(name);
-  await capacityPanel(page).getByRole('combobox', { name: 'სხვა მძღოლის ადგილები', exact: true }).selectOption(String(seats));
+  if (replaces) {
+    await manage(page);
+    await capacityPanel(page).getByRole('button', { name: `${replaces} — რეისის მძღოლის შეცვლა`, exact: true }).click();
+  } else await openDriverPicker(page);
+  await driverDialog(page).getByRole('button', { name: 'სხვა მძღოლი', exact: true }).click();
+  await driverDialog(page).getByRole('textbox', { name: 'სხვა მძღოლის სახელი', exact: true }).fill(name);
+  await driverDialog(page).getByRole('combobox', { name: 'სხვა მძღოლის ადგილები', exact: true }).selectOption(String(seats));
 }
 async function submitEditor(page: Page, action: 'add' | 'replace' = 'add'): Promise<TripCapacity> {
   const saved = page.waitForResponse(isDriverMutation);
-  await capacityPanel(page).getByRole('button', { name: action === 'replace' ? 'შეცვლა' : 'დამატება', exact: true }).click();
+  await driverDialog(page).getByRole('button', { name: action === 'replace' ? 'შეცვლა' : 'დამატება', exact: true }).click();
   const response = await saved;
   expect(response.ok()).toBeTruthy();
   return await response.json() as TripCapacity;
@@ -155,6 +170,113 @@ async function removeCar(page: Page, name: string): Promise<TripCapacity> {
   expect(response.ok()).toBeTruthy();
   return await response.json() as TripCapacity;
 }
+
+test('an unassigned trip offers only participating drivers as large buttons in the daily queue order', async ({ page }) => {
+  const date = '2040-06-13';
+  expect((await adminApi.put('/api/admin/schedule/date', { data: {
+    direction: 'gori-tbilisi', date, times: ['09:00', '10:00'],
+  } })).ok()).toBeTruthy();
+  const initial = await driverDay(date);
+  expect(initial.drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
+  const absent = initial.drivers[1];
+  expect((await adminApi.patch(`/api/admin/drivers/${absent.id}/day`, { data: {
+    direction: 'gori-tbilisi', date, declined: true,
+  } })).ok()).toBeTruthy();
+  const expectedQueue = (await driverDay(date)).drivers.filter(driver => !driver.declined);
+  await openTrip(page, date);
+  await expectCounts(page, 0, 0, 0);
+  const opener = capacityPanel(page).getByRole('button', { name: 'მძღოლის მიბმა', exact: true });
+  await openDriverPicker(page);
+  await expect(driverDialog(page)).toHaveRole('dialog');
+  await expect(driverDialog(page)).toHaveAttribute('aria-modal', 'true');
+  const choices = driverDialog(page).locator('[data-driver-choice]');
+  await expect(choices).toHaveCount(expectedQueue.length);
+  expect(await choices.evaluateAll(buttons => buttons.map(button => Number(button.getAttribute('data-driver-choice')))))
+    .toEqual(expectedQueue.map(driver => driver.id));
+  expect(await choices.evaluateAll(buttons => buttons.map(button => Number(button.getAttribute('data-driver-queue')))))
+    .toEqual(expectedQueue.map(driver => driver.queuePosition));
+  await expect(driverDialog(page).locator(`[data-driver-choice="${absent.id}"]`)).toHaveCount(0);
+  await expect(choices.first()).toContainText(expectedQueue[0].name);
+  const controls = driverDialog(page).locator('button:visible:not(:disabled), input:visible:not(:disabled), select:visible:not(:disabled)');
+  await controls.last().focus();
+  await page.keyboard.press('Tab');
+  await expect(controls.first()).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(controls.last()).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(driverDialog(page)).toHaveCount(0);
+  await expect(opener).toBeFocused();
+
+  await openDriverPicker(page);
+  const saved = page.waitForResponse(isDriverMutation);
+  await driverDialog(page).locator(`[data-driver-choice="${expectedQueue[0].id}"]`).click();
+  expect((await saved).ok()).toBeTruthy();
+  await expect(driverDialog(page)).toHaveCount(0);
+  await expectCounts(page, expectedQueue[0].capacity, 0, expectedQueue[0].capacity);
+  await openDriverPicker(page);
+  await expect(driverDialog(page).locator(`[data-driver-choice="${expectedQueue[0].id}"]`)).toBeDisabled();
+  await page.keyboard.press('Escape');
+  const after = await driverDay(date);
+  expect(after.drivers.filter(driver => driver.assignedTime !== null).map(driver => driver.id)).toEqual([expectedQueue[0].id]);
+  expect((await driverDay('2040-06-14')).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
+  await page.reload();
+  await page.getByLabel('აირჩიეთ სხვა თარიღი', { exact: true }).fill(date);
+  await chooseTime(page, '09:00');
+  await expectCounts(page, expectedQueue[0].capacity, 0, expectedQueue[0].capacity);
+});
+
+test('moving a driver from another hour requires a second explicit confirmation', async ({ page }) => {
+  const date = '2040-06-14';
+  await fixtureDay(date);
+  await assignRoster(date, '10:00', 3);
+  await openTrip(page, date);
+  let writes = 0;
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/admin/trips/drivers' && request.method() === 'POST') writes++;
+  });
+  await openDriverPicker(page);
+  await driverDialog(page).locator('[data-driver-choice="3"]').click();
+  const confirmation = driverDialog(page).locator('[data-driver-transfer-confirm]');
+  await expect(confirmation).toBeVisible();
+  await expect(driverDialog(page)).toContainText('10:00');
+  await expect(driverDialog(page)).toContainText('09:00');
+  expect(writes).toBe(0);
+  expect((await capacity(date, '10:00')).drivers.map(driver => driver.driverId)).toEqual([3]);
+  await driverDialog(page).getByRole('button', { name: 'უკან', exact: true }).click();
+  await expect(driverDialog(page).locator('[data-driver-choice="3"]')).toBeVisible();
+  expect(writes).toBe(0);
+  await driverDialog(page).locator('[data-driver-choice="3"]').click();
+  const saved = page.waitForResponse(isDriverMutation);
+  await confirmation.click();
+  expect((await saved).ok()).toBeTruthy();
+  await expect(driverDialog(page)).toHaveCount(0);
+  expect(writes).toBe(1);
+  await expectCounts(page, 22, 0, 22);
+  expect((await capacity(date, '10:00')).drivers).toEqual([]);
+  expect((await driverDay(date)).drivers.filter(driver => driver.assignedTime === '09:00').map(driver => driver.id).sort()).toEqual([1, 2, 3]);
+});
+
+test('a whole-car reservation protects its assigned driver until the booking is cancelled', async ({ page }) => {
+  const date = '2040-06-15';
+  await fixtureDay(date);
+  const [reserved] = await seedTripSeats(date, [7], { wholeCarKey: 'roster:1' });
+  await openTrip(page, date);
+  await expectCounts(page, 14, 7, 7);
+  await manage(page);
+  const replace = capacityPanel(page).getByRole('button', { name: 'რეზო — რეისის მძღოლის შეცვლა', exact: true });
+  const remove = capacityPanel(page).getByRole('button', { name: 'რეზო — ამ რეისიდან მოხსნა', exact: true });
+  await expect(replace).toBeDisabled();
+  await expect(remove).toBeDisabled();
+  expect((await capacity(date)).drivers.find(driver => driver.key === 'roster:1')?.reservedBookingId).toBe(reserved.id);
+  expect((await adminApi.post(`/api/admin/bookings/${reserved.id}/delete`)).ok()).toBeTruthy();
+  await openTrip(page, date);
+  await expectCounts(page, 14, 0, 14);
+  await manage(page);
+  await expect(replace).toBeEnabled();
+  await expect(remove).toBeEnabled();
+  await removeCar(page, 'რეზო');
+  await expectCounts(page, 7, 0, 7);
+});
 
 test('two seven-seat cars show ten occupied seats as seven plus three and exclude waiting/deleted orders', async ({ page }) => {
   const date = '2040-06-01';
@@ -247,20 +369,26 @@ test('removing a car exposes uncovered seats, and a temporary replacement stays 
   expect((await driverDay(date)).drivers).toHaveLength(43);
 });
 
-test('replacing a roster driver preserves other automatic departures and reserves the removed car', async ({ page }) => {
+test('replacing a roster driver preserves other manual departures and leaves removed car unassigned', async ({ page }) => {
   const date = '2040-06-05';
   const saved = await adminApi.put('/api/admin/schedule/date', { data: { direction: 'gori-tbilisi', date, times: ['09:00', '10:00', '11:00'] } });
   expect(saved.ok()).toBeTruthy();
+  await assignRoster(date, '09:00', 1);
+  await assignRoster(date, '10:00', 2);
+  await assignRoster(date, '11:00', 3);
   const initial = await driverDay(date);
-  const first = initial.drivers.find(driver => driver.assignedTime === '09:00')!;
-  const second = initial.drivers.find(driver => driver.assignedTime === '10:00')!;
-  const third = initial.drivers.find(driver => driver.assignedTime === '11:00')!;
+  const first = initial.drivers.find(driver => driver.id === 1)!;
+  const second = initial.drivers.find(driver => driver.id === 2)!;
+  const third = initial.drivers.find(driver => driver.id === 3)!;
   const reserve = initial.drivers.find(driver => driver.assignedTime === null && driver.capacity === 7)!;
   await openTrip(page, date);
   await manage(page);
   await capacityPanel(page).getByRole('button', { name: `${first.name} — რეისის მძღოლის შეცვლა`, exact: true }).click();
-  await capacityPanel(page).getByRole('combobox', { name: 'რეისზე დასამატებელი მძღოლი', exact: true }).selectOption(String(reserve.id));
-  const changed = await submitEditor(page, 'replace');
+  const savedDriver = page.waitForResponse(isDriverMutation);
+  await driverDialog(page).locator(`[data-driver-choice="${reserve.id}"]`).click();
+  const savedResponse = await savedDriver;
+  expect(savedResponse.ok()).toBeTruthy();
+  const changed = await savedResponse.json() as TripCapacity;
   expect(changed.drivers.map(driver => driver.driverId)).toEqual([reserve.id]);
   await expect(car(page, `roster:${reserve.id}`)).toContainText(reserve.name);
   const after = await driverDay(date);
@@ -291,14 +419,14 @@ test('a concurrent driver change rejects a stale edit, refreshes the trip and ke
     await route.continue();
   });
   const rejected = page.waitForResponse(isDriverMutation);
-  await capacityPanel(page).getByRole('button', { name: 'დამატება', exact: true }).click();
+  await driverDialog(page).getByRole('button', { name: 'დამატება', exact: true }).click();
   const failed = await rejected;
   expect(failed.status()).toBe(409);
   expect(await failed.json()).toMatchObject({ code: 'TRIP_CHANGED' });
-  await expect(capacityPanel(page).getByRole('alert')).toContainText('სხვა ოპერატორმა');
+  await expect(page.getByRole('alert')).toContainText('სხვა ოპერატორმა');
   await expectCounts(page, 21, 0, 21);
-  await expect(capacityPanel(page).getByRole('textbox', { name: 'სხვა მძღოლის სახელი', exact: true })).toHaveValue('შენარჩუნებული სატესტო არჩევანი');
-  await expect(capacityPanel(page).getByRole('combobox', { name: 'სხვა მძღოლის ადგილები', exact: true })).toHaveValue('6');
+  await expect(driverDialog(page).getByRole('textbox', { name: 'სხვა მძღოლის სახელი', exact: true })).toHaveValue('შენარჩუნებული სატესტო არჩევანი');
+  await expect(driverDialog(page).getByRole('combobox', { name: 'სხვა მძღოლის ადგილები', exact: true })).toHaveValue('6');
   expect(writes).toBe(1);
   expect((await capacity(date)).drivers.filter(driver => driver.kind === 'temporary').map(driver => driver.name)).toEqual(['სხვა ოპერატორის მანქანა']);
   await submitEditor(page);
@@ -355,13 +483,30 @@ for (const width of [320, 390]) {
     await fixtureDay(date);
     await openTrip(page, date);
     await expectCounts(page, 14, 0, 14);
+    const opener = capacityPanel(page).getByRole('button', { name: 'მძღოლის მიბმა', exact: true });
+    await opener.scrollIntoViewIfNeeded();
+    const openerBox = await opener.boundingBox();
+    expect(openerBox!.height).toBeGreaterThanOrEqual(48);
+    await openDriverPicker(page);
+    const choices = driverDialog(page).locator('[data-driver-choice]');
+    for (const control of [choices.first(), choices.last(), driverDialog(page).getByRole('button', { name: 'მძღოლის არჩევის დახურვა', exact: true })]) {
+      await control.scrollIntoViewIfNeeded();
+      const box = await control.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.height).toBeGreaterThanOrEqual(48);
+      expect(box!.width).toBeGreaterThanOrEqual(44);
+      expect(box!.x).toBeGreaterThanOrEqual(-1);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width + 1);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
+    await page.keyboard.press('Escape');
+    await expect(opener).toBeFocused();
     await temporaryEditor(page, 'მობილური სატესტო მანქანა', 8);
     for (const control of [
-      capacityPanel(page).getByRole('button', { name: 'მძღოლების მართვა', exact: true }),
-      capacityPanel(page).getByRole('button', { name: 'სხვა მძღოლი', exact: true }),
-      capacityPanel(page).getByRole('textbox', { name: 'სხვა მძღოლის სახელი', exact: true }),
-      capacityPanel(page).getByRole('combobox', { name: 'სხვა მძღოლის ადგილები', exact: true }),
-      capacityPanel(page).getByRole('button', { name: 'დამატება', exact: true }),
+      driverDialog(page).getByRole('button', { name: 'უკან', exact: true }),
+      driverDialog(page).getByRole('textbox', { name: 'სხვა მძღოლის სახელი', exact: true }),
+      driverDialog(page).getByRole('combobox', { name: 'სხვა მძღოლის ადგილები', exact: true }),
+      driverDialog(page).getByRole('button', { name: 'დამატება', exact: true }),
     ]) {
       await control.scrollIntoViewIfNeeded();
       const box = await control.boundingBox();
@@ -375,6 +520,7 @@ for (const width of [320, 390]) {
     const result = await submitEditor(page);
     const temporary = result.drivers.find(driver => driver.kind === 'temporary')!;
     await expectCounts(page, 22, 0, 22);
+    await manage(page);
     const replace = capacityPanel(page).getByRole('button', { name: 'მობილური სატესტო მანქანა — რეისის მძღოლის შეცვლა', exact: true });
     await replace.scrollIntoViewIfNeeded();
     const box = await replace.boundingBox();

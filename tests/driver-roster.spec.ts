@@ -1,5 +1,5 @@
 import { test as base, expect, type APIRequestContext, type Locator, type Page, type Response } from '@playwright/test';
-import type { DriverDay, DriverSchedule } from '../src/api';
+import type { DriverDay, DriverSchedule, TripCapacity } from '../src/api';
 
 // Reuse the isolated browser employee: each spec file may be the first to set up
 // the disposable database, and Playwright can restart a worker after a failure.
@@ -41,9 +41,6 @@ test.afterAll(async () => { await adminApi?.dispose(); });
 
 function roster(page: Page): Locator { return page.getByRole('region', { name: 'მძღოლების რიგი', exact: true }); }
 function driverRow(page: Page, id: number): Locator { return page.locator(`.admin-driver-table [data-driver-id="${id}"]`); }
-function driverSelect(page: Page, driver: Pick<DriverDay, 'id' | 'name'>): Locator {
-  return driverRow(page, driver.id).getByRole('combobox', { name: `${driver.name} — გასვლის დრო`, exact: true });
-}
 function driverAttendance(page: Page, driver: Pick<DriverDay, 'id' | 'name'>): Locator {
   return driverRow(page, driver.id).getByRole('switch', { name: `${driver.name} — მონაწილეობა ამ დღეს`, exact: true });
 }
@@ -61,9 +58,9 @@ async function resetDay(date: string, times = TIMES) {
   expect(response.ok()).toBeTruthy();
   const schedule = await getDriverDay(date);
   for (const driver of schedule.drivers) {
-    if (!driver.declined && driver.assignmentMode === 'auto') continue;
+    if (!driver.declined) continue;
     const result = await adminApi.patch(`/api/admin/drivers/${driver.id}/day`, { data: {
-      direction: 'gori-tbilisi', date, declined: false, assignment: { mode: 'auto' },
+      direction: 'gori-tbilisi', date, declined: false,
     } });
     expect(result.ok()).toBeTruthy();
   }
@@ -93,14 +90,16 @@ function isDriverPatch(response: Response, id: number): boolean {
   return new URL(response.url()).pathname === `/api/admin/drivers/${id}/day` && response.request().method() === 'PATCH';
 }
 
-async function setAssignment(page: Page, driver: Pick<DriverDay, 'id' | 'name'>, value: string): Promise<DriverSchedule> {
-  const response = page.waitForResponse(response => isDriverPatch(response, driver.id));
-  await driverSelect(page, driver).selectOption(value);
-  const saved = await response;
+async function assignDriver(date: string, id: number, time: string): Promise<TripCapacity> {
+  const current = await adminApi.get(`/api/admin/trips/capacity?direction=gori-tbilisi&date=${date}&time=${time}`);
+  expect(current.ok()).toBeTruthy();
+  const trip = await current.json() as TripCapacity;
+  const saved = await adminApi.post('/api/admin/trips/drivers', { data: {
+    direction: 'gori-tbilisi', date, time, expectedRevision: trip.revision,
+    action: 'add', driver: { kind: 'roster', id },
+  } });
   expect(saved.ok()).toBeTruthy();
-  await expect(driverSelect(page, driver)).toHaveValue(value);
-  await expect(driverSelect(page, driver)).toBeEnabled();
-  return await saved.json() as DriverSchedule;
+  return await saved.json() as TripCapacity;
 }
 
 async function setAttendance(page: Page, driver: Pick<DriverDay, 'id' | 'name'>, participates: boolean): Promise<DriverSchedule> {
@@ -129,31 +128,28 @@ test('the saved schedule shows all 43 provided drivers, capacities and daily cir
     await expect(row.locator('.admin-driver-capacity')).toHaveText(`${capacity} ადგილი`);
     await expect(driverAttendance(page, { id: index + 1, name })).toHaveAttribute('aria-checked', 'true');
   }
-  await expect(driverSelect(page, { id: 1, name: 'რეზო' })).toHaveValue('auto');
-  await expect(driverSelect(page, { id: 1, name: 'რეზო' }).locator('option:checked')).toContainText('06:00');
-  await expect(driverSelect(page, { id: 4, name: 'ვიქტორი' }).locator('option:checked')).toContainText('08:30');
-  await expect(driverSelect(page, { id: 6, name: 'დიმა' }).locator('option:checked')).toContainText('09:30');
-  await expect(driverSelect(page, { id: 43, name: 'ლაშა / ვიქტორი' }).locator('option:checked')).toContainText('რეზერვი');
+  await expect(roster(page).getByRole('combobox')).toHaveCount(0);
+  expect((await getDriverDay(ANCHOR)).drivers.every(driver => driver.assignedTime === null && driver.automaticTime === null)).toBeTruthy();
 
   await chooseDate(page, '2026-10-10');
   await expect(rows.first()).toHaveAttribute('data-driver-id', '2');
   await expect(rows.last()).toHaveAttribute('data-driver-id', '1');
-  await expect(driverSelect(page, { id: 2, name: 'კუდუხა' }).locator('option:checked')).toContainText('06:00');
+  expect((await getDriverDay('2026-10-10')).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
   await chooseDate(page, '2026-11-21');
   await expect(rows.first()).toHaveAttribute('data-driver-id', '1');
-  await expect(driverSelect(page, { id: 1, name: 'რეზო' }).locator('option:checked')).toContainText('06:00');
+  expect((await getDriverDay('2026-11-21')).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
 });
 
-test('a daily refusal advances available drivers, persists, and leaves tomorrow’s cycle intact', async ({ page }) => {
+test('daily participation persists without assigning times or changing tomorrow’s queue', async ({ page }) => {
   await resetDay(ANCHOR);
   await resetDay('2026-10-10');
   await openSettings(page, ANCHOR);
   const rezo = { id: 1, name: 'რეზო' };
   const kudukha = { id: 2, name: 'კუდუხა' };
   await setAttendance(page, rezo, false);
-  await expect(driverSelect(page, kudukha).locator('option:checked')).toContainText('06:00');
   await setAttendance(page, kudukha, false);
-  await expect(driverSelect(page, { id: 3, name: 'გოჩა' }).locator('option:checked')).toContainText('06:00');
+  expect((await getDriverDay(ANCHOR)).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
+  await expect(roster(page).locator('[data-driver-id]').first()).toHaveAttribute('data-driver-id', '1');
   await page.reload();
   await page.getByRole('navigation', { name: 'ადმინისტრატორის ნავიგაცია', exact: true })
     .getByRole('button', { name: 'პარამეტრები', exact: true }).click();
@@ -163,57 +159,46 @@ test('a daily refusal advances available drivers, persists, and leaves tomorrow�
   await chooseDate(page, '2026-10-10');
   await expect(driverAttendance(page, kudukha)).toHaveAttribute('aria-checked', 'true');
   await expect(roster(page).locator('[data-driver-id]').first()).toHaveAttribute('data-driver-id', '2');
-  await expect(driverSelect(page, kudukha).locator('option:checked')).toContainText('06:00');
+  expect((await getDriverDay('2026-10-10')).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
   await chooseDate(page, ANCHOR);
   await setAttendance(page, rezo, true);
   await setAttendance(page, kudukha, true);
-  await expect(driverSelect(page, rezo).locator('option:checked')).toContainText('06:00');
-  await expect(driverSelect(page, kudukha).locator('option:checked')).toContainText('07:00');
+  expect((await getDriverDay(ANCHOR)).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
 });
 
-test('the operator can put multiple cars on one time, reserve a driver and return to the daily automatic queue', async ({ page }) => {
+test('participation changes preserve explicit trip choices without reflowing the queue', async ({ page }) => {
   const date = '2030-05-06';
   await resetDay(date);
   const initial = await getDriverDay(date);
   const [first, second, third] = initial.drivers;
+  await assignDriver(date, first.id, '08:30');
+  await assignDriver(date, second.id, '08:30');
   await openSettings(page, date);
-  await setAssignment(page, first, '08:30');
-  await setAssignment(page, second, '08:30');
-  await setAssignment(page, third, 'reserve');
   const saved = await getDriverDay(date);
   expect(saved.drivers.filter(driver => [first.id, second.id].includes(driver.id))).toEqual(expect.arrayContaining([
     expect.objectContaining({ id: first.id, assignmentMode: 'manual', assignedTime: '08:30', assignmentActive: true }),
     expect.objectContaining({ id: second.id, assignmentMode: 'manual', assignedTime: '08:30', assignmentActive: true }),
   ]));
   expect(saved.drivers.find(driver => driver.id === third.id)).toMatchObject({ assignmentMode: 'manual', assignedTime: null });
-  const grouped = roster(page).locator('[data-driver-slot="08:30"]');
-  await expect(grouped).toContainText(first.name);
-  await expect(grouped).toContainText(second.name);
-  const sameTime = saved.drivers.filter(driver => driver.assignmentActive && driver.assignedTime === '08:30');
-  await expect(grouped).toContainText(`${sameTime.length} მძღოლი`);
-  await expect(grouped).toContainText(`${sameTime.reduce((total, driver) => total + driver.capacity, 0)} ადგილი`);
+  await expect(roster(page).getByRole('combobox')).toHaveCount(0);
+  await expect(roster(page).locator('[data-driver-slot]')).toHaveCount(0);
 
   await setAttendance(page, first, false);
-  await expect(driverSelect(page, second)).toHaveValue('08:30');
+  expect((await getDriverDay(date)).drivers.filter(driver => driver.assignmentActive).map(driver => driver.id)).toEqual([second.id]);
   await setAttendance(page, first, true);
-  await expect(driverSelect(page, first)).toHaveValue('08:30');
   await chooseDate(page, '2030-05-07');
   await chooseDate(page, date);
-  await expect(driverSelect(page, first)).toHaveValue('08:30');
-  await expect(driverSelect(page, second)).toHaveValue('08:30');
-  await expect(driverSelect(page, third)).toHaveValue('reserve');
-  const restored = await setAssignment(page, second, 'auto');
-  const restoredSecond = restored.drivers.find(driver => driver.id === second.id)!;
-  expect(restoredSecond.assignmentMode).toBe('auto');
-  expect(restoredSecond.assignedTime).toBe(restoredSecond.automaticTime);
-  await expect(driverSelect(page, first)).toHaveValue('08:30');
+  const restored = await getDriverDay(date);
+  expect(restored.drivers.filter(driver => driver.assignmentActive).map(driver => driver.id)).toEqual([first.id, second.id]);
+  expect(restored.drivers.find(driver => driver.id === third.id)?.assignedTime).toBeNull();
+  expect((await getDriverDay('2030-05-07')).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
 });
 
-test('saving this day’s extra times refreshes assignments and preserves a removed manual time for review', async ({ page }) => {
+test('editing departure times creates no driver assignments and preserves an explicit removed time', async ({ page }) => {
   const date = '2030-05-08';
   await resetDay(date, ['06:00', '08:30', '09:30']);
   const initial = await getDriverDay(date);
-  const [first, second, third, fourth] = initial.drivers;
+  const [first] = initial.drivers;
   await openSettings(page, date);
   const editor = scheduleCard(page).locator('.admin-config-subsection').filter({ has: page.locator('#date-new-time') });
   await editor.locator('#date-new-time').fill('09:15');
@@ -221,21 +206,21 @@ test('saving this day’s extra times refreshes assignments and preserves a remo
   const save = page.waitForResponse(response => new URL(response.url()).pathname === '/api/admin/schedule/date' && response.request().method() === 'PUT');
   await editor.getByRole('button', { name: 'ამ დღის შენახვა', exact: true }).click();
   expect((await save).ok()).toBeTruthy();
-  await expect(driverSelect(page, third).locator('option:checked')).toContainText('09:15');
-  await expect(driverSelect(page, fourth).locator('option:checked')).toContainText('09:30');
-  expect((await getDriverDay(date)).times).toEqual(['06:00', '08:30', '09:15', '09:30']);
+  const expanded = await getDriverDay(date);
+  expect(expanded.times).toEqual(['06:00', '08:30', '09:15', '09:30']);
+  expect(expanded.drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
 
-  await setAssignment(page, first, '08:30');
+  await assignDriver(date, first.id, '08:30');
   await editor.getByRole('button', { name: '08:30 საათის ამოღება', exact: true }).click();
   const remove = page.waitForResponse(response => new URL(response.url()).pathname === '/api/admin/schedule/date' && response.request().method() === 'PUT');
   await editor.getByRole('button', { name: 'ამ დღის შენახვა', exact: true }).click();
   expect((await remove).ok()).toBeTruthy();
-  await expect(driverSelect(page, second).locator('option:checked')).toContainText('09:15');
-  await expect(driverSelect(page, first)).toHaveValue('08:30');
-  expect((await getDriverDay(date)).drivers.find(driver => driver.id === first.id)).toMatchObject({
+  const removed = await getDriverDay(date);
+  expect(removed.drivers.find(driver => driver.id === first.id)).toMatchObject({
     assignmentMode: 'manual', assignedTime: '08:30', assignmentActive: false,
   });
-  await expect(driverRow(page, first.id)).toContainText('08:30');
+  expect(removed.drivers.filter(driver => driver.assignmentActive)).toHaveLength(0);
+  await expect(roster(page).getByRole('combobox')).toHaveCount(0);
 });
 
 test('the queue belongs only to Gori departures and anonymous users cannot read or change it', async ({ page, playwright, baseURL }) => {
@@ -332,15 +317,14 @@ test('a delayed daily change is saved to its original date while the operator vi
 });
 
 for (const width of [320, 390]) {
-  test(`driver attendance and departure controls remain usable at ${width}px`, async ({ page }) => {
+  test(`driver queue and participation controls remain usable at ${width}px`, async ({ page }) => {
     const date = width === 320 ? '2030-05-16' : '2030-05-17';
     await page.setViewportSize({ width, height: 844 });
     await resetDay(date);
     await openSettings(page, date);
     const first = (await getDriverDay(date)).drivers[0];
-    const select = driverSelect(page, first);
     const attendance = driverAttendance(page, first);
-    for (const control of [select, attendance]) {
+    for (const control of [attendance]) {
       await control.scrollIntoViewIfNeeded();
       const box = await control.boundingBox();
       expect(box).not.toBeNull();
@@ -350,9 +334,9 @@ for (const width of [320, 390]) {
       expect(box!.x + box!.width).toBeLessThanOrEqual(width + 1);
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
-    await setAssignment(page, first, '09:30');
     await setAttendance(page, first, false);
     await setAttendance(page, first, true);
-    await expect(select).toHaveValue('09:30');
+    await expect(roster(page).getByRole('combobox')).toHaveCount(0);
+    expect((await getDriverDay(date)).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
   });
 }

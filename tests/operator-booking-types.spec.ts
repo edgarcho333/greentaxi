@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs';
 import { operatorSessionPath } from './helpers/operator-session';
 import { test, expect, type APIRequestContext } from '@playwright/test';
-import { addDays, today } from '../src/api';
+import { addDays, today, type TripCapacity } from '../src/api';
 
 let api: APIRequestContext;
 const createdIds: number[] = [];
+const seededCars: { date: string; time: string; key: string }[] = [];
 const employee = { login: 'browser_test', name: 'სატესტო თანამშრომელი', password: 'test-only-local-password-123' };
 test.beforeAll(async ({ playwright, baseURL }, info) => {
   const sessionPath = operatorSessionPath(info.config.metadata.fixtureDatabasePath);
@@ -14,6 +15,13 @@ test.beforeAll(async ({ playwright, baseURL }, info) => {
 });
 test.afterAll(async () => {
   for (const id of createdIds) await api.post(`/api/admin/bookings/${id}/delete`);
+  for (const car of seededCars) {
+    const trip = await (await api.get(`/api/admin/trips/capacity?${new URLSearchParams({ direction: 'gori-tbilisi', date: car.date, time: car.time })}`)).json() as TripCapacity;
+    const removed = await api.post('/api/admin/trips/drivers', { data: {
+      direction: 'gori-tbilisi', date: car.date, time: car.time, expectedRevision: trip.revision, action: 'remove', removeKey: car.key,
+    } });
+    expect(removed.ok()).toBeTruthy();
+  }
   await api.dispose();
 });
 
@@ -39,6 +47,20 @@ test('operator creates a parcel without seats and an exclusive booking with an a
   expect(parcel.bookingType).toBe('parcel'); expect(parcel.seats).toBe(0);
   await expect(dialog).toHaveCount(0);
 
+  // Queue membership no longer implies a trip assignment. Seed one real roster
+  // car explicitly before checking the whole-car form.
+  const tripDate = addDays(today(), 1);
+  const trip = await (await api.get(`/api/admin/trips/capacity?direction=gori-tbilisi&date=${tripDate}&time=08:30`)).json() as TripCapacity;
+  if (!trip.drivers.some(car => car.active && !car.reservedBookingId)) {
+    const driver = trip.availableDrivers.find(driver => !driver.declined && !driver.assignedTime)!;
+    expect(driver).toBeTruthy();
+    const saved = await api.post('/api/admin/trips/drivers', { data: {
+      direction: 'gori-tbilisi', date: tripDate, time: '08:30', expectedRevision: trip.revision,
+      action: 'add', driver: { kind: 'roster', id: driver.id },
+    } });
+    expect(saved.ok()).toBeTruthy();
+    seededCars.push({ date: tripDate, time: '08:30', key: `roster:${driver.id}` });
+  }
   await page.getByRole('button', { name: 'ახალი ჯავშანი', exact: true }).click();
   await dialog.getByRole('group', { name: 'დამატებითი სერვისები', exact: true }).getByRole('button', { name: 'მთლიანი მანქანა', exact: true }).click();
   await dialog.getByLabel('აყვანის მისამართი გორში', { exact: true }).fill('სატესტო მთლიანი მანქანის მისამართი');

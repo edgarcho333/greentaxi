@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, CarFront, Check, CheckCircle2, Clock3, LoaderCircle, RefreshCw, UsersRound, X } from 'lucide-react';
+import { AlertCircle, CarFront, Check, CheckCircle2, LoaderCircle, RefreshCw, UsersRound, X } from 'lucide-react';
 import { request, type Direction, type DriverDay, type DriverSchedule } from '../../api';
 import './driver-roster.css';
 
 type Feedback = { kind: 'success' | 'error'; message: string } | null;
-type DriverChange = { declined?: boolean; assignment?: { mode: 'auto' } | { mode: 'manual'; time: string | null } };
+type DriverChange = { declined: boolean };
 type Props = {
   direction: Direction;
   date: string;
@@ -91,17 +91,10 @@ export default function DriverRoster({ direction, date, refreshKey, disabled, on
     }
   }
 
-  function changeTime(driver: DriverDay, value: string) {
-    changeDriver(driver, {
-      assignment: value === 'auto' ? { mode: 'auto' } : { mode: 'manual', time: value === 'reserve' ? null : value },
-    });
-  }
-
   const visibleSchedule = schedule?.direction === direction && schedule.date === date ? schedule : null;
   const firstDriver = visibleSchedule?.drivers.find(driver => driver.id === visibleSchedule.firstDriverId);
   const available = visibleSchedule?.drivers.filter(driver => !driver.declined) ?? [];
   const declinedCount = (visibleSchedule?.drivers.length ?? 0) - available.length;
-  const reserveCount = available.filter(driver => !driver.assignedTime).length;
   const saving = busyId !== null;
   const FeedbackIcon = feedback?.kind === 'error' ? AlertCircle : CheckCircle2;
 
@@ -116,45 +109,24 @@ export default function DriverRoster({ direction, date, refreshKey, disabled, on
       {loading ? <div className="admin-driver-loading" role="status"><LoaderCircle className="admin-config-spinner" size={18} />მძღოლების რიგი იტვირთება…</div> : visibleSchedule ? <>
         <div className="admin-driver-cycle-info">
           <div><span>დღის რიგი იწყება</span><strong>{firstDriver?.name ?? '—'}</strong></div>
-          <div><span>ციკლის დასაწყისი</span><strong>{dateLabel(visibleSchedule.anchorDate)} · რეზო</strong></div>
-          <div className="admin-driver-counts"><span><UsersRound size={15} />{available.length} მონაწილეობს</span><span>{declinedCount} უარი</span><span>{reserveCount} რეზერვი</span></div>
+          <div className="admin-driver-counts"><span><UsersRound size={15} />{available.length} მონაწილეობს</span><span>{declinedCount} არ მონაწილეობს</span></div>
         </div>
-        <p className="admin-driver-explanation">რიგი ყოველდღე ერთი მძღოლით ინაცვლებს. ამ დღის უარი შემდეგი დღის რიგს არ ცვლის. ერთსა და იმავე დროზე რამდენიმე მძღოლის არჩევა შესაძლებელია.</p>
-        {visibleSchedule.times.length === 0 && <div className="admin-driver-empty-times"><AlertCircle size={17} /><span>ამ დღის განრიგში გასვლის დროები არ არის. დაამატეთ და შეინახეთ დროები ზემოთ.</span></div>}
-        {visibleSchedule.times.length > 0 && <details className="admin-driver-summary" open>
-          <summary><Clock3 size={16} />მძღოლები დროების მიხედვით<span>{visibleSchedule.times.length} დრო</span></summary>
-          <div className="admin-driver-slot-grid">{visibleSchedule.times.map(time => {
-            const drivers = available.filter(driver => driver.assignmentActive && driver.assignedTime === time);
-            return <div className={`admin-driver-slot ${drivers.length ? '' : 'empty'}`} data-driver-slot={time} key={time}>
-              <strong>{time}</strong><span>{drivers.length ? drivers.map(driver => driver.name).join(', ') : 'მძღოლი არ არის'}</span>
-              <small>{drivers.length} მძღოლი · {drivers.reduce((sum, driver) => sum + driver.capacity, 0)} ადგილი</small>
-            </div>;
-          })}</div>
-        </details>}
+        <p className="admin-driver-explanation">აქ ნახავთ დღის რიგს და მონიშნავთ მონაწილეობას. გასვლის დროს მძღოლს შეკვეთების გვერდზე ხელით მიაბამთ. რიგი ყოველდღე ერთი მძღოლით ინაცვლებს.</p>
         <div className="admin-driver-table-wrap"><table className="admin-driver-table" aria-label="მძღოლები არჩეულ დღეს">
-          <thead><tr><th>რიგი</th><th>მძღოლი</th><th>ტევადობა</th><th>გასვლის დრო</th><th>ამ დღის მონაწილეობა</th></tr></thead>
+          <thead><tr><th>რიგი</th><th>მძღოლი</th><th>ტევადობა</th><th>ამ დღის მონაწილეობა</th></tr></thead>
           <tbody>{visibleSchedule.drivers.map(driver => {
-            const inactiveTime = driver.assignmentMode === 'manual' && driver.assignedTime !== null && !visibleSchedule.times.includes(driver.assignedTime);
-            const selectedTime = driver.declined ? 'declined' : driver.assignmentMode === 'auto' ? 'auto' : driver.assignedTime ?? 'reserve';
             return <tr key={driver.id} data-driver-id={driver.id} className={driver.declined ? 'declined' : ''}>
               <td className="admin-driver-position"><span>{driver.queuePosition}</span></td>
               <td className="admin-driver-name"><strong>{driver.name}</strong>{driver.id === visibleSchedule.firstDriverId && <small>დღის რიგის დასაწყისი</small>}</td>
               <td className="admin-driver-capacity"><span><UsersRound size={14} />{driver.capacity} ადგილი</span></td>
-              <td className="admin-driver-time"><select aria-label={`${driver.name} — გასვლის დრო`} value={selectedTime} onChange={event => changeTime(driver, event.target.value)} disabled={saving || disabled || driver.declined}>
-                {driver.declined && <option value="declined">ამ დღეს არ მონაწილეობს</option>}
-                <option value="auto">ავტომატური — {driver.automaticTime ?? 'რეზერვი'}</option>
-                <option value="reserve">რეზერვი — დროის გარეშე</option>
-                {visibleSchedule.times.map(time => <option value={time} key={time}>{time}</option>)}
-                {inactiveTime && <option value={driver.assignedTime!}>{driver.assignedTime} — გამორთული დრო</option>}
-              </select>{inactiveTime && <span className="admin-driver-inactive-time"><AlertCircle size={14} />ეს დრო განრიგში გამორთულია. აირჩიეთ სხვა დრო.</span>}{!driver.declined && driver.assignmentMode === 'manual' && !inactiveTime && <small>ხელით არჩეული · მხოლოდ ამ დღეზე</small>}</td>
               <td className="admin-driver-participation"><button type="button" role="switch" aria-checked={!driver.declined} aria-label={`${driver.name} — მონაწილეობა ამ დღეს`} className={`admin-driver-attendance ${driver.declined ? 'declined' : ''}`} onClick={() => changeDriver(driver, { declined: !driver.declined })} disabled={saving || disabled}>
-                {busyId === driver.id ? <LoaderCircle className="admin-config-spinner" size={16} /> : driver.declined ? <X size={16} /> : <Check size={16} />}<span>{driver.declined ? 'უარი ამ დღეზე' : 'მონაწილეობს'}</span>
+                {busyId === driver.id ? <LoaderCircle className="admin-config-spinner" size={16} /> : driver.declined ? <X size={16} /> : <Check size={16} />}<span>{driver.declined ? 'არ მონაწილეობს' : 'მონაწილეობს'}</span>
               </button></td>
             </tr>;
           })}</tbody>
         </table></div>
         {visibleSchedule.drivers.length === 0 && <div className="admin-driver-empty-times">მძღოლები ჯერ არ არის დამატებული.</div>}
-        <p className="admin-driver-footnote">დროები ემთხვევა შენახულ განრიგს. ხელით არჩეული დრო ამ დღეზე ინახება; ავტომატური არჩევანი რიგის ცვლილებას მიჰყვება.</p>
+        <p className="admin-driver-footnote">ამ დღის მონაწილეობის შეცვლა შემდეგი დღის რიგს არ ცვლის.</p>
       </> : null}
     </>}
   </section>;

@@ -33,6 +33,6 @@ export async function readTripCapacity(database: Database, date: string, time: s
     uncoveredSeats: shared.uncoveredSeats + reservations.filter(row => !assigned.some(car => car.active && car.key === row.assigned_vehicle_key)).reduce((sum, row) => sum + row.seats, 0),
     totalSeats: assigned.reduce((sum, car) => sum + (active ? car.capacity : 0), 0),
     revision,
-    availableDrivers: schedule.drivers,
+    availableDrivers: schedule.drivers.filter(driver => !driver.declined),
   };
 }

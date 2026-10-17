@@ -79,34 +79,31 @@ test('invalid calendar dates cannot silently change the rotation', () => {
   assert.throws(() => calendarDateOrdinal('1900-02-29'), RangeError);
 });
 
-test('daily plans include half-hour and custom times with remaining drivers in reserve', () => {
+test('daily queue includes configured departures without automatically assigning any driver', () => {
   const result = buildDriverSchedule(ANCHOR, ['22:15', '09:30', '06:00', '07:00', '08:00', '08:30', '09:00', '06:00']);
   assert.equal(result.direction, 'gori-tbilisi');
   assert.equal(result.anchorDate, ANCHOR);
   assert.equal(result.firstDriverId, 1);
   assert.deepEqual(result.times, ['06:00', '07:00', '08:00', '08:30', '09:00', '09:30', '22:15']);
-  assert.deepEqual(result.drivers.slice(0, 7).map(driver => driver.assignedTime), result.times);
-  assert.equal(result.drivers[3].name, 'ვიქტორი');
-  assert.equal(result.drivers[3].assignedTime, '08:30');
-  assert.ok(result.drivers.slice(7).every(driver => driver.assignedTime === null && !driver.assignmentActive));
+  assert.ok(result.drivers.every(driver => driver.assignedTime === null && driver.automaticTime === null && !driver.assignmentActive));
   assert.deepEqual(result.drivers.map(driver => driver.queuePosition), Array.from({ length: 43 }, (_, index) => index + 1));
 });
 
-test('manual times allow several drivers together and do not move others automatic positions', () => {
+test('explicit trip choices allow several drivers together and leave every other driver unassigned', () => {
   const overrides: DriverDayOverride[] = [
     { driverId: 1, declined: false, assignmentMode: 'manual', manualTime: '08:00' },
     { driverId: 2, declined: false, assignmentMode: 'manual', manualTime: '08:00' },
     { driverId: 4, declined: false, assignmentMode: 'manual', manualTime: null },
+    { driverId: 5, declined: false, assignmentMode: 'auto', manualTime: null },
   ];
   const result = buildDriverSchedule(ANCHOR, ['06:00', '07:00', '08:00', '09:00', '10:00'], INITIAL_DRIVER_ROSTER, overrides);
-  assert.deepEqual(result.drivers.slice(0, 5).map(driver => driver.automaticTime), ['06:00', '07:00', '08:00', '09:00', '10:00']);
-  assert.deepEqual(result.drivers.slice(0, 5).map(driver => driver.assignedTime), ['08:00', '08:00', '08:00', null, '10:00']);
-  assert.equal(result.drivers[3].assignmentMode, 'manual');
+  assert.ok(result.drivers.every(driver => driver.automaticTime === null));
+  assert.deepEqual(result.drivers.slice(0, 5).map(driver => driver.assignedTime), ['08:00', '08:00', null, null, null]);
   assert.equal(result.drivers[3].assignmentActive, false);
   assert.equal(result.drivers[0].assignmentActive, true);
 });
 
-test('refusals compress automatic times but retain manual preferences and the next day rotation', () => {
+test('refusals never assign other drivers and retain explicit trip choices and next day rotation', () => {
   const overrides: DriverDayOverride[] = [
     { driverId: 1, declined: true, assignmentMode: 'manual', manualTime: '10:00' },
     { driverId: 3, declined: false, assignmentMode: 'manual', manualTime: '10:00' },
@@ -114,26 +111,20 @@ test('refusals compress automatic times but retain manual preferences and the ne
   const times = ['06:00', '07:00', '08:00', '10:00'];
   const result = buildDriverSchedule(ANCHOR, times, INITIAL_DRIVER_ROSTER, overrides);
   assert.equal(result.firstDriverId, 1);
-  assert.equal(result.drivers[0].assignedTime, null);
-  assert.equal(result.drivers[0].automaticTime, null);
-  assert.equal(result.drivers[0].assignmentMode, 'manual');
-  assert.equal(result.drivers[1].assignedTime, '06:00');
-  assert.equal(result.drivers[2].automaticTime, '07:00');
-  assert.equal(result.drivers[2].assignedTime, '10:00');
-  assert.equal(result.drivers[3].assignedTime, '08:00');
+  assert.deepEqual(result.drivers.slice(0, 4).map(driver => driver.assignedTime), [null, null, '10:00', null]);
+  assert.ok(result.drivers.every(driver => driver.automaticTime === null));
   const restored = buildDriverSchedule(ANCHOR, times, INITIAL_DRIVER_ROSTER, overrides.map(override => ({ ...override, declined: false })));
   assert.equal(restored.drivers[0].assignedTime, '10:00');
-  assert.equal(restored.drivers[1].assignedTime, '07:00');
+  assert.equal(restored.drivers[1].assignedTime, null);
   const tomorrow = buildDriverSchedule('2026-10-10', times);
   assert.equal(tomorrow.firstDriverId, 2);
-  assert.equal(tomorrow.drivers[0].assignedTime, '06:00');
   assert.equal(tomorrow.drivers.at(-1)?.id, 1);
-  assert.equal(tomorrow.drivers.at(-1)?.assignmentMode, 'auto');
+  assert.ok(tomorrow.drivers.every(driver => driver.assignedTime === null));
 });
 
-test('removed manual times stay visible as inactive while empty schedules produce reserves', () => {
+test('removed departure times retain explicit choices as inactive without generating replacements', () => {
   const result = buildDriverSchedule(ANCHOR, ['07:00'], INITIAL_DRIVER_ROSTER, [{ driverId: 1, declined: false, assignmentMode: 'manual', manualTime: '06:00' }]);
-  assert.equal(result.drivers[0].automaticTime, '07:00');
+  assert.equal(result.drivers[0].automaticTime, null);
   assert.equal(result.drivers[0].assignedTime, '06:00');
   assert.equal(result.drivers[0].assignmentActive, false);
   assert.equal(result.drivers[0].assignmentMode, 'manual');

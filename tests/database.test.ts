@@ -40,7 +40,7 @@ test('production refuses an absent DATABASE_URL', async () => {
 });
 
 async function verifySchemaAndTransactions(first: Database, second: Database = first) {
-  assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 12);
+  assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
   assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM stops').get())?.count, 3);
   assert.equal((await first.prepare('SELECT COUNT(*) AS count FROM base_schedule').get())?.count, 2);
   const user = await first.prepare('INSERT INTO users(login,name,password_hash,created_at) VALUES (?,?,?,?)').run('adapter', 'Operator', 'test-hash', new Date().toISOString());
@@ -119,7 +119,7 @@ test('SQLite migration preserves existing data and runs once', async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const database = await createDatabase({ dbPath, databaseUrl: '', production: false });
       try {
-        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 12);
+        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
         assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM stops').get())?.count, 1);
         assert.equal((await database.prepare('SELECT value FROM settings WHERE key=?').get('didubeName'))?.value, 'Existing Didube');
       } finally { await database.close(); }
@@ -199,7 +199,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
         for (let attempt = 0; attempt < 2; attempt++) {
           const database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
           databases.push(database);
-          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 12);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
           assert.deepEqual((await database.prepare('SELECT * FROM schema_versions WHERE version<6 ORDER BY version').all()).map(row => ({ ...row })), versions);
           if (attempt === 0) assert.equal((await readPassengerProfile(database, '568694879'))?.goriPickupAddress, '');
           await migratePickupMemory(database);
@@ -294,7 +294,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
           database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
           if (!attempt) assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM passenger_addresses').get())?.count, 0);
           await migratePassengerAddresses(database);
-          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 12);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
           const current = JSON.stringify(await database.prepare('SELECT * FROM passenger_addresses ORDER BY phone,city,address_key').all());
           if (!attempt) addresses = current; else assert.equal(current, addresses);
           const profile = await readPassengerProfile(database, '568694879');
@@ -395,7 +395,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
         let overridesSnapshot: string | undefined;
         for (let attempt = 0; attempt < 2; attempt++) {
           database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
-          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 12);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
           for (const [table, snapshot] of snapshots) {
             const query = `SELECT ${preservedMigrationColumns(table)} FROM ${table}${table === 'schema_versions' ? ' WHERE version<8' : ''} ORDER BY 1,2`;
             assert.equal(JSON.stringify(await database.prepare(query).all()), snapshot, `${table} changed during driver migration`);
@@ -510,7 +510,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
         let temporarySnapshot: string | undefined;
         for (let attempt = 0; attempt < 2; attempt++) {
           database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
-          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 12);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
           for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await database.prepare(
             `SELECT ${preservedMigrationColumns(table)} FROM ${table}${table === 'schema_versions' ? ' WHERE version<9' : ''} ORDER BY 1,2`,
           ).all()), snapshot, `${table} changed during trip migration`);
@@ -649,7 +649,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
         let versionsSnapshot: string | undefined;
         for (let attempt = 0; attempt < 2; attempt++) {
           database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
-          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 12);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
           for (const [table, snapshot] of snapshots) {
             const query = `SELECT ${preservedMigrationColumns(table)} FROM ${table}${table === 'schema_versions' ? ' WHERE version<10' : ''} ORDER BY 1,2`;
             assert.equal(JSON.stringify(await database.prepare(query).all()), snapshot, `${table} changed during contact-and-options migration`);
@@ -790,7 +790,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
         const retainedLinks = [...legacyLinks.slice(0, 1), { call_id: 10, booking_id: 3 }, ...legacyLinks.slice(1)];
         for (let attempt = 0; attempt < 2; attempt++) {
           database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
-          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 12);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
           for (const [table, snapshot] of snapshots) {
             const query = `SELECT ${table === 'bookings' ? pre010BookingColumns + ',caller_phone,luggage,dog,seat_preference' : '*'} FROM ${table}${table === 'schema_versions' ? ' WHERE version<11' : ''} ORDER BY 1,2`;
             assert.equal(JSON.stringify(await database.prepare(query).all()), snapshot, `${table} changed during call-link migration`);
@@ -890,7 +890,7 @@ test('PostgreSQL staff seat migration upgrades persisted version 4 without chang
     assert.equal(databases.length, 2);
     for (const table of tables) assert.equal(JSON.stringify((await stored.query(`SELECT ${preservedMigrationColumns(table)} FROM ${table} ORDER BY 1,2`)).rows), snapshots.get(table), `${table} rows changed`);
     assert.deepEqual((await stored.query('SELECT * FROM schema_versions WHERE version<5 ORDER BY version')).rows, versions);
-    assert.equal((await stored.query('SELECT COUNT(*) AS count FROM schema_versions')).rows[0].count, '12');
+    assert.equal((await stored.query('SELECT COUNT(*) AS count FROM schema_versions')).rows[0].count, '13');
     const addedTables = new Set(['passenger_addresses', 'drivers', 'driver_day_overrides', 'temporary_trip_drivers', 'call_booking_links']);
     assert.deepEqual((await stored.query(indexesSql, [schema])).rows.filter(row => !addedTables.has(row.tablename) && row.indexname !== 'bookings_caller_phone'), indexes);
     const migratedConstraints = (await stored.query(constraintsSql, [schema])).rows;
@@ -1240,7 +1240,7 @@ for (const fixture of [
         assert.deepEqual(migratedIndexes.filter(name => name !== 'bookings_caller_phone'), indexes);
         for (const name of indexes) assert.deepEqual((await database.prepare(`PRAGMA index_info(${name})`).all()).map(row => ({ ...row })), indexColumns.get(name));
         assert.deepEqual((await database.prepare('SELECT * FROM schema_versions WHERE version<5 ORDER BY version').all()).map(row => ({ ...row })), versions);
-        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 12);
+        assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
         assert.equal((await database.prepare("SELECT seq FROM sqlite_sequence WHERE name='bookings'").get())?.seq, fixture.autoincrement ? 9999 : 44);
         const eightSeat = await insertHistoryBooking(database, '568694880', 'New staff booking', '2030-01-05T00:00:00.000Z', 'confirmed', null, 8);
         assert.equal(eightSeat.lastInsertRowid, fixture.autoincrement ? 10000 : 45);
@@ -1251,4 +1251,89 @@ for (const fixture of [
       } finally { await database.close(); }
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
+}
+
+for (const dialect of ['sqlite', 'postgres'] as const) {
+  test(`${dialect} manual-driver migration pins existing whole-car reservations once without generating other assignments or changing history`,
+    { skip: dialect === 'postgres' && !process.env.TEST_DATABASE_URL }, async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'greentaxi-manual-driver-upgrade-'));
+      const dbPath = join(directory, 'pre-013.sqlite');
+      const schema = `manual_drivers_${randomUUID().replaceAll('-', '')}`;
+      let administration: Pool | undefined;
+      let databaseUrl: string | undefined;
+      let database: Database | undefined;
+      try {
+        if (dialect === 'postgres') {
+          administration = new Pool(postgresPoolOptions(process.env.TEST_DATABASE_URL!));
+          await administration.query(`CREATE SCHEMA ${schema}`);
+          const connection = new URL(process.env.TEST_DATABASE_URL!);
+          connection.searchParams.set('options', `-csearch_path=${schema}`);
+          databaseUrl = connection.toString();
+        }
+        database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
+        // Migration 013 changes data only. Removing its empty initial receipt
+        // creates exactly the version-12 schema before legacy reservations exist.
+        await database.prepare('DELETE FROM schema_versions WHERE version=?').run(13);
+        const day = '2026-10-09';
+        const timestamp = '2026-10-08T12:00:00.000Z';
+        await database.prepare('INSERT INTO users(login,name,password_hash,created_at) VALUES (?,?,?,?)').run('kept-operator', 'Stored operator', 'private-test-hash', timestamp);
+        await database.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES (?,?,?)').run('kept-session-hash', 1, 1893456000000);
+        const override = (id: number, declined: number, mode: string, time: string | null) => database!.prepare(
+          'INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,?,?,?,?)',
+        ).run(id, day, declined, mode, time, timestamp);
+        await override(2, 0, 'auto', null);
+        await override(3, 0, 'manual', '08:00');
+        await override(4, 1, 'auto', null);
+        await override(5, 0, 'auto', null);
+        await override(7, 0, 'manual', null);
+        const reserve = (id: number, time: string, deletedAt: string | null = null, key = `roster:${id}`) => database!.prepare(`INSERT INTO bookings(
+          name,phone,seats,direction,gori_address,didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,deleted_at,source,
+          created_at,updated_at,booking_type,assigned_vehicle_key,assigned_vehicle_name)
+          VALUES ('Stored passenger','599111222',7,'gori-tbilisi','Stored address','Stored Didube','Stored destination',?,?,?,?,'confirmed',?,'employee',?,?,'whole_car',?,'Stored vehicle')`)
+          .run(day, time, day, time, deletedAt, timestamp, timestamp, key);
+        await reserve(1, '06:00'); // No override: previously a virtual automatic car.
+        await reserve(2, '07:00'); // A persisted legacy automatic preference.
+        await reserve(3, '08:00'); // An explicit assignment must stay byte-for-byte intact.
+        await reserve(6, '09:30', timestamp); // Cancellation must not create an assignment.
+        const snapshots = new Map<string, string>();
+        for (const table of ['bookings', 'drivers', 'users', 'sessions', 'settings', 'stops', 'base_schedule', 'date_schedule', 'audit_log', 'schema_versions']) {
+          snapshots.set(table, JSON.stringify(await database.prepare(`SELECT * FROM ${table} ORDER BY 1,2`).all()));
+        }
+        const untouchedPreferences = JSON.stringify(await database.prepare('SELECT * FROM driver_day_overrides WHERE driver_id>=3 ORDER BY driver_id,date').all());
+        await database.close(); database = undefined;
+        for (let reopen = 0; reopen < 2; reopen++) {
+          database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 13);
+          for (const [table, snapshot] of snapshots) {
+            const suffix = table === 'schema_versions' ? ' WHERE version<13' : '';
+            assert.equal(JSON.stringify(await database.prepare(`SELECT * FROM ${table}${suffix} ORDER BY 1,2`).all()), snapshot, `${table} changed during manual assignment upgrade`);
+          }
+          assert.equal(JSON.stringify(await database.prepare('SELECT * FROM driver_day_overrides WHERE driver_id>=3 ORDER BY driver_id,date').all()), untouchedPreferences);
+          const pinned = await database.prepare('SELECT driver_id,declined,assignment_mode,manual_time FROM driver_day_overrides WHERE driver_id<3 ORDER BY driver_id').all();
+          assert.deepEqual(pinned.map(row => ({ ...row })), [
+            { driver_id: 1, declined: 0, assignment_mode: 'manual', manual_time: '06:00' },
+            { driver_id: 2, declined: 0, assignment_mode: 'manual', manual_time: '07:00' },
+          ]);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM driver_day_overrides').get())?.count, 6);
+          await database.close(); database = undefined;
+        }
+        database = await createDatabase({ dbPath, databaseUrl: databaseUrl ?? '', production: false });
+        const migration = await readFile(new URL(`../server/migrations/013_manual_driver_assignments.${dialect}.sql`, import.meta.url), 'utf8');
+        for (const conflict of ['second-hour', 'same-hour', 'explicit-time', 'daily-refusal'] as const) {
+          const before: string = JSON.stringify(await database.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all());
+          await assert.rejects(database.transaction(async () => {
+            if (conflict === 'second-hour' || conflict === 'same-hour') await reserve(1, conflict === 'second-hour' ? '07:00' : '06:00');
+            else if (conflict === 'explicit-time') await database!.prepare('UPDATE driver_day_overrides SET manual_time=? WHERE driver_id=? AND date=?').run('12:00', 1, day);
+            else await database!.prepare('UPDATE driver_day_overrides SET declined=1 WHERE driver_id=? AND date=?').run(1, day);
+            await database!.exec(migration);
+          }), /check constraint|CHECK constraint/i, conflict);
+          assert.equal(JSON.stringify(await database.prepare('SELECT * FROM driver_day_overrides ORDER BY driver_id,date').all()), before, 'Conflicting upgrade must roll back all changes');
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 4);
+        }
+      } finally {
+        await database?.close();
+        if (administration) { await administration.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); await administration.end(); }
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
 }
