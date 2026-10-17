@@ -9,6 +9,18 @@ export type PublicConfig = { stops: Stop[]; didubeName: string; didubeAddress: s
 export type Slot = { time: string; active: boolean; bookingCount: number; seatCount: number };
 export type SeatPreference = 'front' | 'back' | 'middle';
 export type BookingType = 'passenger' | 'parcel' | 'whole_car';
+export type DriverIdentity = { id: number; name: string; login: string; capacity: number };
+export type DriverDayStatus = { date: string; working: boolean; assignedTime: string | null; assignmentActive: boolean };
+export type DriverBooking = {
+  id: number; name: string; phone: string; direction: Direction; seats: number; bookingType: BookingType;
+  luggage: boolean; dog: boolean; seatPreference: SeatPreference | null; goriAddress: string; pickupStopName: string | null;
+  didubeName: string; didubeAddress: string; date: string; time: string;
+};
+export type DriverSession = { driver: DriverIdentity | null; today: string; tomorrow: string };
+export type DriverDashboard = {
+  driver: DriverIdentity; today: string; tomorrow: string; days: DriverDayStatus[]; date: string;
+  bookings: DriverBooking[]; bookingScope: 'assigned' | 'trip'; trip: { direction: Direction; time: string; active: boolean } | null;
+};
 export type Booking = {
   bookingType?: BookingType; assignedVehicleKey?: string | null; assignedVehicleName?: string | null;
   id: number; name: string; phone: string; seats: number; direction: Direction;

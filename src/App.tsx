@@ -3,11 +3,13 @@ import { ArrowLeft, ArrowRight, Leaf, LockKeyhole, UserRound } from 'lucide-reac
 import { request, type User } from './api';
 import BookingPage from './components/BookingPage';
 import AdminDashboard from './components/AdminDashboard';
+import DriverPortal from './components/DriverPortal';
 
 type Session = { user: User | null; needsSetup: boolean; requiresSetupToken?: boolean };
 
 export default function App() {
-  const isAdmin = window.location.pathname.startsWith('/admin');
+  const isDriver = /^\/driver(?:\/|$)/.test(window.location.pathname);
+  const isAdmin = !isDriver && window.location.pathname.startsWith('/admin');
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(isAdmin);
@@ -20,6 +22,7 @@ export default function App() {
   };
   useEffect(() => { if (isAdmin) void loadSession(); }, [isAdmin]);
 
+  if (isDriver) return <DriverPortal />;
   if (!isAdmin) return <BookingPage />;
   if (loading) return <div className="app-loading" role="status"><Leaf size={36} /><span>იტვირთება…</span></div>;
   if (!session) return <div className="app-loading"><p role="alert">{error}</p><button onClick={loadSession}>ხელახლა ცდა</button></div>;

@@ -10,6 +10,7 @@ import { readDriverSchedule } from './drivers.js';
 import { DRIVER_DIRECTION } from '../shared/driver-rotation.js';
 import { readTripCapacity } from './trip-capacity.js';
 import { readWholeCarOptions } from './whole-car-options.js';
+import { mountDriverPortal } from './driver-portal.js';
 import { callBookingRelated, readActiveCallBookings, readPreferredBookingPhones } from './call-bookings.js';
 
 const scrypt = promisify(scryptCallback);
@@ -389,6 +390,9 @@ export async function createApp(options: Options = {}) {
       ? { ...response, phone: normalizePhone(response.phone) ?? response.phone } : response);
   }
 
+  mountDriverPortal(app, { database: db, production, now, reject, rateLimit, configuredTimes, protectWholeCars,
+    auditAttendance: (driverId, date, working) => audit('driver.attendance', undefined, undefined, { driverId, date, working, actorType: 'driver' }),
+  });
   app.get('/api/auth/session', async (req, res) => {
     const count = ((await db.prepare('SELECT COUNT(*) AS count FROM users').get()) as Row).count;
     res.json({ user: (await session(req)), needsSetup: count === 0, requiresSetupToken: production });

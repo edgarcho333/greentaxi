@@ -1,0 +1,123 @@
+.driver-portal { --driver-green: #096b3b; --driver-ink: #173c28; --driver-line: #b6cebf; min-height: 100dvh; padding: 28px 24px; background: #f1f6f2; color: var(--driver-ink); font-family: var(--font-body); font-size: 18px; line-height: 1.7; }
+.driver-portal :is(button, a, input) { font-family: inherit; }
+.driver-portal :is(button, a, input):focus-visible { outline: 3px solid #1644a0; outline-offset: 4px; }
+.driver-portal button:disabled { opacity: .7; cursor: default; }
+.driver-portal button svg { flex-shrink: 0; }
+.driver-brand { display: inline-flex; align-items: center; gap: 10px; min-height: 56px; color: #173f2b; font-size: 28px; line-height: 1.3; font-weight: 700; }
+.driver-brand > svg, .driver-brand strong { color: #0c7540; }
+.driver-button { display: inline-flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 10px; min-height: 60px; padding: 12px 20px; border: 2px solid #8aaf98; border-radius: 11px; color: #214d32; background: #fff; font-size: 18px; font-weight: 600; line-height: 1.6; text-align: center; }
+.driver-button:hover:not(:disabled) { border-color: #286f42; background: #e5f2e9; }
+.driver-button.primary { border-color: #086637; color: #fff; background: #096b3b; }
+.driver-button.primary:hover:not(:disabled) { background: #07522e; }
+.driver-portal-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 25px; }
+.driver-portal-loading > p { display: flex; align-items: center; justify-content: center; gap: 13px; max-width: 620px; }
+.driver-login-page { display: flex; flex-direction: column; align-items: center; gap: 24px; padding-top: 35px; padding-bottom: 35px; }
+.driver-login-card { width: 100%; max-width: 500px; padding: 30px; border: 1px solid var(--driver-line); border-radius: 18px; background: #fff; box-shadow: 0 8px 30px #18382609; }
+.driver-login-icon { display: grid; place-items: center; width: 66px; height: 66px; margin-bottom: 20px; border-radius: 15px; color: #0a6a38; background: #e2f2e7; }
+.driver-login-card h1 { margin: 0 0 10px; color: #143b25; font-size: 29px; line-height: 1.5; }
+.driver-login-card > p { margin: 0 0 25px; color: #365e44; font-size: 18px; }
+.driver-login-card form { display: grid; gap: 22px; }
+.driver-login-card label { display: grid; gap: 9px; color: #244d33; font-size: 18px; }
+.driver-login-input { display: flex; align-items: center; min-width: 0; gap: 10px; padding-left: 14px; border: 2px solid #a4c0ae; border-radius: 11px; color: #345d43; background: #fff; }
+.driver-login-input:focus-within { border-color: #176a3a; }
+.driver-login-input input { width: 100%; min-width: 0; min-height: 64px; padding: 13px 12px 13px 0; border: 0; border-radius: 0; background: transparent; color: #173f27; font-size: 20px; }
+.driver-login-input input:focus-visible { outline-offset: 0; border-radius: 7px; }
+.driver-login-submit { width: 100%; min-height: 68px; margin-top: 4px; font-size: 21px; }
+.driver-back-link { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 56px; color: #245d3b; font-size: 18px; text-align: center; }
+.driver-home { max-width: none; }
+.driver-home > :is(header, section, footer, .driver-welcome, .driver-feedback) { width: 100%; max-width: 920px; margin-left: auto; margin-right: auto; }
+.driver-page-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 25px; }
+.driver-logout { min-height: 56px; padding: 10px 16px; }
+.driver-welcome { display: flex; align-items: center; gap: 17px; margin-bottom: 26px; }
+.driver-welcome-icon { display: grid; place-items: center; flex: 0 0 64px; height: 64px; color: #096b3b; background: #dceee2; border-radius: 15px; }
+.driver-welcome h1 { margin: 0 0 4px; color: #183d29; font-size: 27px; line-height: 1.5; }
+.driver-welcome p { margin: 0; color: #1d5632; font-size: 25px; font-weight: 700; overflow-wrap: anywhere; }
+.driver-section { padding: 26px; margin-bottom: 25px; border: 1px solid var(--driver-line); border-radius: 17px; background: #fff; box-shadow: 0 4px 20px #18382604; }
+.driver-section-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; min-width: 0; }
+.driver-section-heading > svg { color: #246640; }
+.driver-section-heading h2 { flex: 1; min-width: 0; margin: 0; color: #143c26; font-size: 25px; line-height: 1.6; }
+.driver-day-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.driver-day-buttons button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; min-height: 82px; padding: 12px; border: 2px solid #9db9a7; border-radius: 11px; color: #294d35; background: #f4f8f5; line-height: 1.5; }
+.driver-day-buttons button strong { font-size: 23px; font-weight: 700; }
+.driver-day-buttons button span { font-size: 16px; font-variant-numeric: tabular-nums; }
+.driver-day-buttons button[aria-pressed=true] { color: #fff; background: #096b3b; border-color: #096b3b; }
+.driver-day-buttons button:hover:not(:disabled):not([aria-pressed=true]) { background: #dfefe5; border-color: #377c4e; }
+.driver-selected-date { margin: 16px 0; color: #345b42; font-size: 18px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
+.driver-attendance-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.driver-attendance-buttons button { display: flex; align-items: center; justify-content: center; gap: 11px; min-width: 0; min-height: 88px; padding: 15px; border: 2px solid #7fa78d; border-radius: 12px; font-size: 22px; font-weight: 700; line-height: 1.5; }
+.driver-working { color: #185832; background: #eaf6ee; }
+.driver-working[aria-pressed=true] { color: #fff; border-color: #096b3b; background: #096b3b; }
+.driver-attendance-buttons .driver-not-working { color: #982c2c; background: #fff1ef; border-color: #c08079; }
+.driver-attendance-buttons .driver-not-working[aria-pressed=true] { color: #fff; border-color: #a12b2d; background: #a12b2d; }
+.driver-attendance-buttons button:hover:not(:disabled) { box-shadow: inset 0 0 0 2px currentColor; }
+.driver-selected-check { margin-left: 4px; }
+.driver-attendance-current { margin: 15px 0 0; color: #2d563c; font-size: 18px; text-align: center; }
+.driver-loading-status { display: flex; align-items: center; justify-content: center; gap: 11px; min-height: 72px; margin: 16px 0; color: #365b43; font-size: 18px; }
+.driver-feedback { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px; padding: 14px 16px; margin: 18px 0 0; border: 1px solid #9bbca8; border-radius: 10px; background: #edf7f0; color: #205c36; font-size: 18px; line-height: 1.8; }
+.driver-feedback > svg { margin-top: 4px; }
+.driver-feedback > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.driver-feedback.error { color: #8e2827; border-color: #cf9b93; background: #fff0ed; }
+.driver-feedback .driver-button { color: inherit; border-color: currentColor; }
+.driver-refresh { display: grid; place-items: center; flex: 0 0 56px; width: 56px; height: 56px; padding: 0; border: 2px solid #9ab9a5; border-radius: 11px; color: #285b3b; background: #f4f8f5; }
+.driver-trip-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 15px; margin: 18px 0 13px; border: 1px solid #b6cfbd; border-radius: 11px; background: #edf7f0; color: #245536; }
+.driver-trip-summary strong { font-size: 26px; font-variant-numeric: tabular-nums; }
+.driver-trip-summary > span { font-size: 18px; }
+.driver-trip-summary small { color: #7d4c19; font-size: 16px; }
+.driver-booking-count { margin: 18px 0; color: #385c44; font-size: 18px; }
+.driver-booking-list { display: grid; gap: 17px; }
+.driver-booking-card { min-width: 0; padding: 21px; border: 2px solid #b1cdb9; border-radius: 12px; background: #fbfdfb; }
+.driver-booking-card > header { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px 15px; padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid #c6d9cc; color: #355f43; font-size: 18px; }
+.driver-booking-time { display: inline-flex; align-items: center; gap: 9px; color: #14562d; font-size: 25px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.driver-booking-card h3 { margin: 0 0 11px; color: #19432a; font-size: 23px; line-height: 1.6; overflow-wrap: anywhere; }
+.driver-booking-phone { display: inline-flex; align-items: center; gap: 12px; min-height: 58px; padding: 9px 15px; margin-bottom: 17px; color: #09572e; background: #e4f1e8; border: 1px solid #8db69c; border-radius: 10px; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.driver-booking-address { display: flex; align-items: flex-start; gap: 11px; margin: 14px 0; }
+.driver-booking-address > svg { margin-top: 4px; color: #3f6c4c; }
+.driver-booking-address > div { display: grid; min-width: 0; gap: 5px; }
+.driver-booking-address span { color: #47644f; font-size: 16px; }
+.driver-booking-address strong { color: #23472e; font-size: 19px; font-weight: 600; overflow-wrap: anywhere; }
+.driver-booking-badges { display: flex; flex-wrap: wrap; gap: 9px; padding-top: 15px; margin-top: 18px; border-top: 1px solid #c6d9cc; }
+.driver-booking-badges > span { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 8px 11px; border: 1px solid #b1ccba; border-radius: 8px; color: #28543a; background: #edf7f0; font-size: 17px; line-height: 1.7; overflow-wrap: anywhere; }
+.driver-empty { display: flex; align-items: center; gap: 15px; min-height: 112px; padding: 21px; color: #365e43; border: 1px dashed #a8c2b0; border-radius: 12px; background: #f5f9f6; }
+.driver-empty p { margin: 0; font-size: 19px; }
+.driver-page-footer { padding: 5px 0 10px; color: #476653; font-size: 16px; text-align: center; }
+.public-footer.public-footer-with-driver { height: auto; min-height: 80px; flex-wrap: wrap; padding-top: 12px; padding-bottom: 12px; }
+.public-footer-driver-links { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 24px; }
+.public-footer .public-driver-link { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 56px; padding: 10px 16px; border: 1px solid #96b99f; border-radius: 9px; color: #185832; background: #e4f0e6; font-size: 18px; font-weight: 600; }
+@keyframes driver-spin { to { transform: rotate(360deg); } }
+.driver-spin { animation: driver-spin .9s linear infinite; }
+@media (max-width: 600px) {
+  .driver-portal { padding: 18px 12px; }
+  .driver-login-page { gap: 19px; padding-top: 24px; }
+  .driver-login-card { padding: 23px 18px; border-radius: 14px; }
+  .driver-login-card h1 { font-size: 26px; }
+  .driver-login-card label, .driver-login-card > p { font-size: 18px; }
+  .driver-brand { font-size: 25px; }
+  .driver-page-header { gap: 8px; margin-bottom: 22px; }
+  .driver-logout { padding: 9px 12px; font-size: 18px; }
+  .driver-welcome { gap: 12px; }
+  .driver-welcome-icon { display: none; }
+  .driver-welcome h1 { font-size: 24px; }
+  .driver-welcome p { font-size: 23px; }
+  .driver-section { padding: 17px 14px; margin-bottom: 19px; border-radius: 13px; }
+  .driver-section-heading { gap: 9px; }
+  .driver-section-heading h2 { font-size: 23px; }
+  .driver-day-buttons { gap: 10px; }
+  .driver-day-buttons button { min-height: 82px; padding: 11px 8px; }
+  .driver-day-buttons button strong { font-size: 22px; }
+  .driver-day-buttons button span { font-size: 14px; }
+  .driver-attendance-buttons { gap: 10px; }
+  .driver-attendance-buttons button { flex-direction: column; gap: 7px; min-height: 122px; padding: 13px 6px; font-size: 20px; }
+  .driver-attendance-buttons button span { max-width: 100%; overflow-wrap: anywhere; }
+  .driver-attendance-buttons .driver-selected-check { display: none; }
+  .driver-feedback { padding: 12px; font-size: 18px; }
+  .driver-booking-card { padding: 15px 12px; }
+  .driver-booking-card h3 { font-size: 22px; }
+  .driver-booking-phone { padding: 9px 10px; font-size: 20px; gap: 8px; }
+  .driver-booking-address strong { font-size: 18px; }
+  .driver-booking-badges > span { padding: 7px 9px; font-size: 16px; }
+  .driver-trip-summary { padding: 12px; }
+  .driver-empty { align-items: flex-start; padding: 16px 12px; }
+  .public-footer-driver-links { width: 100%; justify-content: space-between; }
+  .public-footer .public-driver-link { font-size: 18px; }
+}
+@media (prefers-reduced-motion: reduce) { .driver-spin { animation: none; } }

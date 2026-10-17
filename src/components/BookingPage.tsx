@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Banknote, CalendarDays, Check, CheckCircle2, ChevronDown, Clock3, LoaderCircle, MapPin, Menu, Minus, Phone, Plus, UserRound, Users, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Banknote, CalendarDays, CarFront, Check, CheckCircle2, ChevronDown, Clock3, LoaderCircle, MapPin, Menu, Minus, Phone, Plus, UserRound, Users, X } from 'lucide-react';
 import { directions, request, today, type Direction, type PublicConfig, type Slot } from '../api';
 import { formatPhone, normalizePhone } from '../../shared/phone';
 import './public.css';
@@ -243,6 +243,6 @@ export default function BookingPage() {
         <section className="public-help" id="help" aria-labelledby="public-help-title"><h2 id="public-help-title">როგორ მუშაობს <ChevronDown size={17} aria-hidden="true" /></h2><ol className="public-help-steps"><li><span>1</span><div><h3>აირჩიე რეისი</h3><p>აირჩიე გამგზავრების მიმართულება, თარიღი და დრო.</p></div></li><li><span>2</span><div><h3>მიუთითე მისამართი</h3><p>მიუთითე ასვლის/ჩამოსვლის მისამართი ან გაჩერება.</p></div></li><li><span>3</span><div><h3>შეავსე საკონტაქტო ინფორმაცია</h3><p>დატოვე შენი სახელი და საკონტაქტო ნომერი.</p></div></li></ol><div className="public-payment-note"><Banknote size={41} strokeWidth={2} /><div><h3>გადახდა ადგილზე</h3><p>მგზავრობის საფასურს ადგილზე გადაიხდით.</p></div></div></section>
       </aside>
     </main>
-    <footer className="public-footer"><span>© 2026 GreenTaxi. ყველა უფლება დაცულია.</span><a href="#help">დახმარება <ArrowUpRight size={16} /></a></footer>
+    <footer className="public-footer public-footer-with-driver"><span>© 2026 GreenTaxi. ყველა უფლება დაცულია.</span><nav className="public-footer-driver-links" aria-label="დამატებითი გვერდები"><a href="/driver" className="public-driver-link"><CarFront size={23} />მძღოლებისთვის</a><a href="#help">დახმარება <ArrowUpRight size={16} /></a></nav></footer>
   </div>;
 }
