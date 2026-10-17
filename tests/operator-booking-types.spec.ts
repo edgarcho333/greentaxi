@@ -328,6 +328,147 @@ test('the incoming-call form selects an unassigned driver and sends its revision
   expect((await capacity('16:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBe(booking.id);
 });
 
+test('editing a call contact preserves the manual hour, whole-car driver and services through profile loading and polling', async ({ page }) => {
+  const caller = '599800120';
+  const contact = '599800121';
+  const manualAddress = 'გორი, ხელით შენარჩუნებული მისამართი 120';
+  const driver = await unassignedDriver();
+  const seed = await api.post('/api/admin/bookings', { data: {
+    phone: contact, seats: 1, direction: 'gori-tbilisi', goriAddress: 'გორი, პროფილის ძველი მისამართი 121',
+    requestedDate: tripDate(), requestedTime: '10:00',
+  } });
+  expect(seed.status()).toBe(201);
+  createdIds.push((await seed.json() as Booking).id);
+  const device = await api.post('/api/admin/devices', { data: { name: 'Disposable manual-trip draft regression' } });
+  expect(device.status()).toBe(201);
+  const { token } = await device.json() as { token: string };
+  const incoming = await api.post('/api/integrations/android/calls', {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { eventId: `whole-car-phone-regression-${Date.now()}`, kind: 'incoming', phase: 'answered', phone: `+995${caller}`, occurredAt: new Date().toISOString(), durationSeconds: 0 },
+  });
+  expect(incoming.status()).toBe(201);
+  const call = await incoming.json() as { id: number }; inquiryIds.push(call.id);
+  await openAdmin(page);
+  await page.getByRole('navigation', { name: 'ადმინისტრატორის ნავიგაცია', exact: true }).getByRole('button', { name: /^შემოსული/ }).click();
+  const row = page.locator(`.admin-calls-table tbody tr[data-call-id="${call.id}"]`);
+  const phone = row.getByLabel('ტელეფონის ნომერი', { exact: true });
+  const address = row.getByLabel('აყვანის მისამართი გორში', { exact: true });
+  const services = row.getByRole('group', { name: 'დამატებითი სერვისები', exact: true });
+  const times = row.getByRole('group', { name: 'დრო', exact: true });
+  const selectedDriver = row.locator('[data-whole-car-selected-name]');
+  await address.fill(manualAddress);
+  await row.getByRole('group', { name: 'დღე', exact: true }).getByRole('button', { name: /^ხვალ/ }).click();
+  await times.getByRole('button', { name: '16:00', exact: true }).click();
+  await services.getByRole('button', { name: 'მთლიანი მანქანა', exact: true }).click();
+  await services.getByRole('button', { name: 'ძაღლი', exact: true }).click();
+  await selectUnassigned(page, row, driver);
+
+  let release!: () => void;
+  let sawProfile!: () => void;
+  let routeFinished!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const delayedProfile = new Promise<void>(resolve => { sawProfile = resolve; });
+  const completed = new Promise<void>(resolve => { routeFinished = resolve; });
+  await page.route('**/api/admin/passengers/profile?**', async route => {
+    if (new URL(route.request().url()).searchParams.get('phone') !== contact) return route.continue();
+    const response = await route.fetch();
+    const data = await response.json();
+    sawProfile();
+    await gate;
+    try {
+      // Simulate a saved preferred hour arriving after the operator's manual edits.
+      await route.fulfill({ response, json: { ...data, profile: { ...data.profile, departureTimes: { 'gori-tbilisi': ['10:00'] } } } });
+    } finally { routeFinished(); }
+  });
+  const expectTrip = async () => {
+    await expect(times.getByRole('button', { name: '16:00', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(selectedDriver).toHaveText(driver.name);
+    await expect(services.getByRole('button', { name: 'მთლიანი მანქანა', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(services.getByRole('button', { name: 'ძაღლი', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(address).toHaveValue(manualAddress);
+  };
+  try {
+    // Real character editing temporarily makes a previously valid number partial.
+    await phone.focus(); await phone.press('End'); await phone.press('Backspace');
+    await expectTrip();
+    await phone.pressSequentially('1'); await phone.blur();
+    await delayedProfile;
+    await expectTrip();
+    await services.getByRole('button', { name: 'ბარგი', exact: true }).click();
+    await address.pressSequentially('1'); await address.press('Backspace');
+    await times.getByRole('button', { name: '16:00', exact: true }).click();
+    await expectTrip();
+    release(); await completed;
+    await expectTrip();
+    // A known contact can be replaced in one edit or typed through invalid states.
+    await phone.fill('599800122'); await phone.blur(); await expectTrip();
+    await phone.fill(''); await expectTrip();
+    await phone.pressSequentially('599800123', { delay: 30 }); await phone.blur(); await expectTrip();
+    await phone.fill('+995 599 80 01 23'); await phone.blur(); await expectTrip();
+    // Observe real queue refreshes for more than five seconds, without fixed sleeps.
+    const started = Date.now();
+    let polls = 0;
+    do {
+      await page.waitForResponse(response => new URL(response.url()).pathname === '/api/admin/calls' && response.request().method() === 'GET');
+      polls++;
+    } while (polls < 3 || Date.now() - started < 5_000);
+    await expectTrip();
+    await expect(services.getByRole('button', { name: 'ბარგი', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(row.getByRole('button', { name: 'დადასტურება', exact: true })).toBeEnabled();
+    // Only an actual change to the trip invalidates the selected vehicle.
+    await times.getByRole('button', { name: '17:00', exact: true }).click();
+    await expect(times.getByRole('button', { name: '17:00', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(selectedDriver).toHaveCount(0);
+    await expect(services.getByRole('button', { name: 'მთლიანი მანქანა', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(services.getByRole('button', { name: 'ძაღლი', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(address).toHaveValue(manualAddress);
+  } finally { release(); }
+});
+
+test('selecting a whole-car driver pins a profile-suggested hour before the contact is edited', async ({ page }) => {
+  const caller = '599800130';
+  const driver = await unassignedDriver();
+  const seed = await api.post('/api/admin/bookings', { data: {
+    phone: caller, seats: 1, direction: 'gori-tbilisi', goriAddress: 'გორი, პროფილიდან შემოთავაზებული მისამართი 130',
+    requestedDate: tripDate(), requestedTime: '15:00',
+  } });
+  expect(seed.status()).toBe(201); createdIds.push((await seed.json() as Booking).id);
+  const device = await api.post('/api/admin/devices', { data: { name: 'Disposable profile-hour draft regression' } });
+  expect(device.status()).toBe(201);
+  const { token } = await device.json() as { token: string };
+  const incoming = await api.post('/api/integrations/android/calls', {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { eventId: `whole-car-profile-hour-${Date.now()}`, kind: 'incoming', phase: 'answered', phone: `+995${caller}`, occurredAt: new Date().toISOString(), durationSeconds: 0 },
+  });
+  expect(incoming.status()).toBe(201);
+  const call = await incoming.json() as { id: number }; inquiryIds.push(call.id);
+  await page.route('**/api/admin/calls?**', async route => {
+    const response = await route.fetch();
+    const data = await response.json();
+    await route.fulfill({ response, json: { ...data, calls: data.calls.map((item: { id: number; passengerProfile: Record<string, unknown> }) => item.id === call.id ? {
+      ...item, passengerProfile: { ...item.passengerProfile, departureTimes: { 'gori-tbilisi': ['15:00'] } },
+    } : item) } });
+  });
+  await openAdmin(page);
+  await page.getByRole('navigation', { name: 'ადმინისტრატორის ნავიგაცია', exact: true }).getByRole('button', { name: /^შემოსული/ }).click();
+  const row = page.locator(`.admin-calls-table tbody tr[data-call-id="${call.id}"]`);
+  await row.getByRole('group', { name: 'დღე', exact: true }).getByRole('button', { name: /^ხვალ/ }).click();
+  const times = row.getByRole('group', { name: 'დრო', exact: true });
+  // No click on this hour: it must genuinely originate from the profile.
+  await expect(times.getByRole('button', { name: '15:00', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(row.locator('.admin-call-time-note')).toContainText('წინა მგზავრობებიდან');
+  await row.getByRole('group', { name: 'დამატებითი სერვისები', exact: true }).getByRole('button', { name: 'მთლიანი მანქანა', exact: true }).click();
+  await selectUnassigned(page, row, driver);
+  const phone = row.getByLabel('ტელეფონის ნომერი', { exact: true });
+  await phone.fill('599800131'); await phone.blur();
+  await expect(times.getByRole('button', { name: '15:00', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(row.locator('[data-whole-car-selected-name]')).toHaveText(driver.name);
+  await phone.focus(); await phone.press('End'); await phone.press('Backspace'); await phone.pressSequentially('2'); await phone.blur();
+  await expect(times.getByRole('button', { name: '15:00', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(row.locator('[data-whole-car-selected-name]')).toHaveText(driver.name);
+  expect((await driverDay()).drivers.find(item => item.id === driver.id)?.assignedTime).toBeNull();
+});
+
 for (const width of [320, 390]) {
   test(`parcel and whole-car picker buttons fit the ${width}px operator form`, async ({ page }) => {
     await page.setViewportSize({ width, height: 850 });

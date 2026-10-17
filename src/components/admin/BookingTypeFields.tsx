@@ -40,7 +40,7 @@ export function BookingTypeFields({ value, onChange, direction, date, time, book
     if (!eligible || !current?.data || current.loading || current.error || value.expectedVehicleRevision || !value.assignedVehicleKey) return;
     const existing = current.data.drivers.find(driver => driver.key === value.assignedVehicleKey);
     if (!existing || existing.declined || existing.assignedTime !== time || existing.reservedBookingId && existing.reservedBookingId !== bookingId) return;
-    onChange({ ...value, expectedVehicleRevision: existing.revision });
+    onChange({ bookingType: value.bookingType, assignedVehicleKey: value.assignedVehicleKey, expectedVehicleRevision: existing.revision });
   }, [eligible, current?.data, current?.loading, current?.error, value.assignedVehicleKey, value.expectedVehicleRevision, context, time, bookingId, onChange]);
   const open = openContext === context && eligible;
   const needsConfirmation = !!selected && (selected.declined || selected.assignedTime !== time) && !value.expectedVehicleRevision;
@@ -51,7 +51,7 @@ export function BookingTypeFields({ value, onChange, direction, date, time, book
   function selectDriver(driver: WholeCarDriver) {
     if (disabled || current?.loading || current?.error || selection.current !== context) return;
     setChosen({ context, driver });
-    onChange({ ...value, assignedVehicleKey: driver.key, expectedVehicleRevision: driver.revision });
+    onChange({ bookingType: value.bookingType, assignedVehicleKey: driver.key, expectedVehicleRevision: driver.revision });
     setOpenContext(null);
   }
   function toggleType(bookingType: BookingType) {
