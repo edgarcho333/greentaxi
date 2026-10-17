@@ -213,7 +213,7 @@ test('driver APIs reject other dates, malformed statuses and driver or assignmen
     await f.login();
     const before = JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides').all());
     for (const body of [{ date: '2029-12-31', working: false }, { date: '2030-01-03', working: true }, { date: TODAY, working: 'false' }, { date: TODAY }, { date: TODAY, working: false, driverId: 2 }, { date: TODAY, working: true, assignment: { mode: 'manual', time: '08:30' } }, { date: TODAY, working: true, direction: 'tbilisi-gori' }]) assert.equal((await f.request('/driver/attendance', 'PATCH', body, 'driver')).status, 400);
-    for (const query of ['date=2029-12-31', 'date=2030-01-03', `date=${TODAY}&driverId=2`, 'date=invalid']) assert.equal((await f.request(`/driver/dashboard?${query}`, 'GET', undefined, 'driver')).status, 400);
+    for (const query of ['date=2029-12-31', 'date=2030-01-03', 'date=invalid', `date=${TODAY}&date=${TOMORROW}`]) assert.equal((await f.request(`/driver/dashboard?${query}`, 'GET', undefined, 'driver')).status, 400);
     assert.equal(JSON.stringify(await f.db.prepare('SELECT * FROM driver_day_overrides').all()), before);
     assert.equal((await f.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='driver.attendance'").get())?.count, 0);
   });
@@ -250,6 +250,13 @@ test('the driver dashboard exposes only active confirmed orders explicitly assig
     assert.deepEqual(Object.keys(dashboard.bookings[0]).sort(), ['id', 'name', 'phone', 'direction', 'seats', 'bookingType', 'luggage', 'dog', 'seatPreference', 'goriAddress', 'pickupStopName', 'didubeName', 'didubeAddress', 'date', 'time'].sort());
     assert.equal(dashboard.bookings[0].phone, '599111222'); assert.equal(dashboard.bookings[0].luggage, true); assert.equal(dashboard.bookings[0].dog, true);
     assert.equal(JSON.stringify(dashboard.bookings).includes('599999888'), false);
+    for (const parameters of ['path=driver%2Fdashboard', 'driverId=2', 'userId=2', 'path=driver%2Fdashboard&driverId=2&userId=2&accountId=2']) {
+      const routed = await successful(f, `/driver/dashboard?date=${TOMORROW}&${parameters}`);
+      assert.equal(routed.driver.id, 1);
+      assert.equal(routed.date, TOMORROW);
+      assert.deepEqual(routed.bookings, dashboard.bookings, 'Routing and identity query fields must never select another account');
+      assert.deepEqual(routed.days, dashboard.days);
+    }
     assert.deepEqual((await successful(f, `/driver/dashboard?date=${TODAY}`)).bookings, []);
     await f.login(2);
     const second = await successful(f, `/driver/dashboard?date=${TOMORROW}`);

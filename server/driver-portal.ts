@@ -102,7 +102,8 @@ export function mountDriverPortal(app: Express, dependencies: {
     next();
   });
   app.get('/api/driver/dashboard', async (req: DriverRequest, res) => {
-    onlyFields(req.query, ['date']);
+    // Hosts may add rewrite parameters to the query. Only date is an input;
+    // account identity always comes from the authenticated driver session.
     const driver = req.portalDriver!;
     const result = await database.transaction(async (): Promise<DriverDashboard> => {
       const window = dateWindow();
