@@ -32,3 +32,10 @@
 @media print {
   .booking-print-report .operator-booking-options-summary > span { background: transparent; box-shadow: none; }
 }
+
+.operator-booking-type-controls { display: contents; }
+.operator-booking-type-controls > label,
+.operator-booking-type-controls > p { grid-column: 1 / -1; min-width: 0; }
+.operator-booking-type-controls > label { display: grid; gap: 6px; }
+.operator-booking-type-controls select { width: 100%; min-width: 0; }
+.operator-booking-type-controls small { font-size: 12px; font-weight: 400; line-height: 1.5; }

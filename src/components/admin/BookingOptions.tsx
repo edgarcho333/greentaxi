@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Dog, Luggage } from 'lucide-react';
 import './booking-options.css';
 
@@ -10,7 +11,7 @@ export type BookingOptionsValue = {
 type BookingOptionsProps = {
   value: BookingOptionsValue;
   onChange: (value: BookingOptionsValue) => void;
-  disabled?: boolean;
+  disabled?: boolean; passenger?: boolean; typeControls?: ReactNode;
 };
 
 const preferences: { value: NonNullable<BookingOptionsValue['seatPreference']>; label: string }[] = [
@@ -19,19 +20,20 @@ const preferences: { value: NonNullable<BookingOptionsValue['seatPreference']>; 
   { value: 'middle', label: 'შუაში' },
 ];
 
-export function BookingOptions({ value, onChange, disabled = false }: BookingOptionsProps) {
+export function BookingOptions({ value, onChange, disabled = false, passenger = true, typeControls }: BookingOptionsProps) {
   return <div className="operator-booking-options">
     <fieldset className="operator-booking-options-group" aria-label="დამატებითი სერვისები">
       <legend>დამატებითი სერვისები</legend>
       <div className="operator-booking-options-services">
         <button type="button" disabled={disabled} aria-pressed={value.luggage} onClick={() => onChange({ ...value, luggage: !value.luggage })}><Luggage size={21} />ბარგი</button>
         <button type="button" disabled={disabled} aria-pressed={value.dog} onClick={() => onChange({ ...value, dog: !value.dog })}><Dog size={21} />ძაღლი</button>
+        {typeControls}
       </div>
     </fieldset>
-    <fieldset className="operator-booking-options-group" aria-label="სასურველი ადგილი">
+    {passenger && <fieldset className="operator-booking-options-group" aria-label="სასურველი ადგილი">
       <legend>ადგილი</legend>
       <div className="operator-booking-options-preferences">{preferences.map(preference => <button type="button" key={preference.value} disabled={disabled} aria-pressed={value.seatPreference === preference.value} onClick={() => onChange({ ...value, seatPreference: value.seatPreference === preference.value ? null : preference.value })}>{preference.label}</button>)}</div>
-    </fieldset>
+    </fieldset>}
   </div>;
 }
 

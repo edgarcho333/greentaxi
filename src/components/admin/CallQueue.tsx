@@ -1,3 +1,4 @@
+import { BookingTypeFields, BookingTypeSummary, type BookingTypeValue } from './BookingTypeFields';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { CalendarDays, Check, ChevronLeft, ChevronRight, History, Loader2, Phone, Plus, Smartphone, X } from 'lucide-react';
 import { ApiError, addDays, directions, request, today, type Booking, type CallInquiry, type Direction, type PassengerProfile, type PublicConfig, type Schedule } from '../../api';
@@ -7,7 +8,7 @@ import { BookingOptions, BookingOptionsSummary, type BookingOptionsValue } from 
 import './call-queue.css';
 
 type Props = { scope: 'incoming' | 'deleted'; search: string; refresh: number; config: PublicConfig; onChange: () => void };
-type Draft = BookingOptionsValue & {
+type Draft = BookingOptionsValue & BookingTypeValue & {
   id: string; phone: string; direction: Direction; goriPickupAddress: string; goriDestinationAddress: string;
   pickupStopId: string; date: string; time: string; seats: number;
   departureTimes: PassengerProfile['departureTimes']; timeSource: 'empty' | 'profile' | 'manual';
@@ -33,7 +34,7 @@ function newDraft(call: CallInquiry): Draft {
     id: 'first', phone: preferredPhone(call) ? formatPhone(preferredPhone(call)!) : '', direction: 'gori-tbilisi',
     goriPickupAddress: profile?.goriPickupAddress || '', goriDestinationAddress: profile?.goriAddress || '',
     pickupStopId: profile?.pickupStopId ? String(profile.pickupStopId) : '', date: today(), time: '', seats: 1,
-    luggage: false, dog: false, seatPreference: null,
+    luggage: false, dog: false, seatPreference: null, bookingType: 'passenger', assignedVehicleKey: '',
     departureTimes: profile?.departureTimes, timeSource: 'empty',
     dirty: { phone: false, pickup: false, destination: false, stop: false },
   };
@@ -43,13 +44,13 @@ function additionalDraft(first: Draft): Draft {
     id: crypto.randomUUID(), phone: '', direction: first.direction, date: first.date, time: first.time,
     timeSource: first.time ? 'manual' : 'empty', seats: 1,
     goriPickupAddress: '', goriDestinationAddress: '', pickupStopId: '', departureTimes: undefined,
-    luggage: false, dog: false, seatPreference: null,
+    luggage: false, dog: false, seatPreference: null, bookingType: 'passenger', assignedVehicleKey: '',
     dirty: { phone: true, pickup: false, destination: false, stop: false },
   };
 }
 function bookingInput(draft: Draft) {
   return {
-    phone: normalizePhone(draft.phone), seats: draft.seats, direction: draft.direction,
+    phone: normalizePhone(draft.phone), seats: draft.bookingType === 'parcel' ? 0 : draft.seats, bookingType: draft.bookingType, assignedVehicleKey: draft.assignedVehicleKey || null, direction: draft.direction,
     luggage: draft.luggage, dog: draft.dog, seatPreference: draft.seatPreference,
     goriAddress: (draft.direction === 'gori-tbilisi' ? draft.goriPickupAddress : draft.goriDestinationAddress).trim(),
     pickupStopId: draft.direction === 'tbilisi-gori' ? Number(draft.pickupStopId) : null,
@@ -80,7 +81,7 @@ function withPhone(draft: Draft, phone: string): Draft {
   };
 }
 function withContext(draft: Draft, direction: Direction, date: string): Draft {
-  return draft.direction === direction && draft.date === date ? draft : { ...draft, direction, date, time: '', timeSource: 'empty' };
+  return draft.direction === direction && draft.date === date ? draft : { ...draft, assignedVehicleKey: '', direction, date, time: '', timeSource: 'empty' };
 }
 
 export default function CallQueue({ scope, search, refresh, config, onChange }: Props) {
@@ -279,7 +280,11 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
 
   const updateDraft = useCallback((id: number, passengerId: string, update: (draft: Draft) => Draft) => {
     if (lockedIds.current.has(id) || groupAttempts.current.has(id)) return;
-    setDrafts(previous => previous[id] ? { ...previous, [id]: previous[id].map(draft => draft.id === passengerId ? update(draft) : draft) } : previous);
+    setDrafts(previous => previous[id] ? { ...previous, [id]: previous[id].map(draft => {
+      if (draft.id !== passengerId) return draft;
+      const next = update(draft);
+      return next.direction !== draft.direction || next.date !== draft.date || next.time !== draft.time ? { ...next, assignedVehicleKey: '' } : next;
+    }) } : previous);
     setRowErrors(previous => previous[id] ? { ...previous, [id]: '' } : previous);
   }, []);
   const setProfileLoading = useCallback((id: number, passengerId: string, loading: boolean) => {
@@ -426,7 +431,7 @@ export default function CallQueue({ scope, search, refresh, config, onChange }: 
 }
 
 function validDraft(draft: Draft, entry: ScheduleEntry | undefined, config: PublicConfig, now: number) {
-  return !!normalizePhone(draft.phone) && draft.seats >= 1 && draft.seats <= 8 &&
+  return !!normalizePhone(draft.phone) && (draft.bookingType === 'parcel' || (draft.bookingType === 'whole_car' ? !!draft.assignedVehicleKey : draft.seats >= 1 && draft.seats <= 8)) &&
     (draft.direction === 'gori-tbilisi' ? draft.goriPickupAddress : draft.goriDestinationAddress).trim().length >= 3 &&
     (draft.direction === 'gori-tbilisi' || config.stops.some(stop => stop.active && stop.id === Number(draft.pickupStopId))) &&
     !!entry?.schedule && !entry.loading && !entry.error && entry.schedule.slots.some(slot => slot.active && slot.time === draft.time) && futureTime(draft.date, draft.time, now);
@@ -500,14 +505,14 @@ function IncomingCallRow({ call, draft, passengerIndex, passengerCount, initiali
     </td>
     <td data-label="მისამართი" className="admin-call-address-cell">
       {draft.direction === 'gori-tbilisi' ? <><SavedAddressPicker addresses={savedAddresses} value={draft.goriPickupAddress} disabled={editingLocked || !initialized} onChoose={address => update(previous => ({ ...previous, goriPickupAddress: address, dirty: { ...previous.dirty, pickup: true } }))} /><textarea aria-label="აყვანის მისამართი გორში" placeholder="ქუჩა, სახლის ნომერი…" maxLength={500} value={draft.goriPickupAddress} disabled={editingLocked || !initialized} onChange={event => update(previous => ({ ...previous, goriPickupAddress: event.target.value, dirty: { ...previous.dirty, pickup: true } }))} /></> : <><select aria-label="აყვანის გაჩერება თბილისში" value={draft.pickupStopId} disabled={editingLocked || !initialized} onChange={event => update(previous => ({ ...previous, pickupStopId: event.target.value, dirty: { ...previous.dirty, stop: true } }))}><option value="">აირჩიეთ გაჩერება</option>{stops.map(stop => <option key={stop.id} value={stop.id}>{stop.name}{stop.address ? ` — ${stop.address}` : ''}{savedStopIds.has(stop.id) ? ' · შენახული' : ''}</option>)}</select><div className="admin-call-destination"><SavedAddressPicker addresses={savedAddresses} value={draft.goriDestinationAddress} disabled={editingLocked || !initialized} onChoose={address => update(previous => ({ ...previous, goriDestinationAddress: address, dirty: { ...previous.dirty, destination: true } }))} /><label>ჩამოსვლის მისამართი გორში<textarea aria-label="ჩამოსვლის მისამართი გორში" placeholder="ქუჩა, სახლის ნომერი…" maxLength={500} value={draft.goriDestinationAddress} disabled={editingLocked || !initialized} onChange={event => update(previous => ({ ...previous, goriDestinationAddress: event.target.value, dirty: { ...previous.dirty, destination: true } }))} /></label></div></>}
-      <BookingOptions value={{ luggage: draft.luggage, dog: draft.dog, seatPreference: draft.seatPreference }} disabled={editingLocked || !initialized} onChange={options => update(previous => ({ ...previous, ...options }))} />
+      <BookingOptions typeControls={<BookingTypeFields inline value={draft} direction={draft.direction} date={draft.date} time={draft.time} disabled={editingLocked || !initialized} onChange={value => update(previous => ({ ...previous, ...value, seats: 1, seatPreference: null }))} />} passenger={draft.bookingType === 'passenger'} value={{ luggage: draft.luggage, dog: draft.dog, seatPreference: draft.seatPreference }} disabled={editingLocked || !initialized} onChange={options => update(previous => ({ ...previous, ...options }))} />
     </td>
     <td data-label="ჯავშანი" className="admin-call-booking-cell"><div className="admin-call-booking-controls">
       {first && <><CallMetadata call={call} /><ActiveCallBookings call={call} phone={normalizedPhone} entry={activeEntry} busy={editingLocked} onCancel={onCancelBooking} onRetry={retryActive} /></>}
       <div className="admin-call-day-row" role="group" aria-label="დღე"><button type="button" aria-pressed={draft.date === currentDay} disabled={editingLocked || !initialized} onClick={() => update(previous => withContext(previous, previous.direction, currentDay))}>დღეს<small>{shortDate(currentDay)}</small></button><button type="button" aria-pressed={draft.date === tomorrow} disabled={editingLocked || !initialized} onClick={() => update(previous => withContext(previous, previous.direction, tomorrow))}>ხვალ<small>{shortDate(tomorrow)}</small></button><label className={`admin-call-custom-date ${draft.date !== currentDay && draft.date !== tomorrow ? 'is-selected' : ''}`} title="აირჩიეთ სხვა თარიღი"><CalendarDays size={16} />{draft.date !== currentDay && draft.date !== tomorrow && <span>{shortDate(draft.date)}</span>}<input aria-label="აირჩიეთ სხვა თარიღი" type="date" min={currentDay} value={draft.date} disabled={editingLocked || !initialized} onChange={event => { if (event.target.value >= today()) update(previous => withContext(previous, previous.direction, event.target.value)); }} /></label></div>
       <div className="admin-call-time-row"><button type="button" className="admin-call-carousel-arrow" aria-label="წინა საათები" disabled={editingLocked || !times.length} onClick={() => timeStrip.current?.scrollBy({ left: -Math.max(150, timeStrip.current.clientWidth * .8), behavior: 'smooth' })}><ChevronLeft size={15} /></button><div className="admin-call-time-carousel" role="group" aria-label="დრო" ref={timeStrip}>{entry?.error ? <button type="button" className="admin-call-schedule-retry" disabled={busy} onClick={retry}>ხელახლა ცდა</button> : entry?.loading && !entry.schedule ? <span><Loader2 size={13} className="admin-spin" />დრო იტვირთება…</span> : !times.length ? <span>ამ დღისთვის დრო არ არის</span> : times.map(slot => <button type="button" key={slot.time} aria-pressed={draft.time === slot.time} disabled={editingLocked || !initialized || entry?.loading} onClick={() => update(previous => ({ ...previous, time: slot.time, timeSource: 'manual' }))}>{slot.time}</button>)}</div><button type="button" className="admin-call-carousel-arrow" aria-label="შემდეგი საათები" disabled={editingLocked || !times.length} onClick={() => timeStrip.current?.scrollBy({ left: Math.max(150, timeStrip.current.clientWidth * .8), behavior: 'smooth' })}><ChevronRight size={15} /></button></div>
       {draft.time && draft.timeSource === 'profile' && <small className="admin-call-time-note">დრო წინა მგზავრობებიდან</small>}
-      <div className="admin-call-bottom-row"><div className="admin-call-seat-group" role="group" aria-label="ადგილების რაოდენობა"><span>ადგილები</span><div>{Array.from({ length: 8 }, (_, index) => index + 1).map(value => <button key={value} type="button" aria-pressed={draft.seats === value} disabled={editingLocked || !initialized} onClick={() => update(previous => ({ ...previous, seats: value }))}>{value}</button>)}</div></div></div>
+      {draft.bookingType === 'passenger' && <div className="admin-call-bottom-row"><div className="admin-call-seat-group" role="group" aria-label="ადგილების რაოდენობა"><span>ადგილები</span><div>{Array.from({ length: 8 }, (_, index) => index + 1).map(value => <button key={value} type="button" aria-pressed={draft.seats === value} disabled={editingLocked || !initialized} onClick={() => update(previous => ({ ...previous, seats: value }))}>{value}</button>)}</div></div></div>}
       {last && <div className="admin-call-group-actions">{!pendingGroup && <button type="button" className="admin-call-add-passenger" disabled={editingLocked || !initialized} onClick={onAddPassenger}><Plus size={22} />მგზავრის დამატება</button>}{pendingGroup ? <p className="admin-call-pending-notice">გაგზავნის პასუხს ველოდებით. ხელახლა გაგზავნა იგივე ჯავშნებს შეამოწმებს.</p> : passengerCount > 1 && <p>თითოეული მგზავრი ცალკე ჯავშნად შეინახება.</p>}<div className="admin-call-decision"><button type="button" className="admin-call-accept" disabled={busy || (!pendingGroup && !groupValid)} onClick={onConfirm}>{busy ? <Loader2 size={14} className="admin-spin" /> : <Check size={14} />}{pendingGroup ? 'განმეორებით გაგზავნა' : passengerCount > 1 ? `ყველა ჯავშნის დადასტურება (${passengerCount})` : 'დადასტურება'}</button><button type="button" className="admin-call-reject" disabled={editingLocked} onClick={onReject}><X size={14} />უარი</button></div></div>}
       {entry?.error && <div className="admin-call-row-error" role="alert">{entry.error}</div>}{last && error && <div className="admin-call-row-error" role="alert">{error}</div>}
     </div></td>
@@ -535,11 +540,11 @@ function ActiveCallBookings({ call, phone, entry, busy, onCancel, onRetry }: {
       const time = booking.assignedTime || booking.requestedTime;
       const formattedDate = day.split('-').reverse().join('/');
       return <article key={booking.id} className="admin-call-active-order" data-active-booking-id={booking.id}>
-        <div className="admin-call-active-order-main"><strong>{formattedDate} · {time}</strong><span>{booking.seats} ადგილი</span><span className={`admin-status ${booking.status === 'confirmed' ? 'confirmed' : 'waiting'}`}>{booking.status === 'confirmed' ? 'დადასტურებული' : 'ელოდება დადასტურებას'}</span></div>
+        <div className="admin-call-active-order-main"><strong>{formattedDate} · {time}</strong><span>{booking.bookingType && booking.bookingType !== 'passenger' ? <BookingTypeSummary {...booking} /> : `${booking.seats} ადგილი`}</span><span className={`admin-status ${booking.status === 'confirmed' ? 'confirmed' : 'waiting'}`}>{booking.status === 'confirmed' ? 'დადასტურებული' : 'ელოდება დადასტურებას'}</span></div>
         <div className="admin-call-active-order-address"><b>{directions[booking.direction]}</b> · {booking.direction === 'gori-tbilisi' ? booking.goriAddress : `${booking.pickupStopName || 'გაჩერება'} → ${booking.goriAddress}`}</div>
         <div className="admin-call-active-order-phones">#{String(booking.id).padStart(4, '0')} · ჯავშნის ნომერი: {formatPhone(booking.phone)}{booking.callerPhone && normalizePhone(booking.callerPhone) !== normalizePhone(booking.phone) && <span> · ზარის ნომერი: {formatPhone(booking.callerPhone)}</span>}</div>
         <BookingOptionsSummary luggage={booking.luggage} dog={booking.dog} seatPreference={booking.seatPreference} />
-        {pendingId === booking.id ? <div className="admin-call-active-order-confirm" role="group" aria-label="ჯავშნის გაუქმების დადასტურება"><p>გაუქმდეს #{String(booking.id).padStart(4, '0')} ჯავშანი? <strong>{formattedDate} · {time} · {booking.seats} ადგილი</strong></p><div><button type="button" className="admin-call-order-delete" disabled={cancelDisabled} onClick={async () => { if (await onCancel(booking)) setPendingId(null); }}>{busy ? <Loader2 size={18} className="admin-spin" /> : <X size={18} />}დიახ, გააუქმე</button><button type="button" className="admin-call-order-keep" disabled={busy} onClick={() => setPendingId(null)}>დატოვება</button></div></div> : <button type="button" className="admin-call-active-order-cancel" disabled={cancelDisabled} onClick={() => setPendingId(booking.id)}><X size={20} />ჯავშნის გაუქმება</button>}
+        {pendingId === booking.id ? <div className="admin-call-active-order-confirm" role="group" aria-label="ჯავშნის გაუქმების დადასტურება"><p>გაუქმდეს #{String(booking.id).padStart(4, '0')} ჯავშანი? <strong>{formattedDate} · {time} · {booking.bookingType && booking.bookingType !== 'passenger' ? <BookingTypeSummary {...booking} /> : `${booking.seats} ადგილი`}</strong></p><div><button type="button" className="admin-call-order-delete" disabled={cancelDisabled} onClick={async () => { if (await onCancel(booking)) setPendingId(null); }}>{busy ? <Loader2 size={18} className="admin-spin" /> : <X size={18} />}დიახ, გააუქმე</button><button type="button" className="admin-call-order-keep" disabled={busy} onClick={() => setPendingId(null)}>დატოვება</button></div></div> : <button type="button" className="admin-call-active-order-cancel" disabled={cancelDisabled} onClick={() => setPendingId(booking.id)}><X size={20} />ჯავშნის გაუქმება</button>}
       </article>;
     })}
   </section>;

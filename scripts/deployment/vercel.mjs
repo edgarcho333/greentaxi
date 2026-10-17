@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 const API = 'https://api.vercel.com';
+const EXISTING_PROJECT = Object.freeze({
+  id: 'prj_R9ghX1USsX04IwvFRJYN4vY8U1tK',
+  teamId: 'team_4zZUxLEnbWP7KnDSrjuOlQnp',
+  name: 'greentaxi',
+});
 const PROJECT_SETTINGS = Object.freeze({
   framework: 'vite',
   installCommand: 'npm ci',
@@ -56,6 +61,24 @@ export function preparePlan(repo) {
     endpoints: [
       'GET /v2/user', 'GET /v2/teams', 'GET /v9/projects/greentaxi',
       'POST /v11/projects', 'POST /v10/projects/{id}/env?upsert=true',
+      'POST /v2/files', 'POST /v13/deployments', 'GET /v13/deployments/{id}',
+    ],
+  };
+}
+
+export function prepareExistingUpdatePlan(repo) {
+  const source = sourceFromMain(repo);
+  return {
+    mode: 'update-existing',
+    sourceRef: 'main', sourceCommit: source.commit,
+    sourceFiles: source.files.length, sourceBytes: source.totalBytes,
+    projectId: EXISTING_PROJECT.id, teamId: EXISTING_PROJECT.teamId,
+    projectName: EXISTING_PROJECT.name, target: 'production',
+    runtimeConfiguration: 'inherit existing project settings and production environment',
+    api: API,
+    endpoints: [
+      `GET /v9/projects/${EXISTING_PROJECT.id}`,
+      `GET /v10/projects/${EXISTING_PROJECT.id}/env (only if project metadata omits env)`,
       'POST /v2/files', 'POST /v13/deployments', 'GET /v13/deployments/{id}',
     ],
   };
@@ -122,6 +145,45 @@ export function deploymentBody(source, projectId) {
   };
 }
 
+async function uploadSource(request, source) {
+  // Upload committed main byte-for-byte, sharing duplicate contents by digest.
+  const uniqueFiles = [...new Map(source.files.map(file => [file.sha, file])).values()];
+  for (let offset = 0; offset < uniqueFiles.length; offset += 4) {
+    await Promise.all(uniqueFiles.slice(offset, offset + 4).map(file => request('POST', '/v2/files', {
+      binary: file.data,
+      headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(file.size), 'x-vercel-digest': file.sha, 'x-now-digest': file.sha, 'x-now-size': String(file.size) },
+    })));
+  }
+}
+
+/** Update only the established production project; never provision or edit its environment. */
+export async function updateExistingDeployment({
+  repo, token = process.env.VERCEL_TOKEN, allowMutation = false, expectedCommit,
+} = {}) {
+  if (!allowMutation) throw new Error('Deployment requires an explicit allowMutation:true call.');
+  const source = sourceFromMain(repo);
+  if (expectedCommit !== undefined && source.commit !== expectedCommit) throw new Error('Main branch differs from the reviewed source commit.');
+  const request = vercelClient({ token, teamId: EXISTING_PROJECT.teamId, allowMutation: true });
+  const project = await request('GET', `/v9/projects/${EXISTING_PROJECT.id}`);
+  if (project.id !== EXISTING_PROJECT.id || project.accountId !== EXISTING_PROJECT.teamId || project.name !== EXISTING_PROJECT.name) {
+    throw new Error('Existing Vercel project identity does not match the configured production project.');
+  }
+  const environment = Array.isArray(project.env) ? project.env : (await request('GET', `/v10/projects/${project.id}/env`, { query: { decrypt: 'false' } })).envs;
+  const hasDatabaseBinding = Array.isArray(environment) && environment.some(item => item.key === 'DATABASE_URL' && (item.target === 'production' || Array.isArray(item.target) && item.target.includes('production')));
+  if (!hasDatabaseBinding) throw new Error('Existing Vercel project has no production DATABASE_URL binding.');
+  await uploadSource(request, source);
+  // Omitting env/build.env/projectSettings preserves the established production
+  // configuration, including DATABASE_URL and the existing Neon integration.
+  const { projectSettings: _initialSettings, ...body } = deploymentBody(source, project.id);
+  const deployment = await request('POST', '/v13/deployments', {
+    query: { skipAutoDetectionConfirmation: '1' }, json: body,
+  });
+  return {
+    projectId: project.id, deploymentId: deployment.id, url: deployment.url,
+    teamId: EXISTING_PROJECT.teamId, sourceCommit: source.commit,
+  };
+}
+
 export async function deploy({ repo, token = process.env.VERCEL_TOKEN, databaseUrl = process.env.DATABASE_URL, requestedTeamId, allowMutation = false, adminSetupToken } = {}) {
   if (!allowMutation) throw new Error('Deployment requires an explicit allowMutation:true call.');
   if (!adminSetupToken?.trim()) throw new Error('ADMIN_SETUP_TOKEN is required for the owner to create the first employee.');
@@ -154,15 +216,7 @@ export async function deploy({ repo, token = process.env.VERCEL_TOKEN, databaseU
       { key: 'ADMIN_SETUP_TOKEN', value: setupToken, type: 'sensitive', target: ['production'] },
     ],
   });
-  // Upload every committed main-branch file byte-for-byte. No GitHub credentials
-  // are needed; Vercel retrieves the source through SHA1-addressed file uploads.
-  const uniqueFiles = [...new Map(source.files.map(file => [file.sha, file])).values()];
-  for (let offset = 0; offset < uniqueFiles.length; offset += 4) {
-    await Promise.all(uniqueFiles.slice(offset, offset + 4).map(file => request('POST', '/v2/files', {
-      binary: file.data,
-      headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(file.size), 'x-vercel-digest': file.sha, 'x-now-digest': file.sha, 'x-now-size': String(file.size) },
-    })));
-  }
+  await uploadSource(request, source);
   const deployment = await request('POST', '/v13/deployments', {
     query: { skipAutoDetectionConfirmation: '1' }, json: deploymentBody(source, project.id),
   });
@@ -177,7 +231,15 @@ export async function deploymentStatus({ deploymentId, token, teamId }) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    if (process.argv.includes('--inspect')) console.log(JSON.stringify(await inspectAccounts(), null, 2));
+    const args = process.argv.slice(2);
+    if (args.length > 1 || args.some(value => !['--inspect', '--plan-update-existing', '--update-existing', '--help'].includes(value))) {
+      throw new Error('Unsupported deployment arguments.');
+    }
+    if (args.includes('--help')) {
+      console.log('Default: offline initial-setup plan. --plan-update-existing: offline plan for the existing production project. --update-existing: authorize production deployment of committed main without project/env/admin setup. Use node --use-env-proxy when the environment supplies an HTTPS proxy. Never pass secrets as arguments.');
+    } else if (args.includes('--inspect')) console.log(JSON.stringify(await inspectAccounts(), null, 2));
+    else if (args.includes('--plan-update-existing')) console.log(JSON.stringify(prepareExistingUpdatePlan(process.env.GREENTAXI_REPO), null, 2));
+    else if (args.includes('--update-existing')) console.log(JSON.stringify(await updateExistingDeployment({ repo: process.env.GREENTAXI_REPO, allowMutation: true }), null, 2));
     else console.log(JSON.stringify(preparePlan(process.env.GREENTAXI_REPO), null, 2));
   } catch {
     console.error('Vercel preparation failed. Check injected credentials, account scope, network access and main-branch source. No secret values were logged.');

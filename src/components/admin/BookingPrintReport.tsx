@@ -1,5 +1,6 @@
 import { directions, type Booking, type Direction, type Stop } from '../../api';
 import { formatPhone } from '../../../shared/phone';
+import { BookingTypeSummary } from './BookingTypeFields';
 import { BookingOptionsSummary } from './BookingOptions';
 import './booking-print-report.css';
 
@@ -20,7 +21,7 @@ function PickupAddress({ booking, stops }: { booking: Booking; stops: Stop[] }) 
   const stopAddress = booking.direction === 'tbilisi-gori' ? stops.find(stop => stop.id === booking.pickupStopId)?.address : null;
   const address = booking.direction === 'gori-tbilisi' ? booking.goriAddress
     : [booking.pickupStopName || 'პუნქტი არ არის მითითებული', stopAddress].filter(Boolean).join(' · ');
-  return <div className="booking-print-address">{address}<BookingOptionsSummary luggage={booking.luggage} dog={booking.dog} seatPreference={booking.seatPreference} /></div>;
+  return <div className="booking-print-address">{address}<BookingTypeSummary {...booking} /><BookingOptionsSummary luggage={booking.luggage} dog={booking.dog} seatPreference={booking.seatPreference} /></div>;
 }
 
 export default function BookingPrintReport({ bookings, date, direction, time, stops = [] }: BookingPrintReportProps) {

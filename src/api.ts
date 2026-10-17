@@ -8,7 +8,9 @@ export type Stop = { id: number; name: string; address: string; active: boolean 
 export type PublicConfig = { stops: Stop[]; didubeName: string; didubeAddress: string };
 export type Slot = { time: string; active: boolean; bookingCount: number; seatCount: number };
 export type SeatPreference = 'front' | 'back' | 'middle';
+export type BookingType = 'passenger' | 'parcel' | 'whole_car';
 export type Booking = {
+  bookingType?: BookingType; assignedVehicleKey?: string | null; assignedVehicleName?: string | null;
   id: number; name: string; phone: string; seats: number; direction: Direction;
   callerPhone?: string | null; luggage?: boolean; dog?: boolean; seatPreference?: SeatPreference | null;
   goriAddress: string; pickupStopId: number | null; pickupStopName: string | null;
@@ -29,7 +31,7 @@ export type DriverSchedule = {
 };
 export type TripDriver = {
   key: string; driverId: number | null; kind: 'roster' | 'temporary'; name: string;
-  capacity: number; filledSeats: number; freeSeats: number; active: boolean;
+  reservedBookingId?: number | null; capacity: number; filledSeats: number; freeSeats: number; active: boolean;
 };
 export type TripCapacity = {
   direction: 'gori-tbilisi'; date: string; time: string; active: boolean;
