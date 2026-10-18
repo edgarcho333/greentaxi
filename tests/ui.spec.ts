@@ -1718,13 +1718,13 @@ test('printing all orders for a day includes every confirmed row beyond paginati
   await print.click();
   await expect.poll(async () => (await printedDocuments(page)).length).toBe(1);
   const [document] = await printedDocuments(page);
-  expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'მიმართულება', 'ადგილები', 'ჩასხდომის მისამართი']);
+  expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'ადგილები', 'ჩასხდომის მისამართი']);
   expect(document.rows).toHaveLength(18);
   for (const row of selected) {
     const printed = document.rows.find(cells => cells.includes(row.name));
     expect(printed, `Every selected-day order must print, including ${row.name}`).toBeDefined();
-    expect(printed).toHaveLength(7);
-    expect(printed).toEqual(expect.arrayContaining([row.time, row.displayedPhone, DIRECTION_LABELS[row.direction], String(row.seats)]));
+    expect(printed).toHaveLength(6);
+    expect(printed).toEqual(expect.arrayContaining([row.time, row.displayedPhone, String(row.seats)]));
     expect(printed!.join(' ')).toContain(row.goriAddress);
   }
   expect(document.text).not.toContain(publicConfig.didubeName);
@@ -1778,12 +1778,12 @@ test('printing a selected half-hour slot includes both directions while excludin
     const document = (await printedDocuments(page))[index];
     const selected = expected.filter(row => row.time === time);
     expect(selected).toHaveLength(7);
-    expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'მიმართულება', 'ადგილები', 'ჩასხდომის მისამართი']);
+    expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'ადგილები', 'ჩასხდომის მისამართი']);
     expect(document.rows).toHaveLength(7);
     for (const row of selected) {
       const printed = document.rows.find(cells => cells.includes(row.name));
-      expect(printed).toHaveLength(7);
-      expect(printed).toEqual(expect.arrayContaining([time, row.displayedPhone, DIRECTION_LABELS[row.direction], String(row.seats)]));
+      expect(printed).toHaveLength(6);
+      expect(printed).toEqual(expect.arrayContaining([time, row.displayedPhone, String(row.seats)]));
       if (row.direction === 'tbilisi-gori') {
         expect(printed!.join(' ')).toContain(publicConfig.stops[0].name);
         expect(printed!.join(' ')).toContain(publicConfig.stops[0].address);
