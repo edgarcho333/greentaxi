@@ -45,18 +45,17 @@ export default function BookingPrintReport({ bookings, date, direction, time, st
     <div className="booking-print-summary"><span>სულ ჯავშნები: <strong>{rows.length}</strong></span><span>სულ ადგილები: <strong>{seatTotal}</strong></span></div>
 
     <table className="booking-print-table" aria-label="მგზავრებისა და მისამართების სია">
-      <colgroup><col className="booking-print-col-number" /><col className="booking-print-col-time" /><col className="booking-print-col-name" /><col className="booking-print-col-phone" /><col className="booking-print-col-seats" /><col className="booking-print-col-address" /></colgroup>
-      <thead><tr><th scope="col">№</th><th scope="col">დრო</th><th scope="col">მგზავრი</th><th scope="col">ტელეფონი</th><th scope="col">ადგილები</th><th scope="col">ჩასხდომის მისამართი</th></tr></thead>
+      <colgroup><col className="booking-print-col-address" /><col className="booking-print-col-seats" /><col className="booking-print-col-phone" /><col className="booking-print-col-time" /><col className="booking-print-col-number" /></colgroup>
+      <thead><tr><th scope="col">მისამართი</th><th scope="col" className="booking-print-seats">ადგილები</th><th scope="col">ტელეფონის ნომერი</th><th scope="col">საათი</th><th scope="col" className="booking-print-number">ნომერი</th></tr></thead>
       <tbody>
         {rows.map((booking, index) => <tr key={booking.id}>
-          <td className="booking-print-number">{index + 1}</td>
-          <td className="booking-print-time">{booking.assignedTime ?? booking.requestedTime}</td>
-          <td className="booking-print-passenger">{booking.name}</td>
-          <td className="booking-print-phone">{formatPhone(booking.phone)}{booking.callerPhone && formatPhone(booking.callerPhone) !== formatPhone(booking.phone) && <small className="operator-booking-caller">ზარის ნომერი: {formatPhone(booking.callerPhone)}</small>}</td>
-          <td className="booking-print-seats">{booking.seats}</td>
           <td><PickupAddress booking={booking} stops={stops} /></td>
+          <td className="booking-print-seats">{booking.seats}</td>
+          <td className="booking-print-phone">{formatPhone(booking.phone)}{booking.callerPhone && formatPhone(booking.callerPhone) !== formatPhone(booking.phone) && <small className="operator-booking-caller">ზარის ნომერი: {formatPhone(booking.callerPhone)}</small>}</td>
+          <td className="booking-print-time">{booking.assignedTime ?? booking.requestedTime}</td>
+          <td className="booking-print-number">{index + 1}</td>
         </tr>)}
-        {rows.length === 0 && <tr><td colSpan={6} className="booking-print-empty">არჩეულ თარიღსა და დროზე ჯავშნები არ არის.</td></tr>}
+        {rows.length === 0 && <tr><td colSpan={5} className="booking-print-empty">არჩეულ თარიღსა და დროზე ჯავშნები არ არის.</td></tr>}
       </tbody>
     </table>
     <footer className="booking-print-footer"><span>{reportDate(date)} · {direction === 'both' ? 'ორივე მიმართულება' : directions[direction]} · {time ?? 'ყველა დრო'}</span><span>{rows.length} ჯავშანი · {seatTotal} ადგილი</span></footer>

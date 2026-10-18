@@ -12,19 +12,17 @@
 .booking-print-report .booking-print-summary { display: flex; gap: 30px; align-items: center; padding: 13px 0; margin: 0; font-size: 11px; color: #46594b; }
 .booking-print-report .booking-print-summary strong { margin-left: 4px; color: #18231e; font-size: 12px; font-variant-numeric: tabular-nums; }
 .booking-print-report .booking-print-table { width: 100%; min-width: 700px; border-collapse: collapse; border-spacing: 0; table-layout: fixed; font-size: 11px; margin: 0; color: #18231e; background: #fff; }
-.booking-print-report .booking-print-col-number { width: 3%; }
-.booking-print-report .booking-print-col-time { width: 6%; }
-.booking-print-report .booking-print-col-name { width: 17%; }
-.booking-print-report .booking-print-col-phone { width: 14%; }
-.booking-print-report .booking-print-col-seats { width: 5%; }
-.booking-print-report .booking-print-col-address { width: 55%; }
+.booking-print-report .booking-print-col-address { width: 64%; }
+.booking-print-report .booking-print-col-seats { width: 7%; }
+.booking-print-report .booking-print-col-phone { width: 17%; }
+.booking-print-report .booking-print-col-time { width: 7%; }
+.booking-print-report .booking-print-col-number { width: 5%; }
 .booking-print-report .booking-print-table th, .booking-print-report .booking-print-table td { padding: 7px 6px; border: 1px solid #d5e0d9; text-align: left; vertical-align: top; line-height: 1.35; height: auto; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; background: #fff; }
 .booking-print-report .booking-print-table th { padding-top: 9px; padding-bottom: 9px; background: #f0f5f1; color: #2d5740; font-size: 9px; font-weight: 700; }
-.booking-print-report .booking-print-table th:first-child, .booking-print-report .booking-print-number, .booking-print-report .booking-print-seats { text-align: center; }
+.booking-print-report .booking-print-number, .booking-print-report .booking-print-seats { text-align: center; }
 .booking-print-report .booking-print-table tr:hover td { background: #fff; }
 .booking-print-report .booking-print-time { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap !important; }
 .booking-print-report .booking-print-phone { font-variant-numeric: tabular-nums; white-space: nowrap !important; letter-spacing: -.1px; }
-.booking-print-report .booking-print-passenger { font-weight: 600; }
 .booking-print-report .booking-print-address { white-space: pre-wrap; overflow-wrap: anywhere; }
 .booking-print-report .booking-print-table .booking-print-empty { text-align: center; color: #6c7c70; padding: 28px 10px; }
 .booking-print-report .booking-print-footer { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 15px; padding-top: 10px; border-top: 1px solid #d5e0d9; color: #6c7c70; font-size: 9px; background: #fff; }

@@ -277,6 +277,7 @@ function isIncomingCallsResponse(response: Response): boolean {
   return url.pathname === '/api/admin/calls' && url.searchParams.get('scope') === 'incoming';
 }
 
+const PRINT_COLUMN_LABELS = ['მისამართი', 'ადგილები', 'ტელეფონის ნომერი', 'საათი', 'ნომერი'];
 type PrintedDocument = { html: string; text: string; headings: string[]; rows: string[][] };
 type PrintBrowserWindow = Window & { __greenTaxiPrintedDocuments?: PrintedDocument[] };
 
@@ -368,7 +369,8 @@ async function seedPrintableDay(day: string, phonePrefix: string, namePrefix: st
   expect(moved.ok()).toBeTruthy();
   const movedId = (await moved.json() as { id: number }).id;
   await setHistoricalFixtureDate(movedId, futureDate(0));
-  return { expected, excludedNames };
+  const excludedPhones = ['900', '901', '902'].map(suffix => displayedPassengerPhone(`${phonePrefix}${suffix}`));
+  return { expected, excludedPhones };
 }
 
 async function expectPublicStep(page: Page, name: 'მგზავრობა' | 'მისამართი' | 'კონტაქტი') {
@@ -1659,7 +1661,7 @@ test('public phone entry never looks up or fills trusted passenger details and c
 
 test('printing all orders for a day includes every confirmed row beyond pagination and search with complete pickup addresses and totals', async ({ page }) => {
   const day = futureDate(1);
-  const { expected, excludedNames } = await seedPrintableDay(day, '555040', 'სატესტო მთელი დღის ბეჭდვა');
+  const { expected, excludedPhones } = await seedPrintableDay(day, '555040', 'სატესტო მთელი დღის ბეჭდვა');
   const selected = expected.filter(row => row.direction === 'gori-tbilisi');
   await captureNativePrinting(page);
   await openAuthenticatedAdmin(page);
@@ -1718,19 +1720,18 @@ test('printing all orders for a day includes every confirmed row beyond paginati
   await print.click();
   await expect.poll(async () => (await printedDocuments(page)).length).toBe(1);
   const [document] = await printedDocuments(page);
-  expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'ადგილები', 'ჩასხდომის მისამართი']);
+  expect(document.headings).toEqual(PRINT_COLUMN_LABELS);
   expect(document.rows).toHaveLength(18);
-  for (const row of selected) {
-    const printed = document.rows.find(cells => cells.includes(row.name));
-    expect(printed, `Every selected-day order must print, including ${row.name}`).toBeDefined();
-    expect(printed).toHaveLength(6);
-    expect(printed).toEqual(expect.arrayContaining([row.time, row.displayedPhone, String(row.seats)]));
-    expect(printed!.join(' ')).toContain(row.goriAddress);
+  for (const [index, row] of selected.entries()) {
+    const printed = document.rows.find(cells => cells.includes(row.displayedPhone));
+    expect(printed, `Every selected-day order must print, including ${row.displayedPhone}`).toEqual([
+      row.goriAddress, String(row.seats), row.displayedPhone, row.time, String(index + 1),
+    ]);
   }
   expect(document.text).not.toContain(publicConfig.didubeName);
   expect(document.text).not.toContain(publicConfig.didubeAddress);
-  for (const name of [...excludedNames, ...expected.filter(row => row.direction === 'tbilisi-gori').map(row => row.name)]) {
-    expect(document.text).not.toContain(name);
+  for (const phone of [...excludedPhones, ...expected.filter(row => row.direction === 'tbilisi-gori').map(row => row.displayedPhone)]) {
+    expect(document.text).not.toContain(phone);
   }
   const text = document.text.replace(/\s+/g, ' ');
   const humanDate = day.split('-').reverse().join('/');
@@ -1759,7 +1760,7 @@ test('printing all orders for a day includes every confirmed row beyond paginati
 
 test('printing a selected half-hour slot includes both directions while excluding other times and dates', async ({ page }) => {
   const day = futureDate(1);
-  const { expected, excludedNames } = await seedPrintableDay(day, '555041', 'სატესტო არჩეული დროის ბეჭდვა');
+  const { expected, excludedPhones } = await seedPrintableDay(day, '555041', 'სატესტო არჩეული დროის ბეჭდვა');
   await captureNativePrinting(page);
   await openAuthenticatedAdmin(page);
   await chooseAdminDate(page, day);
@@ -1778,21 +1779,19 @@ test('printing a selected half-hour slot includes both directions while excludin
     const document = (await printedDocuments(page))[index];
     const selected = expected.filter(row => row.time === time);
     expect(selected).toHaveLength(7);
-    expect(document.headings).toEqual(['№', 'დრო', 'მგზავრი', 'ტელეფონი', 'ადგილები', 'ჩასხდომის მისამართი']);
+    expect(document.headings).toEqual(PRINT_COLUMN_LABELS);
     expect(document.rows).toHaveLength(7);
-    for (const row of selected) {
-      const printed = document.rows.find(cells => cells.includes(row.name));
-      expect(printed).toHaveLength(6);
-      expect(printed).toEqual(expect.arrayContaining([time, row.displayedPhone, String(row.seats)]));
-      if (row.direction === 'tbilisi-gori') {
-        expect(printed!.join(' ')).toContain(publicConfig.stops[0].name);
-        expect(printed!.join(' ')).toContain(publicConfig.stops[0].address);
-        expect(printed!.join(' ')).not.toContain(row.goriAddress);
-      } else {
-        expect(printed!.join(' ')).toContain(row.goriAddress);
-      }
+    for (const [rowIndex, row] of selected.entries()) {
+      const printed = document.rows.find(cells => cells.includes(row.displayedPhone));
+      const pickupAddress = row.direction === 'tbilisi-gori'
+        ? [publicConfig.stops[0].name, publicConfig.stops[0].address].filter(Boolean).join(' · ')
+        : row.goriAddress;
+      expect(printed, `The selected time must include ${row.displayedPhone} in the requested column order`).toEqual([
+        pickupAddress, String(row.seats), row.displayedPhone, time, String(rowIndex + 1),
+      ]);
+      if (row.direction === 'tbilisi-gori') expect(printed![0]).not.toContain(row.goriAddress);
     }
-    for (const name of [...excludedNames, ...expected.filter(row => row.time !== time).map(row => row.name)]) expect(document.text).not.toContain(name);
+    for (const phone of [...excludedPhones, ...expected.filter(row => row.time !== time).map(row => row.displayedPhone)]) expect(document.text).not.toContain(phone);
     const text = document.text.replace(/\s+/g, ' ');
     expect(text).toContain('ორივე მიმართულება');
     expect(text).toContain('სულ ჯავშნები: 7');
@@ -1843,6 +1842,7 @@ test('printing stays blocked for an empty day or a failed fresh report and recov
   await dialog.getByRole('alert').getByRole('button', { name: 'საბეჭდი მონაცემების განახლება', exact: true }).click();
   await expect(dialog.getByRole('alert')).toHaveCount(0);
   await expect(print).toBeEnabled();
+  await expect(dialog.getByRole('table', { name: 'მგზავრებისა და მისამართების სია', exact: true }).getByRole('columnheader')).toHaveText(PRINT_COLUMN_LABELS);
   expect(await printedDocuments(page)).toHaveLength(0);
 });
 
