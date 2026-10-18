@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { availableDriverQueue, buildDriverSchedule, calendarDateOrdinal, INITIAL_DRIVER_ROSTER, rotateDriverQueue, type DriverDayOverride } from '../shared/driver-rotation.js';
 
 const ANCHOR = '2026-10-09';
+const SCHEDULE_ANCHOR = '2026-10-19';
 
 test('initial driver roster preserves all 43 provided labels, capacities and stable positions', () => {
   assert.deepEqual(INITIAL_DRIVER_ROSTER.map(driver => driver.name), [
@@ -22,7 +23,7 @@ test('initial driver roster preserves all 43 provided labels, capacities and sta
   assert.equal(new Set(INITIAL_DRIVER_ROSTER.map(driver => driver.name)).size, 43);
 });
 
-test('daily rotation advances one position, preserves everyone and wraps after 43 days', () => {
+test('an ordered queue advances one position, preserves everyone and wraps after 43 days', () => {
   assert.deepEqual(rotateDriverQueue(INITIAL_DRIVER_ROSTER, ANCHOR, ANCHOR), INITIAL_DRIVER_ROSTER);
   const tomorrow = rotateDriverQueue(INITIAL_DRIVER_ROSTER, ANCHOR, '2026-10-10');
   assert.equal(tomorrow[0].name, 'კუდუხა');
@@ -80,13 +81,35 @@ test('invalid calendar dates cannot silently change the rotation', () => {
 });
 
 test('daily queue includes configured departures without automatically assigning any driver', () => {
-  const result = buildDriverSchedule(ANCHOR, ['22:15', '09:30', '06:00', '07:00', '08:00', '08:30', '09:00', '06:00']);
+  const result = buildDriverSchedule(SCHEDULE_ANCHOR, ['22:15', '09:30', '06:00', '07:00', '08:00', '08:30', '09:00', '06:00']);
   assert.equal(result.direction, 'gori-tbilisi');
-  assert.equal(result.anchorDate, ANCHOR);
-  assert.equal(result.firstDriverId, 1);
+  assert.equal(result.anchorDate, SCHEDULE_ANCHOR);
+  assert.equal(result.firstDriverId, 32);
   assert.deepEqual(result.times, ['06:00', '07:00', '08:00', '08:30', '09:00', '09:30', '22:15']);
   assert.ok(result.drivers.every(driver => driver.assignedTime === null && driver.automaticTime === null && !driver.assignmentActive));
   assert.deepEqual(result.drivers.map(driver => driver.queuePosition), Array.from({ length: 43 }, (_, index) => index + 1));
+});
+
+test('the confirmed October dates traverse the roster bottom to top and wrap without changing identities', () => {
+  const expected = [...Array.from({ length: 32 }, (_, index) => 32 - index), ...Array.from({ length: 11 }, (_, index) => 43 - index)];
+  const first = buildDriverSchedule(SCHEDULE_ANCHOR, []);
+  assert.deepEqual(first.drivers.map(driver => driver.id), expected);
+  for (const [date, id, name] of [
+    ['2026-10-18', 33, 'გელა'], ['2026-10-19', 32, 'სუხიტა'], ['2026-10-20', 31, 'გურამი'],
+    ['2026-10-21', 30, 'ერასტი'], ['2026-11-19', 1, 'რეზო'], ['2026-11-20', 43, 'ლაშა / ვიქტორი'],
+    ['2026-12-01', 32, 'სუხიტა'],
+  ] as const) {
+    const schedule = buildDriverSchedule(date, []);
+    assert.equal(schedule.firstDriverId, id, date);
+    assert.equal(schedule.drivers[0].name, name, date);
+    assert.equal(new Set(schedule.drivers.map(driver => driver.id)).size, 43);
+    assert.deepEqual(schedule.drivers.map(driver => driver.queuePosition), Array.from({ length: 43 }, (_, index) => index + 1));
+    for (const driver of schedule.drivers) {
+      const stored = INITIAL_DRIVER_ROSTER.find(entry => entry.id === driver.id)!;
+      assert.deepEqual([driver.name, driver.capacity, driver.order], [stored.name, stored.capacity, stored.order]);
+    }
+  }
+  assert.deepEqual(buildDriverSchedule('2026-12-01', []).drivers, first.drivers);
 });
 
 test('explicit trip choices allow several drivers together and leave every other driver unassigned', () => {
@@ -96,11 +119,11 @@ test('explicit trip choices allow several drivers together and leave every other
     { driverId: 4, declined: false, assignmentMode: 'manual', manualTime: null },
     { driverId: 5, declined: false, assignmentMode: 'auto', manualTime: null },
   ];
-  const result = buildDriverSchedule(ANCHOR, ['06:00', '07:00', '08:00', '09:00', '10:00'], INITIAL_DRIVER_ROSTER, overrides);
+  const result = buildDriverSchedule(SCHEDULE_ANCHOR, ['06:00', '07:00', '08:00', '09:00', '10:00'], INITIAL_DRIVER_ROSTER, overrides);
   assert.ok(result.drivers.every(driver => driver.automaticTime === null));
-  assert.deepEqual(result.drivers.slice(0, 5).map(driver => driver.assignedTime), ['08:00', '08:00', null, null, null]);
-  assert.equal(result.drivers[3].assignmentActive, false);
-  assert.equal(result.drivers[0].assignmentActive, true);
+  assert.deepEqual(result.drivers.filter(driver => driver.assignedTime !== null).map(driver => driver.id).sort((a, b) => a - b), [1, 2]);
+  assert.ok(result.drivers.filter(driver => [1, 2].includes(driver.id)).every(driver => driver.assignedTime === '08:00' && driver.assignmentActive));
+  assert.equal(result.drivers.find(driver => driver.id === 4)?.assignmentActive, false);
 });
 
 test('refusals never assign other drivers and retain explicit trip choices and next day rotation', () => {
@@ -109,26 +132,28 @@ test('refusals never assign other drivers and retain explicit trip choices and n
     { driverId: 3, declined: false, assignmentMode: 'manual', manualTime: '10:00' },
   ];
   const times = ['06:00', '07:00', '08:00', '10:00'];
-  const result = buildDriverSchedule(ANCHOR, times, INITIAL_DRIVER_ROSTER, overrides);
-  assert.equal(result.firstDriverId, 1);
-  assert.deepEqual(result.drivers.slice(0, 4).map(driver => driver.assignedTime), [null, null, '10:00', null]);
+  const result = buildDriverSchedule(SCHEDULE_ANCHOR, times, INITIAL_DRIVER_ROSTER, overrides);
+  assert.equal(result.firstDriverId, 32);
+  assert.equal(result.drivers.find(driver => driver.id === 1)?.assignedTime, null);
+  assert.deepEqual(result.drivers.filter(driver => driver.assignedTime !== null).map(driver => [driver.id, driver.assignedTime]), [[3, '10:00']]);
   assert.ok(result.drivers.every(driver => driver.automaticTime === null));
-  const restored = buildDriverSchedule(ANCHOR, times, INITIAL_DRIVER_ROSTER, overrides.map(override => ({ ...override, declined: false })));
-  assert.equal(restored.drivers[0].assignedTime, '10:00');
-  assert.equal(restored.drivers[1].assignedTime, null);
-  const tomorrow = buildDriverSchedule('2026-10-10', times);
-  assert.equal(tomorrow.firstDriverId, 2);
-  assert.equal(tomorrow.drivers.at(-1)?.id, 1);
+  const restored = buildDriverSchedule(SCHEDULE_ANCHOR, times, INITIAL_DRIVER_ROSTER, overrides.map(override => ({ ...override, declined: false })));
+  assert.equal(restored.drivers.find(driver => driver.id === 1)?.assignedTime, '10:00');
+  assert.equal(restored.drivers.find(driver => driver.id === 2)?.assignedTime, null);
+  const tomorrow = buildDriverSchedule('2026-10-20', times);
+  assert.equal(tomorrow.firstDriverId, 31);
+  assert.equal(tomorrow.drivers.at(-1)?.id, 32);
   assert.ok(tomorrow.drivers.every(driver => driver.assignedTime === null));
 });
 
 test('removed departure times retain explicit choices as inactive without generating replacements', () => {
-  const result = buildDriverSchedule(ANCHOR, ['07:00'], INITIAL_DRIVER_ROSTER, [{ driverId: 1, declined: false, assignmentMode: 'manual', manualTime: '06:00' }]);
-  assert.equal(result.drivers[0].automaticTime, null);
-  assert.equal(result.drivers[0].assignedTime, '06:00');
-  assert.equal(result.drivers[0].assignmentActive, false);
-  assert.equal(result.drivers[0].assignmentMode, 'manual');
-  assert.ok(buildDriverSchedule(ANCHOR, []).drivers.every(driver => driver.assignedTime === null && !driver.assignmentActive));
-  assert.throws(() => buildDriverSchedule(ANCHOR, ['24:00']), RangeError);
-  assert.throws(() => buildDriverSchedule(ANCHOR, ['6:00']), RangeError);
+  const result = buildDriverSchedule(SCHEDULE_ANCHOR, ['07:00'], INITIAL_DRIVER_ROSTER, [{ driverId: 1, declined: false, assignmentMode: 'manual', manualTime: '06:00' }]);
+  const assigned = result.drivers.find(driver => driver.id === 1)!;
+  assert.equal(assigned.automaticTime, null);
+  assert.equal(assigned.assignedTime, '06:00');
+  assert.equal(assigned.assignmentActive, false);
+  assert.equal(assigned.assignmentMode, 'manual');
+  assert.ok(buildDriverSchedule(SCHEDULE_ANCHOR, []).drivers.every(driver => driver.assignedTime === null && !driver.assignmentActive));
+  assert.throws(() => buildDriverSchedule(SCHEDULE_ANCHOR, ['24:00']), RangeError);
+  assert.throws(() => buildDriverSchedule(SCHEDULE_ANCHOR, ['6:00']), RangeError);
 });

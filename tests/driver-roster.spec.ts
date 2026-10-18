@@ -4,7 +4,11 @@ import type { DriverDay, DriverSchedule, TripCapacity } from '../src/api';
 // Reuse the isolated browser employee: each spec file may be the first to set up
 // the disposable database, and Playwright can restart a worker after a failure.
 const EMPLOYEE = { login: 'browser_test', name: 'სატესტო თანამშრომელი', password: 'test-only-local-password-123' };
-const ANCHOR = '2026-10-09';
+const ANCHOR = '2026-10-19';
+const EXPECTED_ANCHOR_ORDER = [
+  32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11,
+  10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33,
+];
 const TIMES = ['06:00', '07:00', '08:00', '08:30', '09:00', '09:30', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00'];
 const EXPECTED_ROSTER: readonly [string, number][] = [
   ['რეზო', 7], ['კუდუხა', 7], ['გოჩა', 8], ['ვიქტორი', 7], ['ბიძინა', 6], ['დიმა', 7],
@@ -114,14 +118,13 @@ async function setAttendance(page: Page, driver: Pick<DriverDay, 'id' | 'name'>,
   return await saved.json() as DriverSchedule;
 }
 
-test('the saved schedule shows all 43 provided drivers, capacities and daily circular order', async ({ page }) => {
-  await resetDay(ANCHOR);
-  await resetDay('2026-10-10');
-  await resetDay('2026-11-21');
+test('the saved schedule starts with Sukhita on October 19 and follows the descending circular queue', async ({ page }) => {
+  for (const date of [ANCHOR, '2026-10-20', '2026-10-21', '2026-11-19', '2026-11-20', '2026-12-01']) await resetDay(date);
   await openSettings(page, ANCHOR);
   const rows = roster(page).locator('[data-driver-id]');
   expect(await rows.evaluateAll(elements => elements.map(element => Number(element.getAttribute('data-driver-id')))))
-    .toEqual(Array.from({ length: 43 }, (_, index) => index + 1));
+    .toEqual(EXPECTED_ANCHOR_ORDER);
+  await expect(rows.first()).toContainText('სუხიტა');
   for (const [index, [name, capacity]] of EXPECTED_ROSTER.entries()) {
     const row = driverRow(page, index + 1);
     await expect(row.getByText(name, { exact: true })).toBeVisible();
@@ -129,40 +132,52 @@ test('the saved schedule shows all 43 provided drivers, capacities and daily cir
     await expect(driverAttendance(page, { id: index + 1, name })).toHaveAttribute('aria-checked', 'true');
   }
   await expect(roster(page).getByRole('combobox')).toHaveCount(0);
-  expect((await getDriverDay(ANCHOR)).drivers.every(driver => driver.assignedTime === null && driver.automaticTime === null)).toBeTruthy();
+  const anchorSchedule = await getDriverDay(ANCHOR);
+  expect(anchorSchedule).toMatchObject({ anchorDate: ANCHOR, firstDriverId: 32 });
+  expect(anchorSchedule.drivers.every(driver => driver.assignedTime === null && driver.automaticTime === null)).toBeTruthy();
 
-  await chooseDate(page, '2026-10-10');
-  await expect(rows.first()).toHaveAttribute('data-driver-id', '2');
-  await expect(rows.last()).toHaveAttribute('data-driver-id', '1');
-  expect((await getDriverDay('2026-10-10')).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
-  await chooseDate(page, '2026-11-21');
-  await expect(rows.first()).toHaveAttribute('data-driver-id', '1');
-  expect((await getDriverDay('2026-11-21')).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
+  for (const [date, firstId, firstName, lastId] of [
+    ['2026-10-20', 31, 'გურამი', 32],
+    ['2026-10-21', 30, 'ერასტი', 31],
+    ['2026-11-19', 1, 'რეზო', 2],
+    ['2026-11-20', 43, 'ლაშა / ვიქტორი', 1],
+    ['2026-12-01', 32, 'სუხიტა', 33],
+  ] as const) {
+    await chooseDate(page, date);
+    await expect(rows.first()).toHaveAttribute('data-driver-id', String(firstId));
+    await expect(rows.first()).toContainText(firstName);
+    await expect(rows.last()).toHaveAttribute('data-driver-id', String(lastId));
+    expect((await getDriverDay(date)).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
+  }
+  expect(await rows.evaluateAll(elements => elements.map(element => Number(element.getAttribute('data-driver-id')))))
+    .toEqual(EXPECTED_ANCHOR_ORDER);
 });
 
 test('daily participation persists without assigning times or changing tomorrow’s queue', async ({ page }) => {
   await resetDay(ANCHOR);
-  await resetDay('2026-10-10');
+  await resetDay('2026-10-20');
   await openSettings(page, ANCHOR);
-  const rezo = { id: 1, name: 'რეზო' };
-  const kudukha = { id: 2, name: 'კუდუხა' };
-  await setAttendance(page, rezo, false);
-  await setAttendance(page, kudukha, false);
+  const sukhita = { id: 32, name: 'სუხიტა' };
+  const gurami = { id: 31, name: 'გურამი' };
+  await setAttendance(page, sukhita, false);
+  await setAttendance(page, gurami, false);
   expect((await getDriverDay(ANCHOR)).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
-  await expect(roster(page).locator('[data-driver-id]').first()).toHaveAttribute('data-driver-id', '1');
+  expect(await roster(page).locator('[data-driver-id]').evaluateAll(elements => elements.map(element => Number(element.getAttribute('data-driver-id')))))
+    .toEqual(EXPECTED_ANCHOR_ORDER);
   await page.reload();
   await page.getByRole('navigation', { name: 'ადმინისტრატორის ნავიგაცია', exact: true })
     .getByRole('button', { name: 'პარამეტრები', exact: true }).click();
   await chooseDate(page, ANCHOR);
-  await expect(driverAttendance(page, rezo)).toHaveAttribute('aria-checked', 'false');
-  await expect(driverAttendance(page, kudukha)).toHaveAttribute('aria-checked', 'false');
-  await chooseDate(page, '2026-10-10');
-  await expect(driverAttendance(page, kudukha)).toHaveAttribute('aria-checked', 'true');
-  await expect(roster(page).locator('[data-driver-id]').first()).toHaveAttribute('data-driver-id', '2');
-  expect((await getDriverDay('2026-10-10')).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
+  await expect(driverAttendance(page, sukhita)).toHaveAttribute('aria-checked', 'false');
+  await expect(driverAttendance(page, gurami)).toHaveAttribute('aria-checked', 'false');
+  await chooseDate(page, '2026-10-20');
+  await expect(driverAttendance(page, gurami)).toHaveAttribute('aria-checked', 'true');
+  await expect(driverAttendance(page, sukhita)).toHaveAttribute('aria-checked', 'true');
+  await expect(roster(page).locator('[data-driver-id]').first()).toHaveAttribute('data-driver-id', '31');
+  expect((await getDriverDay('2026-10-20')).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
   await chooseDate(page, ANCHOR);
-  await setAttendance(page, rezo, true);
-  await setAttendance(page, kudukha, true);
+  await setAttendance(page, sukhita, true);
+  await setAttendance(page, gurami, true);
   expect((await getDriverDay(ANCHOR)).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
 });
 

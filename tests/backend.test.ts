@@ -197,32 +197,33 @@ test('base schedules can be changed independently and a dated override retains p
 
 test('driver schedules rotate each calendar day independently of daily refusals', async () => {
   const fresh = await fixture();
-  const day = '2026-10-09';
+  const day = '2026-10-19';
   const query = (date: string) => `/admin/drivers/schedule?direction=gori-tbilisi&date=${date}`;
   try {
     const initial = await successful(fresh, query(day));
     assert.equal(initial.anchorDate, day);
-    assert.equal(initial.firstDriverId, 1);
+    assert.equal(initial.firstDriverId, 32);
     assert.equal(initial.drivers.length, 43);
     assert.equal(initial.drivers.reduce((total: number, driver: any) => total + driver.capacity, 0), 293);
     assert.deepEqual(initial.drivers.slice(0, 6).map((driver: any) => [driver.name, driver.assignedTime]),
-      [['რეზო', null], ['კუდუხა', null], ['გოჩა', null], ['ვიქტორი', null], ['ბიძინა', null], ['დიმა', null]]);
+      [['სუხიტა', null], ['გურამი', null], ['ერასტი', null], ['დათო ტინის ხიდი ახალი', null], ['დათო ტინის ხიდი', null], ['ვალერი', null]]);
     assert.ok(initial.drivers.every((driver: any) => driver.assignedTime === null && !driver.assignmentActive));
-    const declined = await successful(fresh, '/admin/drivers/1/day', 'PATCH', { direction: 'gori-tbilisi', date: day, declined: true });
-    assert.equal(declined.firstDriverId, 1);
+    const declined = await successful(fresh, '/admin/drivers/32/day', 'PATCH', { direction: 'gori-tbilisi', date: day, declined: true });
+    assert.equal(declined.firstDriverId, 32);
     assert.equal(declined.drivers[0].declined, true);
     assert.equal(declined.drivers[0].assignedTime, null);
     assert.equal(declined.drivers[1].assignedTime, null);
     assert.equal(declined.drivers[2].assignedTime, null);
-    const tomorrow = await successful(fresh, query('2026-10-10'));
-    assert.equal(tomorrow.firstDriverId, 2);
-    assert.equal(tomorrow.drivers[0].id, 2);
+    const tomorrow = await successful(fresh, query('2026-10-20'));
+    assert.equal(tomorrow.firstDriverId, 31);
+    assert.equal(tomorrow.drivers[0].id, 31);
     assert.equal(tomorrow.drivers[0].assignedTime, null);
-    assert.equal(tomorrow.drivers.at(-1).id, 1);
+    assert.equal(tomorrow.drivers.at(-1).id, 32);
     assert.equal(tomorrow.drivers.at(-1).declined, false);
-    await successful(fresh, '/admin/drivers/2/day', 'PATCH', { direction: 'gori-tbilisi', date: day, declined: true });
-    assert.equal((await successful(fresh, query('2026-10-10'))).drivers[0].assignedTime, null);
-    assert.equal((await successful(fresh, query('2026-11-21'))).firstDriverId, 1);
+    await successful(fresh, '/admin/drivers/31/day', 'PATCH', { direction: 'gori-tbilisi', date: day, declined: true });
+    assert.equal((await successful(fresh, query('2026-10-20'))).drivers[0].assignedTime, null);
+    assert.equal((await successful(fresh, query('2026-10-21'))).firstDriverId, 30);
+    assert.equal((await successful(fresh, query('2026-12-01'))).firstDriverId, 32);
   } finally { await fresh.close(); }
 });
 
@@ -233,14 +234,14 @@ test('only trip choices assign drivers and attendance preserves explicit choices
   try {
     await assignDriver(fresh, { ...body, time: '09:30' }, 1);
     const shared = await assignDriver(fresh, { ...body, time: '09:30' }, 2);
-    assert.deepEqual(shared.drivers.map((driver: any) => driver.key), ['roster:1', 'roster:2']);
+    assert.deepEqual(shared.drivers.map((driver: any) => driver.key), ['roster:2', 'roster:1']);
     const declined = await patch(1, { declined: true });
-    assert.equal(declined.drivers[0].assignedTime, null);
-    assert.equal(declined.drivers[1].assignedTime, '09:30');
-    assert.ok(declined.drivers.slice(2).every((driver: any) => driver.assignedTime === null));
+    assert.equal(declined.drivers.find((driver: any) => driver.id === 1).assignedTime, null);
+    assert.equal(declined.drivers.find((driver: any) => driver.id === 2).assignedTime, '09:30');
+    assert.ok(declined.drivers.filter((driver: any) => driver.id !== 2).every((driver: any) => driver.assignedTime === null));
     assert.equal((await fresh.db.prepare('SELECT manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(1, body.date))?.manual_time, '09:30');
     const restored = await patch(1, { declined: false });
-    assert.equal(restored.drivers[0].assignedTime, '09:30');
+    assert.equal(restored.drivers.find((driver: any) => driver.id === 1).assignedTime, '09:30');
     assert.ok(restored.drivers.every((driver: any) => driver.automaticTime === null));
     const nextDay = await successful(fresh, '/admin/drivers/schedule?direction=gori-tbilisi&date=2026-10-10');
     assert.ok(nextDay.drivers.every((driver: any) => driver.assignedTime === null));
@@ -249,6 +250,41 @@ test('only trip choices assign drivers and attendance preserves explicit choices
     assert.ok(audits.every(row => row.user_id === 1));
     assert.deepEqual(JSON.parse(audits[0].details), { driverId: 1, ...body, declined: true });
     assert.deepEqual(JSON.parse(audits[1].details), { driverId: 1, ...body, declined: false });
+  } finally { await fresh.close(); }
+});
+
+test('descending daily queues preserve stored IDs, manual hours, reservations and capacity without rewriting operational data', async () => {
+  const fresh = await fixture({ now: () => new Date('2026-10-18T00:00:00Z') });
+  const date = '2026-10-19';
+  const trip = { direction: 'gori-tbilisi', date, time: '08:30' };
+  try {
+    await assignDriver(fresh, trip, 33);
+    await assignDriver(fresh, trip, 32);
+    await assignDriver(fresh, { direction: trip.direction, date: '2026-10-09', time: '09:30' }, 3);
+    const reserved = await successful(fresh, '/admin/bookings', 'POST', input({ requestedDate: date, bookingType: 'whole_car', assignedVehicleKey: 'roster:32' }));
+    await successful(fresh, '/admin/bookings', 'POST', input({ requestedDate: date, seats: 2 }));
+    await successful(fresh, '/admin/drivers/31/day', 'PATCH', { direction: trip.direction, date, declined: true });
+    const snapshots = new Map<string, string>();
+    for (const table of ['drivers', 'driver_day_overrides', 'bookings', 'users', 'sessions', 'driver_accounts', 'driver_sessions', 'settings', 'base_schedule', 'date_schedule', 'audit_log', 'schema_versions']) {
+      snapshots.set(table, JSON.stringify(await fresh.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()));
+    }
+    for (const [day, first] of [['2026-10-18', 33], ['2026-10-19', 32], ['2026-10-20', 31], ['2026-10-21', 30]] as const) {
+      const schedule = await successful(fresh, `/admin/drivers/schedule?direction=gori-tbilisi&date=${day}`);
+      assert.equal(schedule.firstDriverId, first);
+      assert.equal(schedule.drivers.length, 43);
+    }
+    const historical = await successful(fresh, '/admin/drivers/schedule?direction=gori-tbilisi&date=2026-10-09');
+    assert.equal(historical.drivers.find((driver: any) => driver.id === 3).assignedTime, '09:30');
+    const capacity = await successful(fresh, `/admin/trips/capacity?direction=gori-tbilisi&date=${date}&time=08:30`);
+    assert.deepEqual(capacity.drivers.map((driver: any) => [driver.driverId, driver.capacity, driver.filledSeats, driver.freeSeats]), [[32, 7, 7, 0], [33, 6, 2, 4]]);
+    assert.equal(capacity.drivers.find((driver: any) => driver.driverId === 32).reservedBookingId, reserved.id);
+    assert.deepEqual([capacity.totalSeats, capacity.bookedSeats, capacity.freeSeats, capacity.uncoveredSeats], [13, 9, 4, 0]);
+    assert.deepEqual(capacity.availableDrivers.slice(0, 3).map((driver: any) => driver.id), [32, 30, 29]);
+    const options = await successful(fresh, `/admin/trips/whole-car-options?direction=gori-tbilisi&date=${date}&time=08:30`);
+    assert.deepEqual(options.drivers.slice(0, 3).map((driver: any) => driver.driverId), [32, 31, 30]);
+    assert.equal(options.drivers.find((driver: any) => driver.driverId === 31).declined, true);
+    assert.equal(options.drivers.find((driver: any) => driver.driverId === 32).reservedBookingId, reserved.id);
+    for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await fresh.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()), snapshot, `${table} changed while projecting the new daily queue`);
   } finally { await fresh.close(); }
 });
 
@@ -328,7 +364,7 @@ test('attendance changes invalidate an open trip picker and cannot assign a decl
     assert.equal(stale.data.code, 'TRIP_CHANGED');
     const current = await successful(fresh, path);
     assert.equal(current.availableDrivers.length, 42);
-    assert.deepEqual(current.availableDrivers.slice(0, 3).map((driver: any) => driver.id), [2, 3, 4]);
+    assert.deepEqual(current.availableDrivers.map((driver: any) => driver.id), initial.availableDrivers.filter((driver: any) => driver.id !== 1).map((driver: any) => driver.id));
     const declined = await fresh.request('/admin/trips/drivers', 'POST', { ...trip, expectedRevision: current.revision, action: 'add', driver: { kind: 'roster', id: 1 } });
     assert.equal(declined.data.code, 'DRIVER_DECLINED');
     const restored = await successful(fresh, '/admin/drivers/1/day', 'PATCH', { direction: trip.direction, date: trip.date, declined: false });
@@ -355,6 +391,7 @@ test('trip capacity counts all confirmed seats independently of booking filters 
     await successful(fresh, '/admin/bookings', 'POST', input({ direction: 'tbilisi-gori', pickupStopId: 1, requestedDate: trip.date, requestedTime: trip.time, seats: 2, phone: '599123460' }));
     const capacity = await successful(fresh, path + '&search=nothing&page=999&status=waiting');
     assert.deepEqual([capacity.bookingCount, capacity.bookedSeats, capacity.totalSeats, capacity.freeSeats, capacity.uncoveredSeats], [2, 9, 14, 5, 0]);
+    assert.deepEqual(capacity.drivers.map((driver: any) => driver.driverId), [2, 1]);
     assert.deepEqual(capacity.drivers.map((driver: any) => [driver.filledSeats, driver.freeSeats]), [[7, 0], [2, 5]]);
     assert.equal(capacity.revision, second.revision, 'Booking arrivals must not invalidate a driver plan revision');
     await successful(fresh, `/admin/bookings/${firstOrder.id}/delete`, 'POST', {});
@@ -377,9 +414,12 @@ test('removing a trip driver creates a manual reserve without declining, reflowi
     const removed = await successful(fresh, '/admin/trips/drivers', 'POST', { ...trip, expectedRevision: before.revision, action: 'remove', removeKey: 'roster:1' });
     assert.deepEqual([removed.drivers.length, removed.totalSeats], [0, 0]);
     const day = await successful(fresh, '/admin/drivers/schedule?direction=gori-tbilisi&date=2026-10-09');
-    assert.deepEqual([day.drivers[0].declined, day.drivers[0].assignmentMode, day.drivers[0].assignedTime, day.drivers[1].assignedTime], [false, 'manual', null, null]);
+    const removedDriver = day.drivers.find((driver: any) => driver.id === 1);
+    assert.deepEqual([removedDriver.declined, removedDriver.assignmentMode, removedDriver.assignedTime], [false, 'manual', null]);
+    assert.ok(day.drivers.every((driver: any) => driver.assignedTime === null));
     const next = await successful(fresh, '/admin/drivers/schedule?direction=gori-tbilisi&date=2026-10-10');
-    assert.deepEqual([next.drivers[0].id, next.drivers[0].assignedTime, next.drivers.at(-1).assignmentMode], [2, null, 'manual']);
+    assert.equal(next.firstDriverId, day.drivers[1].id);
+    assert.ok(next.drivers.every((driver: any) => !driver.declined && driver.assignedTime === null));
     const restored = await successful(fresh, '/admin/trips/drivers', 'POST', { ...trip, expectedRevision: removed.revision, action: 'add', driver: { kind: 'roster', id: 1 } });
     assert.equal(restored.totalSeats, 7);
   } finally { await fresh.close(); }

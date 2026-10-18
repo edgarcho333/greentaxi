@@ -1,6 +1,8 @@
 import type { DriverDay, DriverSchedule } from '../src/api.js';
 
-export const DRIVER_ROTATION_ANCHOR = '2026-10-09';
+// Confirmed business reference: 19 October 2026 starts with სუხიტა.
+export const DRIVER_ROTATION_ANCHOR = '2026-10-19';
+export const DRIVER_ROTATION_ANCHOR_DRIVER_ID = 32;
 export const DRIVER_DIRECTION = 'gori-tbilisi' as const;
 
 export type DriverRosterEntry = Readonly<{
@@ -77,7 +79,7 @@ export function calendarDateOrdinal(date: string): number {
   return timestamp / 86_400_000;
 }
 
-/** Rotate by calendar days first; refusals must never change the base queue. */
+/** Rotate in the supplied queue order; refusals never change the base queue. */
 export function rotateDriverQueue<T>(drivers: readonly T[], anchorDate: string, date: string): T[] {
   const elapsed = calendarDateOrdinal(date) - calendarDateOrdinal(anchorDate);
   if (drivers.length === 0) return [];
@@ -104,8 +106,12 @@ export function buildDriverSchedule(
 ): DriverSchedule {
   if (times.some(time => !/^([01]\d|2[0-3]):[0-5]\d$/.test(time))) throw new RangeError('Invalid departure time.');
   const effectiveTimes = [...new Set(times)].sort();
-  const permanent = [...drivers].sort((first, second) => first.order - second.order || first.id - second.id);
-  const queue = rotateDriverQueue(permanent, DRIVER_ROTATION_ANCHOR, date);
+  // Traverse the permanent roster from bottom to top without changing stored
+  // IDs or positions. Anchor by driver identity, independently of attendance.
+  const permanent = [...drivers].sort((first, second) => second.order - first.order || second.id - first.id);
+  const anchorIndex = permanent.findIndex(driver => driver.id === DRIVER_ROTATION_ANCHOR_DRIVER_ID);
+  const anchored = anchorIndex > 0 ? [...permanent.slice(anchorIndex), ...permanent.slice(0, anchorIndex)] : permanent;
+  const queue = rotateDriverQueue(anchored, DRIVER_ROTATION_ANCHOR, date);
   if (queue.length === 0) throw new RangeError('Driver roster is empty.');
   const preferences = new Map(overrides.map(override => [override.driverId, override]));
   const plan: DriverDay[] = queue.map((driver, index) => {
