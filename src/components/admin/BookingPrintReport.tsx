@@ -51,7 +51,7 @@ export default function BookingPrintReport({ bookings, date, direction, time, st
         {rows.map((booking, index) => <tr key={booking.id}>
           <td><PickupAddress booking={booking} stops={stops} /></td>
           <td className="booking-print-seats">{booking.seats}</td>
-          <td className="booking-print-phone">{formatPhone(booking.phone)}{booking.callerPhone && formatPhone(booking.callerPhone) !== formatPhone(booking.phone) && <small className="operator-booking-caller">ზარის ნომერი: {formatPhone(booking.callerPhone)}</small>}</td>
+          <td className="booking-print-phone">{formatPhone(booking.phone)}{booking.callerPhone && formatPhone(booking.callerPhone) !== formatPhone(booking.phone) && <small className="operator-booking-caller"><span>ზარის ნომერი:</span>{' '}<span className="booking-print-caller-phone">{formatPhone(booking.callerPhone)}</span></small>}</td>
           <td className="booking-print-time">{booking.assignedTime ?? booking.requestedTime}</td>
           <td className="booking-print-number">{index + 1}</td>
         </tr>)}

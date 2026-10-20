@@ -17,9 +17,9 @@
 .admin-print-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 25px; background: #fbfdfb; border-top: 1px solid #edf2ee; }
 .admin-print-footer > span { font-size: 10px; color: #8b9e92; }
 .admin-print-footer > div { min-width: 0; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.admin-booking-print-frame { position: fixed; left: -10000px; top: 0; width: 1123px; height: 794px; border: 0; pointer-events: none; }
+.admin-booking-print-frame { position: fixed; left: -10000px; top: 0; width: 794px; height: 1123px; border: 0; pointer-events: none; }
 @media screen {
-  .admin-print-preview .booking-print-report { min-width: 850px; }
+  .admin-print-preview .booking-print-report { min-width: 210mm; }
 }
 @media (max-width: 760px) {
   .admin-dialog.admin-print-dialog { width: calc(100vw - 28px); max-height: calc(100dvh - 28px); }

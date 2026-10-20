@@ -1,5 +1,5 @@
 import { test as base, expect, type APIRequestContext, type Locator, type Page, type Response } from '@playwright/test';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { Booking, CallInquiry, Direction, PassengerProfile, PublicConfig } from '../src/api';
@@ -1742,7 +1742,7 @@ test('printing all orders for a day includes every confirmed row beyond paginati
   // Export the exact captured print document with its copied styles for visual review.
   const paper = await page.context().newPage();
   try {
-    await paper.setViewportSize({ width: 1123, height: 794 });
+    await paper.setViewportSize({ width: 794, height: 1123 });
     // A base URL does not change about:blank's origin; navigate first so the
     // captured document can load the application's actual fonts without CORS.
     await paper.goto(new URL('/', page.url()).href, { waitUntil: 'load' });
@@ -1752,9 +1752,46 @@ test('printing all orders for a day includes every confirmed row beyond paginati
       await Promise.all(['400 12px "Dachi The Lynx"', ...[400, 500, 600, 700, 800].map(weight => `${weight} 12px "FiraGO"`)].map(face => window.document.fonts.load(face)));
       await window.document.fonts.ready;
     });
-    await expect(paper.getByRole('table', { name: 'მგზავრებისა და მისამართების სია', exact: true }).getByRole('row')).toHaveCount(19);
-    await paper.pdf({ path: '/tmp/greentaxi-booking-report.pdf', printBackground: true, preferCSSPageSize: true });
+    const table = paper.getByRole('table', { name: 'მგზავრებისა და მისამართების სია', exact: true });
+    await expect(table.getByRole('row')).toHaveCount(19);
+    const pdfPath = '/tmp/greentaxi-booking-report.pdf';
+    const pdfBuffer = await paper.pdf({ path: pdfPath, printBackground: true, preferCSSPageSize: true });
+    writeFileSync('/tmp/greentaxi-booking-report-expected.json', JSON.stringify(selected));
     await paper.screenshot({ path: '/tmp/greentaxi-booking-report-print.png', fullPage: true });
+    const printLayout = await table.evaluate(element => {
+      const cells = Array.from(element.querySelectorAll<HTMLElement>('th, td'));
+      return {
+        bodyFontSizes: Array.from(element.querySelectorAll<HTMLElement>('tbody td, .booking-print-address'), cell => parseFloat(getComputedStyle(cell).fontSize)),
+        numericStyles: Array.from(element.querySelectorAll<HTMLElement>('tbody td.booking-print-phone, tbody td.booking-print-time, tbody td.booking-print-seats, tbody td.booking-print-number'), cell => ({ fontSize: parseFloat(getComputedStyle(cell).fontSize), fontWeight: Number(getComputedStyle(cell).fontWeight) })),
+        headerFontSizes: Array.from(element.querySelectorAll<HTMLElement>('thead th'), cell => parseFloat(getComputedStyle(cell).fontSize)),
+        horizontalOverflow: cells.filter(cell => cell.scrollWidth > cell.clientWidth + 2).map(cell => cell.textContent),
+        verticalClipping: cells.filter(cell => cell.scrollHeight > cell.clientHeight + 2).map(cell => cell.textContent),
+        pageOverflow: element.ownerDocument.documentElement.scrollWidth > innerWidth + 2,
+      };
+    });
+    expect(Math.min(...printLayout.bodyFontSizes), 'Printed addresses and row values must be at least 18 pt (24 CSS px)').toBeGreaterThanOrEqual(24);
+    expect(printLayout.numericStyles).toHaveLength(selected.length * 4);
+    for (const numeric of printLayout.numericStyles) {
+      expect(numeric.fontSize, 'Phone, time, seat and order numbers must remain at least 20 pt').toBeGreaterThanOrEqual(20 * 96 / 72 - 0.1);
+      expect(numeric.fontWeight, 'Printed numbers must remain bold').toBeGreaterThanOrEqual(600);
+    }
+    expect(Math.min(...printLayout.headerFontSizes), 'Printed column headings must be at least 14 pt').toBeGreaterThanOrEqual(14 * 96 / 72 - 0.1);
+    expect(printLayout.horizontalOverflow, 'Large text must wrap within its cell rather than overlap adjacent columns').toEqual([]);
+    expect(printLayout.verticalClipping, 'Wrapped addresses must retain their full height').toEqual([]);
+    expect(printLayout.pageOverflow, 'The portrait report must fit the page width').toBe(false);
+
+    // Chromium writes each page's uncompressed MediaBox into the PDF. Inspect
+    // those physical page dimensions without adding a PDF-tool dependency to CI.
+    const pageBoxes = Array.from(pdfBuffer.toString('latin1').matchAll(/\/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/g), match => ({
+      width: Number(match[3]) - Number(match[1]), height: Number(match[4]) - Number(match[2]),
+    }));
+    expect(pageBoxes.length, 'Eighteen large-print orders must flow onto multiple portrait pages').toBeGreaterThan(1);
+    for (const [index, box] of pageBoxes.entries()) {
+      expect(box.width, `PDF page ${index + 1} must be portrait A4`).toBeLessThan(box.height);
+      expect(Math.abs(box.width - 595.28)).toBeLessThan(2);
+      expect(Math.abs(box.height - 841.89)).toBeLessThan(2);
+    }
+    await expect(table.locator('thead')).toHaveCSS('display', 'table-header-group');
   } finally { await paper.close(); }
 });
 

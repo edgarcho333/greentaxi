@@ -20,10 +20,10 @@
 .operator-booking-caller { display: block; margin-top: 5px; font-size: 12px; line-height: 1.5; color: #617d6b; font-weight: 400; }
 .operator-booking-caller a { color: #2e6746; white-space: nowrap; }
 .passenger-trip-contact { display: block; margin-top: 5px; color: #39654c; font-size: 12px; line-height: 1.6; }
-.booking-print-report .operator-booking-options-summary { gap: 3px; margin-top: 4px; font-size: 8px; line-height: 1.3; }
-.booking-print-report .operator-booking-options-summary > span { padding: 1px 3px; border-color: #b9cec0; background: transparent; color: #163d26; }
+.booking-print-report .operator-booking-options-summary { gap: 2mm; margin-top: 2mm; font-size: 16pt; line-height: 1.35; color: #000; }
+.booking-print-report .operator-booking-options-summary > span { display: block; max-width: 100%; padding: 1mm; border-color: #84978a; background: transparent; color: #000; overflow-wrap: anywhere; }
 .booking-print-report .operator-booking-options-summary svg { display: none; }
-.booking-print-report .operator-booking-caller { margin-top: 3px; font-size: 7px; white-space: normal; color: #234c32; }
+.booking-print-report .operator-booking-caller { margin-top: 2mm; font-size: 16pt; font-weight: 600; white-space: normal; color: #000; }
 @media (max-width: 760px) {
   .operator-booking-options { gap: 12px; margin-bottom: 14px; }
   .operator-booking-options-services, .operator-booking-options-preferences { gap: 6px; }
