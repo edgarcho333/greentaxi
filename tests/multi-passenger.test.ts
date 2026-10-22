@@ -49,7 +49,7 @@ async function fixture() {
   assert.equal(setup.status, 201);
   cookie = setup.headers.get('set-cookie')!.split(';')[0];
   return {
-    ...service, request, base, databaseUrl,
+    ...service, request, base, databaseUrl, directory,
     async close() {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       await service.close();
@@ -84,7 +84,7 @@ async function call(f: Fixture, phone: string | null = CALLER, eventId = randomB
   return { id: result.data.id as number, event, headers };
 }
 async function snapshot(f: Fixture) {
-  const tables = ['bookings', 'call_inquiries', 'call_booking_links', 'passenger_profiles', 'passenger_addresses', 'audit_log', 'idempotency'];
+  const tables = ['bookings', 'call_inquiries', 'call_booking_links', 'passenger_profiles', 'passenger_addresses', 'driver_day_overrides', 'audit_log', 'idempotency'];
   const result: Record<string, unknown> = {};
   for (const table of tables) result[table] = (await f.db.prepare(`SELECT * FROM ${table} ORDER BY 1,2`).all()).map(row => ({ ...row }));
   return result;
@@ -371,5 +371,176 @@ test('separate bookings can reuse one contact while preserving multiple saved ad
     assert.equal(absent.status, 404);
     assert.equal(absent.data.code, 'NOT_FOUND');
     assert.deepEqual(await snapshot(f), before);
+  });
+});
+
+test('manual groups create independent confirmed orders with each contact, caller, direction, day and options without linking a call', async () => {
+  await isolated(async f => {
+    const stop = (await successful(f, '/public/config')).stops[0];
+    const children = [
+      input({ phone: '+995599111221', callerPhone: '599888001', requestedDate: '2030-01-01', seats: 2, luggage: true, seatPreference: 'front' }),
+      input({ phone: '599 11 12 22', callerPhone: '599888002', direction: 'tbilisi-gori', pickupStopId: stop.id, requestedTime: '09:30', goriAddress: 'ჩამოსვლის სახლი 34', seats: 8, dog: true, seatPreference: 'back' }),
+      input({ phone: '599111223', bookingType: 'parcel', seats: 8, goriAddress: 'გზავნილის მისამართი 56', seatPreference: 'middle' }),
+    ];
+    const result = await f.request('/admin/bookings/group', 'POST', { bookings: children }, groupKey('manual-independent'));
+    assert.equal(result.status, 201);
+    const bookings = result.data.bookings;
+    assert.equal(new Set(bookings.map((row: any) => row.id)).size, 3);
+    assert.deepEqual(bookings.map((row: any) => [row.phone, row.callerPhone, row.direction, row.assignedDate, row.assignedTime, row.seats]), [
+      ['599111221', '599888001', 'gori-tbilisi', '2030-01-01', '08:30', 2],
+      ['599111222', '599888002', 'tbilisi-gori', DAY, '09:30', 8],
+      ['599111223', null, 'gori-tbilisi', DAY, '08:30', 0],
+    ]);
+    assert.deepEqual(bookings.map((row: any) => [row.bookingType, row.luggage, row.dog, row.seatPreference]), [
+      ['passenger', true, false, 'front'], ['passenger', false, true, 'back'], ['parcel', false, false, null],
+    ]);
+    assert.deepEqual(bookings.map((row: any) => row.goriAddress), children.map(row => row.goriAddress));
+    assert.ok(bookings.every((row: any) => row.status === 'confirmed' && row.deletedAt === null));
+    assert.ok((await f.db.prepare('SELECT source FROM bookings').all()).every(row => row.source === 'employee'));
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM call_inquiries').get())?.count, 0);
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM call_booking_links').get())?.count, 0);
+    for (const booking of bookings) {
+      const detail = await successful(f, `/admin/passengers/${booking.phone}`);
+      assert.deepEqual(detail.bookings.map((row: any) => row.id), [booking.id]);
+      assert.equal(detail.profile.phone, booking.phone);
+    }
+    assert.equal((await successful(f, '/admin/passengers/profile?phone=599888001')).profile, null);
+  });
+});
+
+test('manual group creation requires staff, a replay key and a nonempty array of booking objects', async () => {
+  await isolated(async f => {
+    const endpoint = '/admin/bookings/group';
+    const initial = await snapshot(f);
+    assert.equal((await f.request(endpoint, 'POST', { bookings: [input()] }, groupKey('manual-guest'), false)).status, 401);
+    const invalidHeaders: Record<string, string>[] = [{}, { 'Idempotency-Key': 'short' }, { 'Idempotency-Key': 'contains spaces' }];
+    for (const headers of invalidHeaders) {
+      const rejected = await f.request(endpoint, 'POST', { bookings: [input()] }, headers);
+      assert.equal(rejected.status, 400); assert.equal(rejected.data.code, 'VALIDATION');
+    }
+    for (const body of [null, [], 'invalid-body', 123, {}, { bookings: null }, { bookings: [] }, { bookings: {} }, { bookings: [null] }, { bookings: [[]] }, { bookings: ['passenger'] }]) {
+      const rejected = await f.request(endpoint, 'POST', body, groupKey('manual-bad-shape'));
+      assert.equal(rejected.status, 400); assert.equal(rejected.data.code, 'VALIDATION');
+    }
+    assert.deepEqual(await snapshot(f), initial);
+  });
+});
+
+test('manual groups roll back earlier orders and trusted contact updates when a later child fails validation', async () => {
+  await isolated(async f => {
+    await successful(f, '/admin/bookings', 'POST', input({ goriAddress: 'უკვე შენახული მისამართი' }));
+    const initial = await snapshot(f);
+    const endpoint = '/admin/bookings/group';
+    for (const invalid of [{ phone: 'not-a-number' }, { seats: 9 }, { goriAddress: '' }, { requestedDate: '2030-01-03' }, { requestedTime: '05:30' }, { direction: 'tbilisi-gori', pickupStopId: 999999 }]) {
+      const result = await f.request(endpoint, 'POST', { bookings: [input({ goriAddress: 'არ უნდა შეინახოს' }), input({ phone: '599111222', ...invalid })] }, groupKey('manual-rollback'));
+      assert.equal(result.status, 'requestedTime' in invalid ? 409 : 400);
+      if ('requestedDate' in invalid) assert.equal(result.data.code, 'DATE_OUT_OF_RANGE', 'Manual groups must retain the today/tomorrow window');
+      assert.deepEqual(await snapshot(f), initial);
+    }
+    const corrected = await successful(f, endpoint, 'POST', { bookings: [input({ goriAddress: 'შეცვლილი მისამართი' }), input({ phone: '599111222' })] }, groupKey('manual-rollback'));
+    assert.equal(corrected.bookings.length, 2);
+    assert.equal((await successful(f, '/admin/passengers/profile?phone=599111221')).profile.goriPickupAddress, 'შეცვლილი მისამართი');
+  });
+});
+
+test('manual groups reserve distinct whole cars from one snapshot using actual capacities and replay without duplicate assignments', async () => {
+  await isolated(async f => {
+    await successful(f, '/admin/drivers/3/day', 'PATCH', { direction: 'gori-tbilisi', date: DAY, declined: true });
+    const options = await successful(f, `/admin/trips/whole-car-options?direction=gori-tbilisi&date=${DAY}&time=08:30`);
+    const whole = (id: number, phone: string) => {
+      const driver = options.drivers.find((driver: any) => driver.driverId === id); assert.ok(driver);
+      return input({ phone, bookingType: 'whole_car', assignedVehicleKey: driver.key, expectedVehicleRevision: driver.revision });
+    };
+    const body = { bookings: [whole(3, '599111221'), whole(4, '599111222'), input({ phone: '599111223', bookingType: 'parcel' })] };
+    const headers = groupKey('manual-whole-cars');
+    const result = await successful(f, '/admin/bookings/group', 'POST', body, headers);
+    assert.deepEqual(result.bookings.map((row: any) => row.seats), [8, 7, 0]);
+    const replay = await successful(f, '/admin/bookings/group', 'POST', body, headers);
+    assert.deepEqual(replay, result);
+    const capacity = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=08:30`);
+    assert.equal(capacity.totalSeats, 15); assert.equal(capacity.bookedSeats, 15); assert.equal(capacity.freeSeats, 0);
+    for (const booking of result.bookings.slice(0, 2)) assert.equal(capacity.drivers.find((driver: any) => driver.key === booking.assignedVehicleKey).reservedBookingId, booking.id);
+    assert.deepEqual({ ...(await f.db.prepare('SELECT declined,manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(3, DAY)) }, { declined: 0, manual_time: '08:30' });
+    assert.equal((await f.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='trip.driver.add' AND details LIKE '%whole-car-booking%'").get())?.count, 2);
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM call_booking_links').get())?.count, 0);
+  });
+});
+
+test('manual whole-car conflicts roll back driver activation, old assignments, sibling contacts and all replay records', async () => {
+  await isolated(async f => {
+    const plan = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=10:00`);
+    await successful(f, '/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: DAY, time: '10:00', action: 'add', expectedRevision: plan.revision, driver: { kind: 'roster', id: 3 } });
+    await successful(f, '/admin/drivers/3/day', 'PATCH', { direction: 'gori-tbilisi', date: DAY, declined: true });
+    const options = await successful(f, `/admin/trips/whole-car-options?direction=gori-tbilisi&date=${DAY}&time=08:30`);
+    const driver = options.drivers.find((driver: any) => driver.driverId === 3); assert.ok(driver);
+    const choice = input({ bookingType: 'whole_car', assignedVehicleKey: driver.key, expectedVehicleRevision: driver.revision });
+    const initial = await snapshot(f);
+    const duplicate = await f.request('/admin/bookings/group', 'POST', { bookings: [choice, { ...choice, phone: '599111222' }] }, groupKey('manual-car-conflict'));
+    assert.equal(duplicate.status, 409); assert.equal(duplicate.data.code, 'VEHICLE_RESERVED');
+    assert.deepEqual(await snapshot(f), initial);
+    const missing = await f.request('/admin/bookings/group', 'POST', { bookings: [input({ bookingType: 'parcel' }), { ...choice, assignedVehicleKey: 'roster:99999' }] }, groupKey('manual-car-absent'));
+    assert.equal(missing.status, 409); assert.equal(missing.data.code, 'VEHICLE_UNAVAILABLE');
+    assert.deepEqual(await snapshot(f), initial);
+  });
+});
+
+test('manual same-key concurrent retries return the exact group and changed bodies cannot append or duplicate orders', async () => {
+  await isolated(async f => {
+    const endpoint = '/admin/bookings/group';
+    const body = { bookings: [input(), input({ phone: '599111222', seats: 3, requestedTime: '09:30' })] };
+    const headers = groupKey('manual-same-key');
+    const results = await Promise.all(Array.from({ length: 3 }, () => f.request(endpoint, 'POST', body, headers)));
+    assert.ok(results.every(result => result.status === 201));
+    for (const result of results) assert.deepEqual(result.data, results[0].data);
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 2);
+    assert.equal((await f.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='create'").get())?.count, 2);
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM idempotency WHERE scope=?').get('employee-booking-group:1'))?.count, 1);
+    const initial = await snapshot(f);
+    const changed = await f.request(endpoint, 'POST', { bookings: [input({ seats: 1 }), body.bookings[1]] }, headers);
+    assert.equal(changed.status, 409); assert.equal(changed.data.code, 'IDEMPOTENCY_CONFLICT');
+    assert.deepEqual(await snapshot(f), initial);
+    // The single and group endpoints intentionally use separate replay scopes.
+    const single = await successful(f, '/admin/bookings', 'POST', input({ phone: '599111223' }), headers);
+    assert.equal(typeof single.id, 'number'); assert.equal(single.bookings, undefined);
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 3);
+  });
+});
+
+test('manual group replay survives separate application workers without revalidating already committed children', async () => {
+  await isolated(async f => {
+    const body = { bookings: [input(), input({ phone: '599111222' })] };
+    const headers = groupKey('manual-other-worker');
+    const first = await successful(f, '/admin/bookings/group', 'POST', body, headers);
+    let other: Awaited<ReturnType<typeof createApp>> | undefined;
+    let listener: Server | undefined;
+    try {
+      other = await createApp({ databaseUrl: f.databaseUrl, dbPath: f.databaseUrl ? undefined : join(f.directory, 'test.sqlite'), production: false, now: () => new Date('2030-01-05T00:00:00Z'), deferPhoneMigration: false });
+      listener = await new Promise<Server>(resolve => { const server = other!.app.listen(0, '127.0.0.1', () => resolve(server)); });
+      const address = listener.address(); assert.ok(address && typeof address !== 'string');
+      const auth = await fetch(`http://127.0.0.1:${address.port}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ login: 'group_operator', password: PASSWORD }) });
+      assert.equal(auth.status, 200);
+      const replay = await fetch(`http://127.0.0.1:${address.port}/api/admin/bookings/group`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: auth.headers.get('set-cookie')!.split(';')[0], ...headers }, body: JSON.stringify(body) });
+      assert.equal(replay.status, 201); assert.deepEqual(await replay.json(), first);
+      assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 2);
+    } finally {
+      if (listener) await new Promise<void>((resolve, reject) => listener!.close(error => error ? reject(error) : resolve()));
+      await other?.close();
+    }
+  });
+});
+
+test('manual groups accept many Georgian addresses while retaining bounded group and single-request sizes', async () => {
+  await isolated(async f => {
+    const body = { bookings: Array.from({ length: 32 }, (_, index) => input({ phone: '598' + String(index).padStart(6, '0'), goriAddress: 'ს'.repeat(250), seats: 1 })) };
+    assert.ok(Buffer.byteLength(JSON.stringify(body)) > 16 * 1024);
+    const created = await f.request('/admin/bookings/group', 'POST', body, groupKey('manual-large'));
+    assert.equal(created.status, 201); assert.equal(created.data.bookings.length, 32);
+    const tooLarge = await f.request('/admin/bookings/group', 'POST', { ...body, unused: 'x'.repeat(257 * 1024) }, groupKey('manual-oversized'));
+    assert.equal(tooLarge.status, 413);
+    for (const path of ['/admin/bookings', '/bookings']) {
+      const single = await f.request(path, 'POST', input({ name: 'სატესტო მგზავრი', unused: 'x'.repeat(17 * 1024) }));
+      assert.equal(single.status, 413);
+    }
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 32);
   });
 });

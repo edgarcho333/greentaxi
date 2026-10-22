@@ -1,5 +1,5 @@
 import { BookingTypeFields, BookingTypeSummary, type BookingTypeValue } from './admin/BookingTypeFields';
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRightLeft, BarChart3, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock3, Edit3, History, Inbox, Leaf, Loader2, LogOut, MapPin, Menu, MoreHorizontal, Phone, Plus, Printer, RefreshCw, Search, Settings, Trash2, Users, X } from 'lucide-react';
 import { ApiError, addDays, directions, request, today, type Analytics, type Booking, type CallInquiry, type Direction, type PublicConfig, type Schedule, type User } from '../api';
 import AdminSettings from './admin/AdminSettings';
@@ -189,7 +189,8 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
       <footer className="admin-footer"><span><span className="admin-live-dot" /> Green Taxi</span><span>გორი ↔ თბილისი</span></footer>
     </main>
     {printOpen && <BookingPrint date={date} direction={direction} time={time} onClose={() => setPrintOpen(false)} />}
-    {modal && <BookingModal modal={modal} config={config} defaultDirection={direction} defaultDate={date} defaultTime={time} onClose={() => setModal(null)} onComplete={completed} />}
+    {modal?.kind === 'create' && <CreateBookingGroupDialog modal={modal} config={config} defaultDirection={direction} defaultDate={date} defaultTime={time} onClose={() => setModal(null)} onComplete={completed} />}
+    {modal && modal.kind !== 'create' && <BookingModal modal={modal} config={config} defaultDirection={direction} defaultDate={date} defaultTime={time} onClose={() => setModal(null)} onComplete={completed} />}
     {toast && <div className="admin-toast" role="status"><CheckCircle2 size={19} />{toast}<button onClick={() => setToast('')} aria-label="შეტყობინების დახურვა"><X size={16} /></button></div>}
   </div>;
 }
@@ -206,7 +207,103 @@ function staffDateAllowed(date: string, anchor = today()) { return date >= ancho
 function staffFutureTime(date: string, time: string, now = Date.now()) { return /^([01]\d|2[0-3]):[0-5]\d$/.test(time) && new Date(`${date}T${time}:00+04:00`).getTime() > now; }
 function staffDefaultDate(date: string) { return staffDateAllowed(date) ? date : today(); }
 
-function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTime, onClose, onComplete }: { modal: Modal; config: PublicConfig; defaultDirection: Direction; defaultDate: string; defaultTime: string; onClose: () => void; onComplete: (message: string) => void }) {
+type CreateDraftReport = { fields: BookingFields; input: ReturnType<typeof createBookingInput>; valid: boolean; profileLoading: boolean };
+type EmbeddedCreateEditor = { id: string; locked: boolean; revision: number; defaultCallerPhone: string; callerLocked: boolean; autoPick: boolean; autoFocus: boolean; onReport: (id: string, report: CreateDraftReport) => void };
+type CreateCard = { id: string; direction: Direction; date: string; time: string; callerPhone: string; autoPick: boolean };
+type CreateAttempt = { path: string; body: string; key: string; count: number; ambiguous: boolean };
+
+function createBookingInput(fields: BookingFields) {
+  return { phone: normalizePhone(fields.phone), callerPhone: fields.callerPhone.trim() ? normalizePhone(fields.callerPhone) : null, luggage: fields.luggage, dog: fields.dog, seatPreference: fields.seatPreference, bookingType: fields.bookingType, assignedVehicleKey: fields.assignedVehicleKey || null, expectedVehicleRevision: fields.expectedVehicleRevision, seats: fields.bookingType === 'parcel' ? 0 : fields.seats, direction: fields.direction, requestedDate: fields.requestedDate, requestedTime: fields.requestedTime, goriAddress: fields.goriAddress, pickupStopId: fields.direction === 'tbilisi-gori' ? fields.pickupStopId : null };
+}
+
+function CreateBookingGroupDialog({ modal, config, defaultDirection, defaultDate, defaultTime, onClose, onComplete }: { modal: Extract<Modal, { kind: 'create' }>; config: PublicConfig; defaultDirection: Direction; defaultDate: string; defaultTime: string; onClose: () => void; onComplete: (message: string) => void }) {
+  const [cards, setCards] = useState<CreateCard[]>(() => [{ id: crypto.randomUUID(), direction: defaultDirection, date: defaultDate, time: defaultTime, callerPhone: modal.inquiry?.phone || '', autoPick: true }]);
+  const [reports, setReports] = useState<Record<string, CreateDraftReport>>({});
+  const reportsRef = useRef(reports); reportsRef.current = reports;
+  const [attempt, setAttempt] = useState<CreateAttempt | null>(null);
+  const attemptRef = useRef<CreateAttempt | null>(null);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [error, setError] = useState('');
+  const [revision, setRevision] = useState(0);
+  const active = useRef(false);
+  const pendingFocus = useRef<string | null>(null);
+  const locked = busy || attempt !== null;
+  const valid = cards.every(card => reports[card.id]?.valid && !reports[card.id]?.profileLoading);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  const reportDraft = useCallback((id: string, report: CreateDraftReport) => {
+    if (attemptRef.current || busyRef.current) return;
+    const previous = reportsRef.current;
+    const saved = previous[id];
+    if (saved?.fields === report.fields && saved.valid === report.valid && saved.profileLoading === report.profileLoading) return;
+    const next = { ...previous, [id]: report };
+    reportsRef.current = next; setReports(next);
+  }, []);
+  useEffect(() => {
+    const id = pendingFocus.current;
+    if (!id) return;
+    const card = document.querySelector<HTMLElement>(`[data-manual-passenger-id="${id}"]`);
+    const input = card?.querySelector<HTMLInputElement>('input[aria-label="ტელეფონის ნომერი"]');
+    if (!input) return;
+    pendingFocus.current = null; card?.scrollIntoView({ block: 'start', behavior: 'auto' }); input.focus({ preventScroll: true });
+  }, [cards]);
+  function close() { if (!busyRef.current && !attemptRef.current) onClose(); }
+  function addPassenger() {
+    if (busyRef.current || attemptRef.current) return;
+    const first = reportsRef.current[cards[0].id]?.fields;
+    if (!first) return;
+    const id = crypto.randomUUID(); pendingFocus.current = id;
+    setCards(previous => [...previous, { id, direction: first.direction, date: first.requestedDate, time: first.requestedTime, callerPhone: first.callerPhone, autoPick: false }]);
+    setError('');
+  }
+  function removePassenger(id: string) {
+    if (busyRef.current || attemptRef.current || cards[0].id === id) return;
+    setCards(previous => previous.filter(card => card.id !== id));
+    const next = { ...reportsRef.current }; delete next[id];
+    reportsRef.current = next; setReports(next);
+    setError('');
+  }
+  async function submit(event: FormEvent) {
+    event.preventDefault(); if (busyRef.current) return;
+    let next = attemptRef.current;
+    if (!next) {
+      const current = cards.map(card => reportsRef.current[card.id]);
+      if (current.some(report => !report?.valid || report.profileLoading)) { setError('შეავსეთ თითოეული მგზავრის მონაცემები.'); return; }
+      const group = cards.length > 1;
+      const path = modal.inquiry ? `/admin/calls/${modal.inquiry.id}/${group ? 'convert-group' : 'convert'}` : group ? '/admin/bookings/group' : '/admin/bookings';
+      next = { path, body: JSON.stringify(group ? { bookings: current.map(report => report.input) } : current[0].input), key: crypto.randomUUID(), count: cards.length, ambiguous: false };
+      attemptRef.current = next; setAttempt(next);
+    }
+    busyRef.current = true; setBusy(true); setError('');
+    try {
+      await request<Booking | { bookings: Booking[] }>(next.path, { method: 'POST', body: next.body, headers: { 'Idempotency-Key': next.key } });
+      if (!active.current) return;
+      attemptRef.current = null; setAttempt(null);
+      onComplete(next.count === 1 ? 'ჯავშანი შეიქმნა და დადასტურდა' : `${next.count} ჯავშანი შეიქმნა და დადასტურდა`);
+    } catch (cause) {
+      if (!active.current) return;
+      const definiteRejection = cause instanceof ApiError && cause.status >= 400 && cause.status < 500;
+      const needsLogin = cause instanceof ApiError && (cause.status === 401 || cause.status === 403);
+      if (definiteRejection && !(next.ambiguous && needsLogin)) {
+        setError(errorMessage(cause));
+        attemptRef.current = null; setAttempt(null); setRevision(value => value + 1);
+      } else {
+        const pending = { ...next, ambiguous: true };
+        attemptRef.current = pending; setAttempt(pending);
+        setError(needsLogin ? 'სხვა ჩანართში იმავე ანგარიშით შედით ხელახლა და აქ გაიმეორეთ გაგზავნა.' : errorMessage(cause));
+      }
+    } finally { busyRef.current = false; if (active.current) setBusy(false); }
+  }
+  return <Dialog title={modal.inquiry ? 'ზარის მიხედვით ჯავშნის შექმნა' : 'ახალი ჯავშანი'} subtitle="თითოეული მგზავრი ცალკე ჯავშნად შეინახება." className="admin-operator-booking-dialog admin-manual-group-dialog" busy={locked} onClose={close}><form className="admin-booking-form admin-operator-booking-form admin-manual-group-form" onSubmit={submit} noValidate={attempt !== null}>
+    <div className="admin-manual-passenger-list">{cards.map((card, index) => <section key={card.id} role="group" aria-label={`მგზავრი ${index + 1}`} data-manual-passenger-id={card.id} className="admin-manual-passenger-card"><header><h3>მგზავრი {index + 1}</h3>{index > 0 && <button type="button" className="admin-manual-remove-passenger" aria-label="მგზავრის წაშლა" disabled={locked} onClick={() => removePassenger(card.id)}><X size={24} /><span>წაშლა</span></button>}</header><BookingModal modal={index === 0 ? modal : { kind: 'create' }} config={config} defaultDirection={card.direction} defaultDate={card.date} defaultTime={card.time} onClose={close} onComplete={onComplete} embedded={{ id: card.id, locked, revision, defaultCallerPhone: card.callerPhone, callerLocked: !!modal.inquiry, autoPick: card.autoPick, autoFocus: index === 0, onReport: reportDraft }} /></section>)}</div>
+    <button type="button" className="admin-manual-add-passenger" disabled={locked || !reports[cards[0].id]} onClick={addPassenger}><Plus size={25} />მგზავრის დამატება</button>
+    {attempt && !busy && <p className="admin-manual-group-pending" data-manual-group-pending role="status">გაგზავნის პასუხი ვერ მივიღეთ. ხელახლა გაგზავნა იგივე ჯავშნებს შეამოწმებს.</p>}
+    {error && <div className="admin-error" role="alert" data-manual-group-error>{error}</div>}
+    <footer className="admin-dialog-footer"><button type="button" className="admin-secondary" disabled={locked} onClick={close}>გაუქმება</button><button type="submit" className="admin-primary" disabled={busy || (!attempt && !valid)}>{busy && <Loader2 size={22} className="admin-spin" />}{attempt && !busy ? 'განმეორებით გაგზავნა' : cards.length > 1 ? `ყველა ჯავშნის დადასტურება (${cards.length})` : 'შექმნა და დადასტურება'}</button></footer>
+  </form></Dialog>;
+}
+
+function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTime, onClose, onComplete, embedded }: { modal: Modal; config: PublicConfig; defaultDirection: Direction; defaultDate: string; defaultTime: string; onClose: () => void; onComplete: (message: string) => void; embedded?: EmbeddedCreateEditor }) {
   const booking = 'booking' in modal ? modal.booking : undefined;
   const inquiry = modal.kind === 'create' ? modal.inquiry : undefined;
   const inquiryPhone = inquiry?.bookingPhone || inquiry?.phone ? canonicalPassengerPhone(inquiry.bookingPhone || inquiry.phone || '') : null;
@@ -216,7 +313,7 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
     const originalDate = booking?.assignedDate || booking?.requestedDate || defaultDate;
     const date = modal.kind === 'edit' || modal.kind === 'delete' ? originalDate : staffDefaultDate(originalDate);
     const originalTime = booking?.assignedTime || booking?.requestedTime || defaultTime;
-    return { phone: formatPhone(booking?.phone || inquiry?.bookingPhone || inquiry?.phone || ''), callerPhone: formatPhone(booking?.callerPhone || inquiry?.phone || ''), luggage: booking?.luggage ?? false, dog: booking?.dog ?? false, seatPreference: booking?.seatPreference ?? null, bookingType: booking?.bookingType ?? 'passenger', assignedVehicleKey: booking?.assignedVehicleKey || '', seats: booking?.seats ?? 1, direction: booking?.direction || defaultDirection, requestedDate: date, requestedTime: date === originalDate && staffFutureTime(date, originalTime) ? originalTime : '', goriAddress: booking?.goriAddress || (defaultDirection === 'gori-tbilisi' ? savedProfile?.goriPickupAddress : savedProfile?.goriAddress) || '', pickupStopId: booking?.pickupStopId || savedStop };
+    return { phone: formatPhone(booking?.phone || inquiry?.bookingPhone || inquiry?.phone || ''), callerPhone: formatPhone(booking?.callerPhone || inquiry?.phone || embedded?.defaultCallerPhone || ''), luggage: booking?.luggage ?? false, dog: booking?.dog ?? false, seatPreference: booking?.seatPreference ?? null, bookingType: booking?.bookingType ?? 'passenger', assignedVehicleKey: booking?.assignedVehicleKey || '', seats: booking?.seats ?? 1, direction: booking?.direction || defaultDirection, requestedDate: date, requestedTime: date === originalDate && staffFutureTime(date, originalTime) ? originalTime : '', goriAddress: booking?.goriAddress || (defaultDirection === 'gori-tbilisi' ? savedProfile?.goriPickupAddress : savedProfile?.goriAddress) || '', pickupStopId: booking?.pickupStopId || savedStop };
   });
   type AddressProvenance = 'empty' | 'profile' | 'manual';
   const provenance = useRef<Record<'goriAddress' | 'pickupStopId', AddressProvenance>>({ goriAddress: booking ? 'manual' : savedProfile ? 'profile' : 'empty', pickupStopId: booking?.pickupStopId ? 'manual' : savedStop ? 'profile' : 'empty' });
@@ -225,11 +322,12 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
   const createAttempts = useRef(new Map<string, string>());
   const busyRef = useRef(false);
   const activeRef = useRef(true);
-  const autoPick = useRef(modal.kind === 'create');
+  const autoPick = useRef(modal.kind === 'create' && (embedded?.autoPick ?? true));
   const [clockNow, setClockNow] = useState(Date.now);
   const [scheduleRecord, setScheduleRecord] = useState<{ key: string; data: Schedule } | null>(null);
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const locked = busy || !!embedded?.locked;
   const [error, setError] = useState('');
   const [scheduleError, setScheduleError] = useState('');
   const [scheduleRevision, setScheduleRevision] = useState(0);
@@ -260,17 +358,17 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
     return () => { activeRef.current = false; window.clearInterval(timer); window.removeEventListener('focus', updateClock); document.removeEventListener('visibilitychange', updateClock); };
   }, []);
   useEffect(() => {
-    if (!needsSchedule || busyRef.current) return;
+    if (!needsSchedule || busyRef.current || embedded?.locked) return;
     setFields(current => {
       if (!staffDateAllowed(current.requestedDate, anchor)) { autoPick.current = false; return { ...current, requestedDate: anchor, requestedTime: '', assignedVehicleKey: '', expectedVehicleRevision: undefined }; }
       if (current.requestedTime && !staffFutureTime(current.requestedDate, current.requestedTime, clockNow)) { autoPick.current = false; return { ...current, requestedTime: '', assignedVehicleKey: '', expectedVehicleRevision: undefined }; }
       return current;
     });
-  }, [anchor, clockNow, needsSchedule]);
+  }, [anchor, clockNow, needsSchedule, embedded?.locked]);
   useEffect(() => {
     const profile = passengerProfile.profile;
     const phone = canonicalPassengerPhone(fields.phone);
-    if (!profile || !phone || modal.kind !== 'create' || busy || canonicalPassengerPhone(profile.phone) !== phone) return;
+    if (!profile || !phone || modal.kind !== 'create' || locked || canonicalPassengerPhone(profile.phone) !== phone) return;
     const changes: Partial<BookingFields> = {};
     if (provenance.current.goriAddress !== 'manual') {
       changes.goriAddress = fields.direction === 'gori-tbilisi' ? profile.goriPickupAddress : profile.goriAddress;
@@ -289,9 +387,9 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
       if (Object.entries(applicable).every(([key, value]) => current[key as keyof BookingFields] === value)) return current;
       return { ...current, ...applicable };
     });
-  }, [passengerProfile.profile, fields.phone, fields.direction, config.stops, modal.kind, busy]);
+  }, [passengerProfile.profile, fields.phone, fields.direction, config.stops, modal.kind, locked]);
   function update<K extends keyof BookingFields>(key: K, value: BookingFields[K]) {
-    if (busyRef.current) return;
+    if (busyRef.current || embedded?.locked) return;
     const reset: Partial<BookingFields> = {};
     if (['direction', 'requestedDate', 'requestedTime'].includes(key) && fields[key] !== value) { reset.assignedVehicleKey = ''; reset.expectedVehicleRevision = undefined; }
     if (modal.kind === 'create') {
@@ -321,7 +419,7 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
     setFields(current => ({ ...current, ...reset, [key]: value }));
   }
   useEffect(() => {
-    if (!needsSchedule || !staffDateAllowed(fields.requestedDate, anchor)) return;
+    if (!needsSchedule || embedded?.locked || !staffDateAllowed(fields.requestedDate, anchor)) return;
     const controller = new AbortController();
     const key = scheduleKey;
     const shouldAutoPick = autoPick.current; autoPick.current = false;
@@ -338,7 +436,7 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
       });
     }).catch(cause => { if (!controller.signal.aborted) setScheduleError(errorMessage(cause)); }).finally(() => { if (!controller.signal.aborted) setScheduleLoading(false); });
     return () => controller.abort();
-  }, [fields.direction, fields.requestedDate, needsSchedule, scheduleRevision, anchor]);
+  }, [fields.direction, fields.requestedDate, needsSchedule, scheduleRevision, anchor, embedded?.revision, embedded?.locked]);
   useEffect(() => {
     if (modal.kind !== 'restore' || booking?.status !== 'confirmed') return;
     const controller = new AbortController(); setOriginalChecking(true); setOriginalError('');
@@ -364,8 +462,12 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
   const vehicleValid = modal.kind === 'delete' || restoringWaiting || fields.bookingType !== 'whole_car' || !!fields.assignedVehicleKey && (!needsVehicleRevision || !!fields.expectedVehicleRevision);
   const detailsValid = !isDetails || (!!normalizePhone(fields.phone) && (!fields.callerPhone.trim() || !!normalizePhone(fields.callerPhone)) && (fields.bookingType === 'parcel' || (fields.bookingType === 'whole_car' ? !!fields.assignedVehicleKey : Number.isInteger(fields.seats) && fields.seats >= 1 && fields.seats <= 8)) && fields.goriAddress.trim().length >= 3 && fields.goriAddress.trim().length <= 500 && (fields.direction === 'gori-tbilisi' || activeStops.some(stop => stop.id === fields.pickupStopId) || (modal.kind === 'edit' && !!booking?.pickupStopId && fields.pickupStopId === booking.pickupStopId)));
   const restoreReady = modal.kind !== 'restore' || booking?.status === 'waiting' || (!originalChecking && (restoreMode === 'select' || (restoreMode === 'original' && originalAvailable)));
+  useLayoutEffect(() => {
+    if (!embedded || embedded.locked) return;
+    embedded.onReport(embedded.id, { fields, input: createBookingInput(fields), valid: detailsValid && vehicleValid && scheduleValid, profileLoading: passengerProfile.status === 'loading' });
+  }, [fields, detailsValid, vehicleValid, scheduleValid, passengerProfile.status, embedded?.id, embedded?.locked, embedded?.onReport]);
   async function submit(event: FormEvent) {
-    event.preventDefault(); if (busyRef.current) return;
+    event.preventDefault(); if (busyRef.current || embedded?.locked) return;
     const submittedPhone = normalizePhone(fields.phone);
     if (isDetails && !submittedPhone) { setError('მიუთითეთ სწორი ტელეფონის ნომერი.'); return; }
     const submittedCallerPhone = fields.callerPhone.trim() ? normalizePhone(fields.callerPhone) : null;
@@ -403,46 +505,50 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
       }
     } finally { busyRef.current = false; if (activeRef.current) setBusy(false); }
   }
-  return <Dialog title={inquiry ? 'ზარის მიხედვით ჯავშნის შექმნა' : title} subtitle={booking ? `${booking.name?.trim() ? `${booking.name} · ` : ''}${formatPhone(booking.phone)} · #${String(booking.id).padStart(4, '0')}` : inquiry ? 'შეავსეთ მგზავრობის მონაცემები. ზარი დადასტურებულ ჯავშნად გადაიქცევა.' : 'ოპერატორის მიერ შექმნილი ჯავშანი მაშინვე დადასტურდება.'} className={modal.kind === 'delete' ? undefined : 'admin-operator-booking-dialog'} busy={busy} onClose={() => { if (!busyRef.current) onClose(); }}><form onSubmit={submit} className={`admin-booking-form${modal.kind === 'delete' ? '' : ' admin-operator-booking-form'}`}>
+  const body = <>
     {modal.kind === 'delete' ? <div className="admin-delete-body"><span><Trash2 size={27} /></span><p>ნამდვილად გსურთ ამ ჯავშნის წაშლა?</p><small>მონაცემები ისტორიაში შენარჩუნდება. ჯავშნის აღდგენა ნებისმიერ დროს შეგიძლიათ.</small></div> : <>
       {isDetails && <>
         <div className="admin-operator-location">
-          {fields.direction === 'tbilisi-gori' && <label>აყვანის ადგილი თბილისში<select aria-label="აყვანის ადგილი თბილისში" required disabled={busy} value={fields.pickupStopId || ''} onChange={event => update('pickupStopId', Number(event.target.value))}><option value="" disabled>აირჩიეთ გაჩერება</option>{modal.kind === 'edit' && booking?.pickupStopId && !activeStops.some(stop => stop.id === booking.pickupStopId) && <option value={booking.pickupStopId}>{booking.pickupStopName} (გამორთული)</option>}{activeStops.map(stop => <option key={stop.id} value={stop.id}>{stop.name} — {stop.address}{savedStopIds.has(stop.id) ? ' · შენახული' : ''}</option>)}</select>{!activeStops.length && !booking?.pickupStopId && <small className="admin-danger-text">ჯერ დაამატეთ მოქმედი გაჩერება პარამეტრებში.</small>}</label>}
-          <SavedAddressPicker addresses={savedAddresses} value={fields.goriAddress} disabled={busy} onChoose={address => update('goriAddress', address)} />
-          <label>{fields.direction === 'gori-tbilisi' ? 'აყვანის მისამართი გორში' : 'ჩამოსვლის მისამართი გორში'}<textarea autoFocus aria-label={fields.direction === 'gori-tbilisi' ? 'აყვანის მისამართი გორში' : 'ჩამოსვლის მისამართი გორში'} required disabled={busy} minLength={3} maxLength={500} rows={1} value={fields.goriAddress} onChange={event => update('goriAddress', event.target.value)} placeholder="ქუჩა, სახლის ნომერი, ორიენტირი" /></label>
-          <BookingOptions typeControls={<BookingTypeFields inline value={fields} direction={fields.direction} date={modal.kind === 'edit' ? booking!.assignedDate || booking!.requestedDate : fields.requestedDate} time={modal.kind === 'edit' ? booking!.assignedTime || booking!.requestedTime : fields.requestedTime} bookingId={booking?.id} disabled={busy} onChange={value => { setFields(current => ({ ...current, ...value, seats: 1, seatPreference: null })); setError(''); }} />} passenger={fields.bookingType === 'passenger'} value={{ luggage: fields.luggage, dog: fields.dog, seatPreference: fields.seatPreference }} disabled={busy} onChange={options => { if (!busyRef.current) { setFields(current => ({ ...current, ...options })); setError(''); } }} />
+          {fields.direction === 'tbilisi-gori' && <label>აყვანის ადგილი თბილისში<select aria-label="აყვანის ადგილი თბილისში" required disabled={locked} value={fields.pickupStopId || ''} onChange={event => update('pickupStopId', Number(event.target.value))}><option value="" disabled>აირჩიეთ გაჩერება</option>{modal.kind === 'edit' && booking?.pickupStopId && !activeStops.some(stop => stop.id === booking.pickupStopId) && <option value={booking.pickupStopId}>{booking.pickupStopName} (გამორთული)</option>}{activeStops.map(stop => <option key={stop.id} value={stop.id}>{stop.name} — {stop.address}{savedStopIds.has(stop.id) ? ' · შენახული' : ''}</option>)}</select>{!activeStops.length && !booking?.pickupStopId && <small className="admin-danger-text">ჯერ დაამატეთ მოქმედი გაჩერება პარამეტრებში.</small>}</label>}
+          <SavedAddressPicker addresses={savedAddresses} value={fields.goriAddress} disabled={locked} onChoose={address => update('goriAddress', address)} />
+          <label>{fields.direction === 'gori-tbilisi' ? 'აყვანის მისამართი გორში' : 'ჩამოსვლის მისამართი გორში'}<textarea autoFocus={!embedded || embedded.autoFocus} aria-label={fields.direction === 'gori-tbilisi' ? 'აყვანის მისამართი გორში' : 'ჩამოსვლის მისამართი გორში'} required disabled={locked} minLength={3} maxLength={500} rows={1} value={fields.goriAddress} onChange={event => update('goriAddress', event.target.value)} placeholder="ქუჩა, სახლის ნომერი, ორიენტირი" /></label>
+          <BookingOptions typeControls={<BookingTypeFields inline value={fields} direction={fields.direction} date={modal.kind === 'edit' ? booking!.assignedDate || booking!.requestedDate : fields.requestedDate} time={modal.kind === 'edit' ? booking!.assignedTime || booking!.requestedTime : fields.requestedTime} bookingId={booking?.id} disabled={locked} onChange={value => { if (busyRef.current || embedded?.locked) return; setFields(current => ({ ...current, ...value, seats: 1, seatPreference: null })); setError(''); }} />} passenger={fields.bookingType === 'passenger'} value={{ luggage: fields.luggage, dog: fields.dog, seatPreference: fields.seatPreference }} disabled={locked} onChange={options => { if (!busyRef.current && !embedded?.locked) { setFields(current => ({ ...current, ...options })); setError(''); } }} />
         </div>
         <div className="operator-booking-phone-fields">
-          <label>ტელეფონის ნომერი<input aria-label="ტელეფონის ნომერი" required disabled={busy} type="tel" inputMode="tel" autoComplete="tel-national" maxLength={30} value={fields.phone} onChange={event => update('phone', event.target.value)} onBlur={event => update('phone', formatPhone(event.target.value))} placeholder="მაგ. 555 12 34 56" /></label>
-          {(modal.kind !== 'edit' || fields.callerPhone) && <label>ზარის ნომერი<input aria-label="ზარის ნომერი" disabled={busy} readOnly={modal.kind === 'edit' || !!inquiry} type="tel" inputMode="tel" autoComplete="off" maxLength={30} value={fields.callerPhone} onChange={event => update('callerPhone', event.target.value)} onBlur={event => update('callerPhone', formatPhone(event.target.value))} placeholder="თუ სხვა ნომრიდან დაგირეკეს" /><small>{modal.kind === 'edit' || inquiry ? 'საწყისი ზარის ნომერი შენარჩუნებულია.' : 'არასავალდებულო — შეავსეთ, თუ ზარის ნომერი განსხვავდება.'}</small></label>}
+          <label>ტელეფონის ნომერი<input aria-label="ტელეფონის ნომერი" required disabled={locked} type="tel" inputMode="tel" autoComplete="tel-national" maxLength={30} value={fields.phone} onChange={event => update('phone', event.target.value)} onBlur={event => update('phone', formatPhone(event.target.value))} placeholder="მაგ. 555 12 34 56" /></label>
+          {(modal.kind !== 'edit' || fields.callerPhone) && <label>ზარის ნომერი<input aria-label="ზარის ნომერი" disabled={locked} readOnly={modal.kind === 'edit' || !!inquiry || !!embedded?.callerLocked} type="tel" inputMode="tel" autoComplete="off" maxLength={30} value={fields.callerPhone} onChange={event => update('callerPhone', event.target.value)} onBlur={event => update('callerPhone', formatPhone(event.target.value))} placeholder="თუ სხვა ნომრიდან დაგირეკეს" /><small>{modal.kind === 'edit' || inquiry || embedded?.callerLocked ? 'საწყისი ზარის ნომერი შენარჩუნებულია.' : 'არასავალდებულო — შეავსეთ, თუ ზარის ნომერი განსხვავდება.'}</small></label>}
         </div>
         {isDetails && passengerProfile.status === 'loading' && <p className="admin-form-hint admin-profile-feedback" role="status"><Loader2 size={15} className="admin-spin" />შენახული მისამართების ძიება…</p>}
         {isDetails && passengerProfile.status === 'found' && <p className="admin-form-hint admin-profile-feedback" role="status"><CheckCircle2 size={16} /><span>მისამართები ნაპოვნია. აირჩიეთ შენახული ან შეიყვანეთ ახალი. თქვენ მიერ შეცვლილი ან გასუფთავებული ველები შენარჩუნდება.</span></p>}
-        {isDetails && passengerProfile.status === 'error' && <p className="admin-form-hint admin-profile-feedback admin-profile-error" role="status"><span>მისამართები ვერ ჩაიტვირთა. შეავსეთ ხელით.</span><button type="button" className="admin-text-button" disabled={busy} onClick={passengerProfile.retry}>ხელახლა ცდა</button></p>}
-        <fieldset className="admin-operator-group" role="group" aria-label="მიმართულება"><legend>მიმართულება</legend><div className="admin-operator-directions">{Object.entries(directions).map(([value, label]) => <button type="button" key={value} disabled={busy || modal.kind === 'edit'} aria-pressed={fields.direction === value} onClick={() => update('direction', value as Direction)}>{label}</button>)}</div></fieldset>
-        {fields.bookingType === 'passenger' && <fieldset className="admin-operator-group" role="group" aria-label="ადგილების რაოდენობა"><legend>ადგილების რაოდენობა</legend><div className="admin-operator-seats">{Array.from({ length: 8 }, (_, index) => index + 1).map(count => <button type="button" key={count} aria-label={`${count} ადგილი`} aria-pressed={fields.seats === count} disabled={busy} onClick={() => update('seats', count)}>{count}</button>)}</div></fieldset>}
+        {isDetails && passengerProfile.status === 'error' && <p className="admin-form-hint admin-profile-feedback admin-profile-error" role="status"><span>მისამართები ვერ ჩაიტვირთა. შეავსეთ ხელით.</span><button type="button" className="admin-text-button" disabled={locked} onClick={passengerProfile.retry}>ხელახლა ცდა</button></p>}
+        <fieldset className="admin-operator-group" role="group" aria-label="მიმართულება"><legend>მიმართულება</legend><div className="admin-operator-directions">{Object.entries(directions).map(([value, label]) => <button type="button" key={value} disabled={locked || modal.kind === 'edit'} aria-pressed={fields.direction === value} onClick={() => update('direction', value as Direction)}>{label}</button>)}</div></fieldset>
+        {fields.bookingType === 'passenger' && <fieldset className="admin-operator-group" role="group" aria-label="ადგილების რაოდენობა"><legend>ადგილების რაოდენობა</legend><div className="admin-operator-seats">{Array.from({ length: 8 }, (_, index) => index + 1).map(count => <button type="button" key={count} aria-label={`${count} ადგილი`} aria-pressed={fields.seats === count} disabled={locked} onClick={() => update('seats', count)}>{count}</button>)}</div></fieldset>}
         {fields.direction === 'gori-tbilisi' && <div className="admin-operator-fixed-stop"><MapPin size={16} /><span>თბილისში: <strong>{booking?.didubeName || config.didubeName}</strong>{(booking?.didubeAddress || config.didubeAddress) && ` · ${booking?.didubeAddress || config.didubeAddress}`}</span></div>}
       </>}
-      {!isDetails && !restoringWaiting && fields.bookingType === 'whole_car' && <BookingTypeFields lockType value={fields} direction={fields.direction} date={modal.kind === 'restore' && !needsSchedule ? booking!.assignedDate || booking!.requestedDate : fields.requestedDate} time={modal.kind === 'restore' && !needsSchedule ? booking!.assignedTime || booking!.requestedTime : fields.requestedTime} bookingId={booking?.id} disabled={busy} onChange={value => setFields(current => ({ ...current, ...value }))} />}
+      {!isDetails && !restoringWaiting && fields.bookingType === 'whole_car' && <BookingTypeFields lockType value={fields} direction={fields.direction} date={modal.kind === 'restore' && !needsSchedule ? booking!.assignedDate || booking!.requestedDate : fields.requestedDate} time={modal.kind === 'restore' && !needsSchedule ? booking!.assignedTime || booking!.requestedTime : fields.requestedTime} bookingId={booking?.id} disabled={locked} onChange={value => setFields(current => ({ ...current, ...value }))} />}
       {!isDetails && <div className="admin-order-summary"><ArrowRightLeft size={18} /><strong>{directions[fields.direction]}</strong><span>{fields.bookingType !== 'passenger' ? <BookingTypeSummary bookingType={fields.bookingType} assignedVehicleName={booking?.assignedVehicleName} /> : `${fields.seats} ადგილი`}</span></div>}
       {modal.kind === 'restore' && booking?.status === 'confirmed' && <div className="admin-operator-restore">
         {originalChecking ? <p role="status"><Loader2 size={16} className="admin-spin" />თავდაპირველი დრო მოწმდება…</p> : <>
-          <div className="admin-operator-restore-options" role="group" aria-label="აღდგენის დრო"><button type="button" aria-label="თავდაპირველი დროის შენარჩუნება" aria-pressed={restoreMode === 'original'} disabled={busy || !originalAvailable} onClick={() => { setRestoreMode('original'); setError(''); setFields(current => ({ ...current, assignedVehicleKey: booking?.assignedVehicleKey || '', expectedVehicleRevision: undefined })); }}>თავდაპირველი დრო</button><button type="button" aria-label="ახალი დროის არჩევა" aria-pressed={restoreMode === 'select'} disabled={busy} onClick={chooseRestoreTime}>ახალი დროის არჩევა</button></div>
+          <div className="admin-operator-restore-options" role="group" aria-label="აღდგენის დრო"><button type="button" aria-label="თავდაპირველი დროის შენარჩუნება" aria-pressed={restoreMode === 'original'} disabled={locked || !originalAvailable} onClick={() => { setRestoreMode('original'); setError(''); setFields(current => ({ ...current, assignedVehicleKey: booking?.assignedVehicleKey || '', expectedVehicleRevision: undefined })); }}>თავდაპირველი დრო</button><button type="button" aria-label="ახალი დროის არჩევა" aria-pressed={restoreMode === 'select'} disabled={locked} onClick={chooseRestoreTime}>ახალი დროის არჩევა</button></div>
           {restoreMode === 'original' && <p>ჯავშანი აღდგება უცვლელად: {dateLabel(booking.assignedDate || booking.requestedDate, { year: 'numeric' })} · {booking.assignedTime || booking.requestedTime}</p>}
           {!originalAvailable && !originalError && <p>თავდაპირველი დრო გამორთულია. აირჩიეთ ახალი მომავალი დრო.</p>}
-          {originalError && <div className="admin-error">{originalError}<button type="button" disabled={busy} onClick={() => setOriginalRevision(value => value + 1)}>თავდაპირველი დროის ხელახლა შემოწმება</button></div>}
+          {originalError && <div className="admin-error">{originalError}<button type="button" disabled={locked} onClick={() => setOriginalRevision(value => value + 1)}>თავდაპირველი დროის ხელახლა შემოწმება</button></div>}
         </>}
       </div>}
       {needsSchedule && <>
-        <fieldset className="admin-operator-group" role="group" aria-label="თარიღი"><legend>თარიღი</legend><div className="admin-operator-days">{days.map((day, index) => { const label = ['დღეს', 'ხვალ'][index]; return <button type="button" key={day} aria-label={`${label}, ${dateLabel(day)}`} aria-pressed={fields.requestedDate === day} disabled={busy} onClick={() => update('requestedDate', day)}><span>{label}</span><small>{dateLabel(day)}</small></button>; })}</div></fieldset>
-        <fieldset className="admin-operator-group" role="group" aria-label="დრო"><legend>დრო</legend>{scheduleLoading || !schedule ? <p className="admin-operator-time-status" role="status">{scheduleError ? 'განრიგი ვერ ჩაიტვირთა.' : 'დროები იტვირთება…'}</p> : activeTimes.length ? <div className="admin-operator-times">{activeTimes.map(slot => <button type="button" key={slot} aria-pressed={fields.requestedTime === slot} disabled={busy} onClick={() => update('requestedTime', slot)}>{slot}</button>)}</div> : <div className="admin-notice">არჩეულ დღეზე მომავალი მოქმედი დრო არ არის. აირჩიეთ სხვა დღე.</div>}</fieldset>
-        {scheduleError && <div className="admin-error" role="alert">{scheduleError}<button type="button" disabled={busy} onClick={() => setScheduleRevision(value => value + 1)}>განრიგის ხელახლა ჩატვირთვა</button></div>}
+        <fieldset className="admin-operator-group" role="group" aria-label="თარიღი"><legend>თარიღი</legend><div className="admin-operator-days">{days.map((day, index) => { const label = ['დღეს', 'ხვალ'][index]; return <button type="button" key={day} aria-label={`${label}, ${dateLabel(day)}`} aria-pressed={fields.requestedDate === day} disabled={locked} onClick={() => update('requestedDate', day)}><span>{label}</span><small>{dateLabel(day)}</small></button>; })}</div></fieldset>
+        <fieldset className="admin-operator-group" role="group" aria-label="დრო"><legend>დრო</legend>{scheduleLoading || !schedule ? <p className="admin-operator-time-status" role="status">{scheduleError ? 'განრიგი ვერ ჩაიტვირთა.' : 'დროები იტვირთება…'}</p> : activeTimes.length ? <div className="admin-operator-times">{activeTimes.map(slot => <button type="button" key={slot} aria-pressed={fields.requestedTime === slot} disabled={locked} onClick={() => update('requestedTime', slot)}>{slot}</button>)}</div> : <div className="admin-notice">არჩეულ დღეზე მომავალი მოქმედი დრო არ არის. აირჩიეთ სხვა დღე.</div>}</fieldset>
+        {scheduleError && <div className="admin-error" role="alert">{scheduleError}<button type="button" disabled={locked} onClick={() => setScheduleRevision(value => value + 1)}>განრიგის ხელახლა ჩატვირთვა</button></div>}
         {!scheduleLoading && schedule && activeTimes.length > 0 && !fields.requestedTime && <p className="admin-form-hint">აირჩიეთ მომავალი მოქმედი დრო. ჯავშანი ავტომატურად არ გადაიტანება.</p>}
         {modal.kind === 'confirm' && <p className="admin-form-hint"><CheckCircle2 size={16} />დამატება განაცხადს ავტომატურად დაადასტურებს.</p>}
       </>}
     </>}
     {modal.kind === 'restore' && booking?.status === 'waiting' && <p className="admin-form-hint"><Inbox size={16} />განაცხადი შემოსულების რიგში დაბრუნდება და დადასტურებას დაელოდება.</p>}
     {error && <div className="admin-error" role="alert">{error}</div>}
+  </>;
+  if (embedded) return <div className="admin-manual-passenger-fields">{body}</div>;
+  return <Dialog title={inquiry ? 'ზარის მიხედვით ჯავშნის შექმნა' : title} subtitle={booking ? `${booking.name?.trim() ? `${booking.name} · ` : ''}${formatPhone(booking.phone)} · #${String(booking.id).padStart(4, '0')}` : inquiry ? 'შეავსეთ მგზავრობის მონაცემები. ზარი დადასტურებულ ჯავშნად გადაიქცევა.' : 'ოპერატორის მიერ შექმნილი ჯავშანი მაშინვე დადასტურდება.'} className={modal.kind === 'delete' ? undefined : 'admin-operator-booking-dialog'} busy={locked} onClose={() => { if (!busyRef.current) onClose(); }}><form onSubmit={submit} className={`admin-booking-form${modal.kind === 'delete' ? '' : ' admin-operator-booking-form'}`}>
+    {body}
     <footer className="admin-dialog-footer"><button type="button" className="admin-secondary" disabled={busy} onClick={onClose}>გაუქმება</button><button className={modal.kind === 'delete' ? 'admin-danger-button' : 'admin-primary'} disabled={busy || !detailsValid || !vehicleValid || !restoreReady || (needsSchedule && !scheduleValid)}>{busy && <Loader2 size={17} className="admin-spin" />}{actionLabel}</button></footer>
   </form></Dialog>;
 }

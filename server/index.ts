@@ -154,8 +154,9 @@ export async function createApp(options: Options = {}) {
   });
   app.use('/api', async (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   // Several independent passengers can include long Georgian addresses in one
-  // request. Keep the larger bounded body allowance on this staff-only route.
+  // request. Keep the larger bounded body allowance on the staff group routes.
   app.post('/api/admin/calls/:id/convert-group', express.json({ limit: '256kb' }));
+  app.post('/api/admin/bookings/group', express.json({ limit: '256kb' }));
   app.use(express.json({ limit: '16kb' }));
   app.use('/api', async (req, _res, next) => {
     if (req.body === undefined) req.body = {};
@@ -368,6 +369,14 @@ export async function createApp(options: Options = {}) {
     if (input.wholeCarChoice) await protectWholeCars(day);
     if (employee) await saveProfile(created);
     return booking(created);
+  }
+  function groupBookingInputs(body: unknown): Row[] {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) reject(400, 'მოთხოვნის მონაცემები არასწორია.', 'VALIDATION');
+    const inputs: unknown = (body as Row).bookings;
+    if (!Array.isArray(inputs) || !inputs.length || inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input))) {
+      reject(400, 'დაამატეთ მგზავრების ჯავშნები.', 'VALIDATION');
+    }
+    return inputs;
   }
   async function idempotent(req: ContextRequest, res: Response, scope: string, operation: () => Promise<unknown>, status = 201) {
     const key = req.get('Idempotency-Key');
@@ -707,11 +716,7 @@ export async function createApp(options: Options = {}) {
       const inquiry = await getCall(callId);
       if (inquiry.booking_id !== null) reject(409, 'ამ ზარის ჯავშნები უკვე შექმნილია.', 'CALL_CONVERTED');
       if (inquiry.deleted_at) reject(409, 'ზარი წაშლილია. ჯერ აღადგინეთ.', 'DELETED');
-      if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) reject(400, 'მოთხოვნის მონაცემები არასწორია.', 'VALIDATION');
-      const inputs: unknown = req.body.bookings;
-      if (!Array.isArray(inputs) || !inputs.length || inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input))) {
-        reject(400, 'დაამატეთ მგზავრების ჯავშნები.', 'VALIDATION');
-      }
+      const inputs = groupBookingInputs(req.body);
       const created: Booking[] = [];
       for (const input of inputs) {
         const child = await createBooking({ ...input, callerPhone: inquiry.phone }, req.employee, 'android');
@@ -766,6 +771,14 @@ export async function createApp(options: Options = {}) {
   });
   app.post('/api/admin/bookings', async (req: ContextRequest, res) => {
     (await idempotent(req, res, `employee-booking:${req.employee!.id}`, async () => (await createBooking(req.body, req.employee))));
+  });
+  app.post('/api/admin/bookings/group', async (req: ContextRequest, res) => {
+    if (!req.get('Idempotency-Key')) reject(400, 'მოთხოვნის იდენტიფიკატორი აუცილებელია.', 'VALIDATION');
+    await idempotent(req, res, `employee-booking-group:${req.employee!.id}`, async () => {
+      const created: Booking[] = [];
+      for (const input of groupBookingInputs(req.body)) created.push(await createBooking(input, req.employee));
+      return { bookings: created };
+    });
   });
   app.patch('/api/admin/bookings/:id', async (req: ContextRequest, res) => {
     const result = await transaction(async () => {

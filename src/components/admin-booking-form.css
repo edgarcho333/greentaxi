@@ -48,3 +48,42 @@
   .admin-operator-booking-form .admin-dialog-footer { margin-inline: -16px; padding: 11px 16px; gap: 7px; }
   .admin-operator-booking-form .admin-dialog-footer button { font-size: 12px; padding: 9px 10px; }
 }
+
+.admin-manual-group-dialog.admin-dialog .admin-manual-passenger-list { display: grid; gap: 20px; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-passenger-card { min-width: 0; padding: 18px; border: 2px solid #aacbb5; border-radius: 13px; background: #fbfdfb; scroll-margin-top: 14px; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-passenger-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; padding-bottom: 13px; border-bottom: 1px solid #c8ddcf; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-passenger-card > header h3 { margin: 0; color: #17452b; font-size: 23px; line-height: 1.6; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-remove-passenger { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-height: 54px; min-width: 54px; padding: 10px 13px; border: 1px solid #c4938c; border-radius: 9px; color: #8d332a; background: #fff2ef; font-size: 17px; font-weight: 600; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-remove-passenger:hover:not(:disabled) { background: #ffe1db; border-color: #a14e43; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-passenger-fields { min-width: 0; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-passenger-fields :is(input, select, textarea) { min-height: 58px; font-size: 18px; padding: 11px 12px; color: #254d34; border-color: #acc8b5; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-passenger-fields textarea { height: 64px; min-height: 64px; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-passenger-fields label { font-size: 16px; color: #315c40; }
+.admin-manual-group-dialog.admin-dialog .admin-operator-group legend { color: #315c40; font-size: 16px; margin-bottom: 8px; }
+.admin-manual-group-dialog.admin-dialog .admin-operator-group button, .admin-manual-group-dialog.admin-dialog .operator-booking-options-group button { min-height: 58px; padding: 10px 11px; font-size: 18px; }
+.admin-manual-group-dialog.admin-dialog .operator-booking-options-group legend { color: #315c40; font-size: 16px; }
+.admin-manual-group-dialog.admin-dialog .admin-operator-days button small { color: #4c7459; font-size: 14px; }
+.admin-manual-group-dialog.admin-dialog .admin-operator-days button[aria-pressed=true] small { color: #fff; }
+.admin-manual-group-dialog.admin-dialog .admin-operator-fixed-stop { font-size: 15px; padding: 11px; }
+.admin-manual-group-dialog.admin-dialog .admin-profile-feedback, .admin-manual-group-dialog.admin-dialog .admin-form-hint { font-size: 14px; color: #46674f; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-add-passenger { display: inline-flex; align-items: center; justify-content: center; gap: 11px; width: 100%; min-height: 62px; padding: 13px 17px; margin-top: 20px; border: 2px solid #388759; border-radius: 11px; color: #175633; background: #e9f7ee; font-size: 20px; font-weight: 600; line-height: 1.6; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-add-passenger:hover:not(:disabled) { background: #d6efdf; }
+.admin-manual-group-dialog.admin-dialog .admin-manual-group-pending { margin: 18px 0; padding: 14px; color: #73501e; border: 1px solid #c9a567; border-radius: 10px; background: #fff6e5; font-size: 16px; line-height: 1.8; }
+.admin-manual-group-dialog.admin-dialog .admin-error { margin: 16px 0; font-size: 16px; }
+.admin-manual-group-dialog.admin-dialog .admin-dialog-footer button { min-height: 58px; font-size: 18px; }
+.admin-manual-group-dialog.admin-dialog :is(button, input, select, textarea):focus-visible { outline: 3px solid #1645a0; outline-offset: 3px; }
+@media (max-width: 600px) {
+  .admin-manual-group-dialog.admin-dialog .admin-manual-passenger-card { padding: 13px 10px; }
+  .admin-manual-group-dialog.admin-dialog .admin-manual-passenger-card > header { gap: 9px; }
+  .admin-manual-group-dialog.admin-dialog .admin-manual-passenger-card > header h3 { font-size: 21px; }
+  .admin-manual-group-dialog.admin-dialog .admin-manual-remove-passenger { padding: 9px; font-size: 16px; }
+  .admin-manual-group-dialog.admin-dialog .admin-manual-passenger-fields :is(input, select, textarea) { padding: 10px 9px; }
+  .admin-manual-group-dialog.admin-dialog .admin-operator-times { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+  .admin-manual-group-dialog.admin-dialog .admin-operator-seats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .admin-manual-group-dialog.admin-dialog .operator-booking-options-services button { flex-direction: column; gap: 7px; min-height: 92px; padding: 10px 5px; }
+  .admin-manual-group-dialog.admin-dialog .operator-booking-options-services { gap: 8px; }
+  .admin-manual-group-dialog.admin-dialog .admin-operator-group button, .admin-manual-group-dialog.admin-dialog .operator-booking-options-group button { padding: 10px 5px; }
+  .admin-manual-group-dialog.admin-dialog .admin-dialog-footer { align-items: stretch; flex-wrap: wrap; }
+  .admin-manual-group-dialog.admin-dialog .admin-dialog-footer .admin-primary { flex: 1 1 180px; }
+  .admin-manual-group-dialog.admin-dialog .admin-dialog-footer .admin-secondary { flex: 1 1 90px; }
+}
