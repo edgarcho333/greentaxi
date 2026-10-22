@@ -1717,6 +1717,7 @@ test('printing all orders for a day includes every confirmed row beyond paginati
   expect(dialogLayout.bottom).toBeLessThanOrEqual(dialogLayout.viewportHeight);
   expect(dialogLayout.scrollHeight, 'Long reports should scroll inside their preview without scrolling the whole dialog').toBeLessThanOrEqual(dialogLayout.clientHeight + 2);
   expect(dialogLayout.scrollWidth, 'The report should not create a horizontal scrollbar on the whole dialog').toBeLessThanOrEqual(dialogLayout.clientWidth + 2);
+  await page.screenshot({ path: '/tmp/greentaxi-booking-report-preview.png' });
   await print.click();
   await expect.poll(async () => (await printedDocuments(page)).length).toBe(1);
   const [document] = await printedDocuments(page);
@@ -1769,14 +1770,17 @@ test('printing all orders for a day includes every confirmed row beyond paginati
         pageOverflow: element.ownerDocument.documentElement.scrollWidth > innerWidth + 2,
       };
     });
-    expect(Math.min(...printLayout.bodyFontSizes), 'Printed addresses and row values must be at least 18 pt (24 CSS px)').toBeGreaterThanOrEqual(24);
+    expect(Math.min(...printLayout.bodyFontSizes), 'Printed row values must remain readable at 13 pt or larger').toBeGreaterThanOrEqual(13 * 96 / 72 - 0.1);
+    expect(Math.max(...printLayout.bodyFontSizes), 'Printed rows must stay compact instead of returning to oversized text').toBeLessThanOrEqual(14 * 96 / 72 + 0.1);
     expect(printLayout.numericStyles).toHaveLength(selected.length * 4);
     for (const numeric of printLayout.numericStyles) {
-      expect(numeric.fontSize, 'Phone, time, seat and order numbers must remain at least 20 pt').toBeGreaterThanOrEqual(20 * 96 / 72 - 0.1);
+      expect(numeric.fontSize, 'Phone, time, seat and order numbers must remain readable at 14 pt').toBeGreaterThanOrEqual(14 * 96 / 72 - 0.1);
+      expect(numeric.fontSize, 'Printed numbers must fit the compact report').toBeLessThanOrEqual(14 * 96 / 72 + 0.1);
       expect(numeric.fontWeight, 'Printed numbers must remain bold').toBeGreaterThanOrEqual(600);
     }
-    expect(Math.min(...printLayout.headerFontSizes), 'Printed column headings must be at least 14 pt').toBeGreaterThanOrEqual(14 * 96 / 72 - 0.1);
-    expect(printLayout.horizontalOverflow, 'Large text must wrap within its cell rather than overlap adjacent columns').toEqual([]);
+    expect(Math.min(...printLayout.headerFontSizes), 'Printed column headings must remain readable at 10 pt').toBeGreaterThanOrEqual(10 * 96 / 72 - 0.1);
+    expect(Math.max(...printLayout.headerFontSizes), 'Column headings must not dominate the compact report').toBeLessThanOrEqual(10 * 96 / 72 + 0.1);
+    expect(printLayout.horizontalOverflow, 'Printed text must wrap within its cell rather than overlap adjacent columns').toEqual([]);
     expect(printLayout.verticalClipping, 'Wrapped addresses must retain their full height').toEqual([]);
     expect(printLayout.pageOverflow, 'The portrait report must fit the page width').toBe(false);
 
@@ -1785,7 +1789,7 @@ test('printing all orders for a day includes every confirmed row beyond paginati
     const pageBoxes = Array.from(pdfBuffer.toString('latin1').matchAll(/\/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/g), match => ({
       width: Number(match[3]) - Number(match[1]), height: Number(match[4]) - Number(match[2]),
     }));
-    expect(pageBoxes.length, 'Eighteen large-print orders must flow onto multiple portrait pages').toBeGreaterThan(1);
+    expect(pageBoxes.length, 'The PDF must contain the report on one or more portrait pages').toBeGreaterThanOrEqual(1);
     for (const [index, box] of pageBoxes.entries()) {
       expect(box.width, `PDF page ${index + 1} must be portrait A4`).toBeLessThan(box.height);
       expect(Math.abs(box.width - 595.28)).toBeLessThan(2);
