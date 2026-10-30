@@ -4,14 +4,14 @@ import type { DriverBooking, DriverDashboard, DriverDayStatus, DriverIdentity, D
 import { DRIVER_DIRECTION } from '../shared/driver-rotation.js';
 import { normalizePhone } from '../shared/phone.js';
 import type { Database } from './database.js';
-import { DriverAccountError, driverPasswordMatches, normalizeDriverLogin } from './driver-accounts.js';
+import { DriverAccountError, normalizeDriverPhone } from './driver-accounts.js';
 
 const COOKIE = 'greentaxi_driver_session';
 const COOKIE_PATH = '/api/driver';
 const SESSION_LIFETIME = 7 * 24 * 60 * 60 * 1000;
 type DriverRequest = Request & { portalDriver?: DriverIdentity };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
-const identity = (row: Record<string, any>): DriverIdentity => ({ id: row.id, login: row.login, name: row.name, capacity: row.capacity });
+const identity = (row: Record<string, any>): DriverIdentity => ({ id: row.id, login: row.login, phone: row.phone, name: row.name, capacity: row.capacity });
 
 export function mountDriverPortal(app: Express, dependencies: {
   database: Database; production: boolean; now: () => Date;
@@ -45,10 +45,10 @@ export function mountDriverPortal(app: Express, dependencies: {
   async function session(req: Request): Promise<DriverIdentity | null> {
     const value = token(req);
     if (!value) return null;
-    const row = await database.prepare(`SELECT driver.id,driver.name,driver.capacity,account.login FROM driver_sessions session
+    const row = await database.prepare(`SELECT driver.id,driver.name,driver.capacity,account.login,account.phone FROM driver_sessions session
       JOIN driver_accounts account ON account.driver_id=session.driver_id
       JOIN drivers driver ON driver.id=account.driver_id
-      WHERE session.token_hash=? AND session.expires_at>? AND account.active=1`).get(digest(value), now().getTime());
+      WHERE session.token_hash=? AND session.expires_at>? AND account.active=1 AND account.phone IS NOT NULL`).get(digest(value), now().getTime());
     return row ? identity(row) : null;
   }
   async function days(driverId: number, window: ReturnType<typeof dateWindow>): Promise<DriverDayStatus[]> {
@@ -68,19 +68,15 @@ export function mountDriverPortal(app: Express, dependencies: {
     res.json(result);
   });
   app.post('/api/driver/auth/login', dependencies.rateLimit('driver-login', 10, 15 * 60 * 1000), async (req, res) => {
-    onlyFields(req.body, ['login', 'password']);
-    let login: string;
-    try { login = normalizeDriverLogin(req.body.login); }
+    onlyFields(req.body, ['phone']);
+    let phone: string;
+    try { phone = normalizeDriverPhone(req.body.phone)!; }
     catch (error) { if (error instanceof DriverAccountError) return reject(error.status, error.message, error.code); throw error; }
-    if (typeof req.body.password !== 'string' || req.body.password.length < 1 || req.body.password.length > 512) reject(400, 'მიუთითეთ პაროლი.', 'VALIDATION');
-    const row = await database.prepare('SELECT driver_id,password_hash,active FROM driver_accounts WHERE login=?').get(login);
-    const valid = await driverPasswordMatches(req.body.password, row?.password_hash);
-    if (!row || row.active !== 1 || !valid) reject(401, 'მომხმარებლის სახელი ან პაროლი არასწორია.', 'INVALID_LOGIN');
     const value = randomBytes(32).toString('hex');
     const driver = await database.transaction(async () => {
-      const current = await database.prepare(`SELECT driver.id,driver.name,driver.capacity,account.login,account.password_hash FROM driver_accounts account
-        JOIN drivers driver ON driver.id=account.driver_id WHERE account.driver_id=? AND account.active=1`).get(row.driver_id);
-      if (!current || current.password_hash !== row.password_hash) reject(401, 'მომხმარებლის სახელი ან პაროლი არასწორია.', 'INVALID_LOGIN');
+      const current = await database.prepare(`SELECT driver.id,driver.name,driver.capacity,account.login,account.phone FROM driver_accounts account
+        JOIN drivers driver ON driver.id=account.driver_id WHERE account.phone=? AND account.active=1`).get(phone);
+      if (!current) reject(401, 'ნომერი ვერ მოიძებნა. დაუკავშირდით ადმინისტრატორს.', 'INVALID_LOGIN');
       await database.prepare('DELETE FROM driver_sessions WHERE expires_at<=?').run(now().getTime());
       await database.prepare('INSERT INTO driver_sessions(token_hash,driver_id,expires_at) VALUES (?,?,?)').run(digest(value), current.id, now().getTime() + SESSION_LIFETIME);
       return identity(current);

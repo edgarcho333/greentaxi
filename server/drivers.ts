@@ -12,5 +12,8 @@ export async function readDriverSchedule(database: Database, date: string, times
     assignmentMode: row.assignment_mode,
     manualTime: row.manual_time,
   }));
-  return buildDriverSchedule(date, times, drivers, overrides);
+  const contacts = await database.prepare('SELECT driver_id,phone FROM driver_accounts').all();
+  const phones = new Map(contacts.map(contact => [contact.driver_id as number, contact.phone as string | null]));
+  const schedule = buildDriverSchedule(date, times, drivers, overrides);
+  return { ...schedule, drivers: schedule.drivers.map(driver => ({ ...driver, phone: phones.get(driver.id) ?? null })) };
 }

@@ -11,6 +11,7 @@ import { DRIVER_DIRECTION } from '../shared/driver-rotation.js';
 import { readTripCapacity } from './trip-capacity.js';
 import { readWholeCarOptions } from './whole-car-options.js';
 import { mountDriverPortal } from './driver-portal.js';
+import { DriverAccountError, setDriverPhone } from './driver-accounts.js';
 import { callBookingRelated, readActiveCallBookings, readPreferredBookingPhones } from './call-bookings.js';
 
 const scrypt = promisify(scryptCallback);
@@ -957,6 +958,15 @@ export async function createApp(options: Options = {}) {
       return readTripCapacity(db, day, slotTime, effective);
     });
     res.status(action === 'add' ? 201 : 200).json(result);
+  });
+  app.patch('/api/admin/drivers/:id/phone', async (req: ContextRequest, res) => {
+    if (!Object.hasOwn(req.body, 'phone') || Object.keys(req.body).some(key => key !== 'phone')) reject(400, 'მოთხოვნის მონაცემები არასწორია.', 'VALIDATION');
+    try {
+      res.json(await setDriverPhone(db, { driverId: numberId(req.params.id), phone: req.body.phone, employeeId: req.employee!.id, now }));
+    } catch (error) {
+      if (error instanceof DriverAccountError) reject(error.status, error.message, error.code);
+      throw error;
+    }
   });
   app.patch('/api/admin/drivers/:id/day', async (req: ContextRequest, res) => {
     const d = driverDirection(req.body.direction);

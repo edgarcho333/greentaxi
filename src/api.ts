@@ -9,7 +9,7 @@ export type PublicConfig = { stops: Stop[]; didubeName: string; didubeAddress: s
 export type Slot = { time: string; active: boolean; bookingCount: number; seatCount: number };
 export type SeatPreference = 'front' | 'back' | 'middle';
 export type BookingType = 'passenger' | 'parcel' | 'whole_car';
-export type DriverIdentity = { id: number; name: string; login: string; capacity: number };
+export type DriverIdentity = { id: number; name: string; login: string; phone: string | null; capacity: number };
 export type DriverDayStatus = { date: string; working: boolean; assignedTime: string | null; assignmentActive: boolean };
 export type DriverBooking = {
   id: number; name: string; phone: string; direction: Direction; seats: number; bookingType: BookingType;
@@ -33,7 +33,7 @@ export type Booking = {
 };
 export type Schedule = { direction: Direction; date: string; baseTimes: string[]; overrideTimes: string[] | null; slots: Slot[] };
 export type DriverDay = {
-  id: number; name: string; capacity: number; order: number; queuePosition: number;
+  id: number; name: string; phone?: string | null; capacity: number; order: number; queuePosition: number;
   declined: boolean; assignmentMode: 'auto' | 'manual';
   automaticTime: string | null; assignedTime: string | null; assignmentActive: boolean;
 };

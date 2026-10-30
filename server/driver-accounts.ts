@@ -2,6 +2,7 @@ import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:cry
 import { promisify } from 'node:util';
 import type { DriverIdentity } from '../src/api.js';
 import type { Database } from './database.js';
+import { normalizePhone } from '../shared/phone.js';
 
 const scrypt = promisify(scryptCallback);
 export class DriverAccountError extends Error {
@@ -10,6 +11,13 @@ export class DriverAccountError extends Error {
 export function normalizeDriverLogin(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-z0-9_.-]{3,64}$/i.test(value.trim())) throw new DriverAccountError(400, 'VALIDATION', 'მიუთითეთ სწორი მომხმარებლის სახელი.');
   return value.trim().toLowerCase();
+}
+export function normalizeDriverPhone(value: unknown, allowClear = false): string | null {
+  if (allowClear && (value === null || typeof value === 'string' && !value.trim())) return null;
+  if (typeof value !== 'string' || value.length > 40) throw new DriverAccountError(400, 'VALIDATION', 'მიუთითეთ საქართველოს მობილურის ნომერი.');
+  const phone = normalizePhone(value);
+  if (!phone || !/^5\d{8}$/.test(phone)) throw new DriverAccountError(400, 'VALIDATION', 'მიუთითეთ საქართველოს მობილურის ნომერი.');
+  return phone;
 }
 export async function driverPasswordMatches(value: string, hash?: string): Promise<boolean> {
   // Missing accounts use the same expensive derivation as existing accounts.
@@ -43,6 +51,38 @@ export async function createDriverAccount(database: Database, input: {
       .run(driver.id, login, hash, timestamp, timestamp);
     await database.prepare('INSERT INTO audit_log(user_id,booking_id,action,details,created_at) VALUES (NULL,NULL,?,?,?)')
       .run('driver.account.create', JSON.stringify({ driverId: driver.id, login }), timestamp);
-    return { id: driver.id, name: driver.name, capacity: driver.capacity, login };
+    return { id: driver.id, name: driver.name, capacity: driver.capacity, login, phone: null };
+  });
+}
+
+/** Staff edit one existing driver's phone without altering legacy credentials. */
+export async function setDriverPhone(database: Database, input: {
+  driverId: number; phone: unknown; employeeId?: number; now?: () => Date;
+}): Promise<{ driverId: number; phone: string | null }> {
+  if (!Number.isSafeInteger(input.driverId) || input.driverId < 1) throw new DriverAccountError(400, 'VALIDATION', 'აირჩიეთ მძღოლი.');
+  const phone = normalizeDriverPhone(input.phone, true);
+  return database.transaction(async () => {
+    const driver = await database.prepare('SELECT id FROM drivers WHERE id=?').get(input.driverId);
+    if (!driver) throw new DriverAccountError(404, 'NOT_FOUND', 'მძღოლი ვერ მოიძებნა.');
+    const previous = await database.prepare('SELECT phone FROM driver_accounts WHERE driver_id=?').get(driver.id);
+    if (phone !== null && await database.prepare('SELECT driver_id FROM driver_accounts WHERE phone=? AND driver_id<>?').get(phone, driver.id)) {
+      throw new DriverAccountError(409, 'PHONE_TAKEN', 'ეს ნომერი უკვე სხვა მძღოლს ეკუთვნის.');
+    }
+    if ((!previous && phone === null) || (phone !== null && previous?.phone === phone)) return { driverId: driver.id, phone };
+    const timestamp = (input.now?.() ?? new Date()).toISOString();
+    if (previous) {
+      await database.prepare('UPDATE driver_accounts SET phone=?,updated_at=? WHERE driver_id=?').run(phone, timestamp, driver.id);
+    } else {
+      // Compatibility columns remain populated, but the login API never accepts
+      // these internal random credentials. Staff only configures the phone.
+      const login = `phone_driver_${driver.id}_${randomBytes(12).toString('hex')}`;
+      const hash = await hashDriverPassword(randomBytes(32).toString('hex'));
+      await database.prepare('INSERT INTO driver_accounts(driver_id,login,password_hash,phone,active,created_at,updated_at) VALUES (?,?,?,?,1,?,?)')
+        .run(driver.id, login, hash, phone, timestamp, timestamp);
+    }
+    await database.prepare('DELETE FROM driver_sessions WHERE driver_id=?').run(driver.id);
+    await database.prepare('INSERT INTO audit_log(user_id,booking_id,action,details,created_at) VALUES (?,NULL,?,?,?)')
+      .run(input.employeeId ?? null, 'driver.phone', JSON.stringify({ driverId: driver.id, phoneConfigured: phone !== null }), timestamp);
+    return { driverId: driver.id, phone };
   });
 }

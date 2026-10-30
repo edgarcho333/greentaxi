@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,7 @@ import { createApp } from '../server/index.js';
 const TODAY = '2030-01-01';
 const TOMORROW = '2030-01-02';
 const DRIVER_PASSWORD = '2468';
+const DRIVER_PHONES = ['599920001', '599920002'] as const;
 const EMPLOYEE_PASSWORD = 'portal-employee-test-password';
 const cookieValue = (header: string) => header.split(';')[0];
 
@@ -59,11 +60,15 @@ async function fixture(production = false) {
   }
   const employee = await request('/auth/setup', 'POST', { login: 'operator', name: 'Portal test employee', password: EMPLOYEE_PASSWORD, setupToken: 'portal-fixture-setup-token' });
   assert.equal(employee.status, 201); employeeCookie = cookieValue(employee.headers.get('set-cookie')!);
+  for (const [index, phone] of DRIVER_PHONES.entries()) {
+    const configured = await request(`/admin/drivers/${index + 1}/phone`, 'PATCH', { phone }, 'employee');
+    assert.equal(configured.status, 200);
+  }
   return {
     ...service, request, base, employeeCookie,
     setNow(value: string) { currentTime = new Date(value); },
     async login(index = 1) {
-      const result = await request('/driver/auth/login', 'POST', { login: index === 1 ? 'operator' : 'driver_two', password: DRIVER_PASSWORD });
+      const result = await request('/driver/auth/login', 'POST', { phone: DRIVER_PHONES[index - 1] });
       assert.equal(result.status, 200);
       driverCookie = cookieValue(result.headers.get('set-cookie')!);
       return { ...result, cookie: driverCookie };
@@ -100,13 +105,13 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
       await db.prepare('INSERT INTO users(login,name,password_hash,created_at) VALUES (?,?,?,?)').run('preserved', 'Existing employee', 'existing-private-hash', '2030-01-01T00:00:00Z');
       await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES (?,?,?)').run('existing-private-session', 1, 1893456000000);
       await db.prepare("INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (1,?,1,'manual',?,?)").run(TOMORROW, '09:30', '2030-01-01T00:00:00Z');
-      await db.transaction(async () => { await db.exec('DROP TABLE driver_sessions; DROP TABLE driver_accounts;'); await db.prepare('DELETE FROM schema_versions WHERE version=?').run(14); });
+      await db.transaction(async () => { await db.exec('DROP TABLE driver_sessions; DROP TABLE driver_accounts;'); await db.prepare('DELETE FROM schema_versions WHERE version=?').run(14); await db.prepare('DELETE FROM schema_versions WHERE version=?').run(15); });
       const snapshots = new Map<string, string>();
       for (const table of ['users', 'sessions', 'settings', 'stops', 'drivers', 'driver_day_overrides', 'base_schedule', 'date_schedule', 'bookings', 'audit_log', 'schema_versions']) snapshots.set(table, JSON.stringify(await db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()));
       await db.close();
       for (let reopen = 0; reopen < 2; reopen++) {
         db = await stored.open();
-        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 14);
+        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 15);
         for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await db.prepare(`SELECT * FROM ${table}${table === 'schema_versions' ? ' WHERE version<14' : ''} ORDER BY 1`).all()), snapshot);
         assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM driver_accounts').get())?.count, 0);
         assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM driver_sessions').get())?.count, 0);
@@ -137,7 +142,7 @@ test('explicit driver account provisioning hashes four-digit passwords, preserve
     ] as const) await assert.rejects(createDriverAccount(f.db, input), error => error instanceof DriverAccountError && error.code === code);
     assert.deepEqual(await f.db.prepare('SELECT * FROM driver_accounts WHERE driver_id=?').get(1), first);
     const added = await createDriverAccount(f.db, { driverId: 3, login: 'New_Driver', password: '1357', expectedName: 'გოჩა' });
-    assert.deepEqual(added, { id: 3, name: 'გოჩა', login: 'new_driver', capacity: 8 });
+    assert.deepEqual(added, { id: 3, name: 'გოჩა', login: 'new_driver', capacity: 8, phone: null });
     assert.equal(JSON.stringify(await f.db.prepare('SELECT * FROM users ORDER BY id').all()), employees);
     assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM driver_accounts').get())?.count, 3);
     const audit = await f.db.prepare("SELECT user_id,details FROM audit_log WHERE action='driver.account.create' ORDER BY id DESC").get();
@@ -151,7 +156,7 @@ test('driver authentication uses an opaque scoped cookie and a separate credenti
     assert.deepEqual(guest.data, { driver: null, today: TODAY, tomorrow: TOMORROW });
     assert.equal(guest.headers.get('cache-control'), 'no-store');
     const login = await f.login();
-    assert.deepEqual(login.data, { driver: { id: 1, login: 'operator', name: 'რეზო', capacity: 7 }, today: TODAY, tomorrow: TOMORROW });
+    assert.deepEqual(login.data, { driver: { id: 1, login: 'operator', name: 'რეზო', capacity: 7, phone: DRIVER_PHONES[0] }, today: TODAY, tomorrow: TOMORROW });
     const header = login.headers.get('set-cookie')!;
     assert.match(header, /HttpOnly/); assert.match(header, /SameSite=Lax/); assert.match(header, /Path=\/api\/driver/);
     const raw = login.cookie.split('=')[1]; assert.match(raw, /^[a-f0-9]{64}$/);
@@ -159,8 +164,11 @@ test('driver authentication uses an opaque scoped cookie and a separate credenti
     assert.equal(session?.token_hash, createHash('sha256').update(raw).digest('hex')); assert.notEqual(session?.token_hash, raw);
     assert.equal(session?.driver_id, 1);
     assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM sessions').get())?.count, 1);
-    for (const credentials of [{ login: 'operator', password: 'wrong' }, { login: 'unknown', password: DRIVER_PASSWORD }, { login: 'operator', password: EMPLOYEE_PASSWORD }]) {
-      const result = await f.request('/driver/auth/login', 'POST', credentials); assert.equal(result.status, 401); assert.equal(result.data.code, 'INVALID_LOGIN');
+    for (const phone of ['599777771', '+995 599 77 77 72']) {
+      const result = await f.request('/driver/auth/login', 'POST', { phone }); assert.equal(result.status, 401); assert.equal(result.data.code, 'INVALID_LOGIN');
+    }
+    for (const credentials of [{ login: 'operator', password: DRIVER_PASSWORD }, { phone: DRIVER_PHONES[0], password: DRIVER_PASSWORD }]) {
+      assert.equal((await f.request('/driver/auth/login', 'POST', credentials)).status, 400, 'Legacy credentials must never authorize driver login');
     }
     assert.equal((await f.request('/auth/login', 'POST', { login: 'operator', password: DRIVER_PASSWORD })).status, 401);
     for (const value of ['malformed', '0'.repeat(64), f.employeeCookie.split('=')[1]]) {
@@ -290,7 +298,7 @@ test('driver logout, expiration and account deactivation revoke driver access wh
     await f.login(); await f.db.prepare('UPDATE driver_accounts SET active=0 WHERE driver_id=?').run(1);
     assert.equal((await successful(f, '/driver/auth/session')).driver, null);
     assert.equal((await f.request('/driver/dashboard', 'GET', undefined, 'driver')).status, 401);
-    assert.equal((await f.request('/driver/auth/login', 'POST', { login: 'operator', password: DRIVER_PASSWORD })).status, 401);
+    assert.equal((await f.request('/driver/auth/login', 'POST', { phone: DRIVER_PHONES[0] })).status, 401);
     assert.equal((await f.request('/admin/settings', 'GET', undefined, 'employee')).status, 200);
   });
 });
@@ -314,7 +322,7 @@ test('production driver cookies are secure and cross-origin writes cannot authen
   await isolated(async f => {
     const login = await f.login(); assert.match(login.headers.get('set-cookie')!, /Secure/);
     const headers = { Origin: 'https://unrelated.example', 'X-Forwarded-Proto': 'https' };
-    assert.equal((await f.request('/driver/auth/login', 'POST', { login: 'operator', password: DRIVER_PASSWORD }, 'none', headers)).status, 403);
+    assert.equal((await f.request('/driver/auth/login', 'POST', { phone: DRIVER_PHONES[0] }, 'none', headers)).status, 403);
     assert.equal((await f.request('/driver/attendance', 'PATCH', { date: TODAY, working: false }, 'driver', headers)).status, 403);
     assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM driver_day_overrides').get())?.count, 0);
   }, true);
@@ -322,9 +330,186 @@ test('production driver cookies are secure and cross-origin writes cannot authen
 
 test('driver login attempts use their own persistent rate limit without blocking staff login', async () => {
   await isolated(async f => {
-    for (let attempt = 0; attempt < 10; attempt++) assert.equal((await f.request('/driver/auth/login', 'POST', { login: 'operator', password: 'wrong' })).status, 401);
-    const limited = await f.request('/driver/auth/login', 'POST', { login: 'operator', password: DRIVER_PASSWORD });
+    for (let attempt = 0; attempt < 10; attempt++) assert.equal((await f.request('/driver/auth/login', 'POST', { phone: '599777771' })).status, 401);
+    const limited = await f.request('/driver/auth/login', 'POST', { phone: DRIVER_PHONES[0] });
     assert.equal(limited.status, 429); assert.ok(limited.headers.has('retry-after'));
     assert.equal((await f.request('/auth/login', 'POST', { login: 'operator', password: EMPLOYEE_PASSWORD })).status, 200);
+  });
+});
+
+for (const dialect of ['sqlite', 'postgres'] as const) {
+  test(`${dialect} phone-login migration preserves legacy credentials, sessions and operational rows and runs once without configuring any phone`, { skip: dialect === 'postgres' && !process.env.TEST_DATABASE_URL }, async () => {
+    const stored = await storage(dialect === 'postgres'); let db = await stored.open();
+    try {
+      const previousName = `014_driver_portal.${dialect}.sql`;
+      const previousSql = readFileSync(new URL(`../server/migrations/${previousName}`, import.meta.url), 'utf8');
+      await db.transaction(async () => {
+        await db.exec('DROP TABLE driver_sessions; DROP TABLE driver_accounts;');
+        await db.prepare('DELETE FROM schema_versions WHERE version>=?').run(14);
+        await db.exec(previousSql);
+        await db.prepare('INSERT INTO schema_versions(version,name,checksum,applied_at) VALUES (?,?,?,?)')
+          .run(14, previousName, createHash('sha256').update(previousSql).digest('hex'), '2030-01-01T00:00:00Z');
+      });
+      await createDriverAccount(db, { driverId: 1, login: 'legacy_driver_one', password: DRIVER_PASSWORD });
+      await createDriverAccount(db, { driverId: 2, login: 'legacy_driver_two', password: DRIVER_PASSWORD });
+      await db.prepare('UPDATE driver_accounts SET active=0 WHERE driver_id=?').run(2);
+      await db.prepare('INSERT INTO driver_sessions(token_hash,driver_id,expires_at) VALUES (?,?,?)').run('a'.repeat(64), 1, 1894060800000);
+      await db.prepare('INSERT INTO users(login,name,password_hash,created_at) VALUES (?,?,?,?)').run('preserved', 'Existing employee', 'existing-private-hash', '2030-01-01T00:00:00Z');
+      await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES (?,?,?)').run('existing-staff-session', 1, 1894060800000);
+      await db.prepare("INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (1,?,1,'manual',?,?)").run(TOMORROW, '09:30', '2030-01-01T00:00:00Z');
+      await db.prepare(`INSERT INTO bookings(name,phone,seats,direction,gori_address,didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,source,created_at,updated_at)
+        VALUES ('Preserved passenger','599888999',2,'gori-tbilisi','Existing house','Existing Didube','Existing destination',?,'08:30',?,'08:30','confirmed','employee',?,?)`)
+        .run(TOMORROW, TOMORROW, '2030-01-01T00:00:00Z', '2030-01-01T00:00:00Z');
+      const columns = (table: string) => table === 'driver_accounts' ? 'driver_id,login,password_hash,active,created_at,updated_at' : '*';
+      const snapshots = new Map<string, string>();
+      for (const table of ['driver_accounts', 'driver_sessions', 'users', 'sessions', 'settings', 'stops', 'drivers', 'driver_day_overrides', 'base_schedule', 'date_schedule', 'bookings', 'audit_log', 'schema_versions']) {
+        snapshots.set(table, JSON.stringify(await db.prepare(`SELECT ${columns(table)} FROM ${table} ORDER BY 1`).all()));
+      }
+      await db.close();
+      for (let reopen = 0; reopen < 2; reopen++) {
+        db = await stored.open();
+        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 15);
+        for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await db.prepare(`SELECT ${columns(table)} FROM ${table}${table === 'schema_versions' ? ' WHERE version<15' : ''} ORDER BY 1`).all()), snapshot, table);
+        assert.deepEqual((await db.prepare('SELECT phone FROM driver_accounts ORDER BY driver_id').all()).map(row => row.phone), [null, null]);
+        if (!reopen) await db.close();
+      }
+      for (const phone of ['', '59912', '5999200010', '+995599920001', '322123456', '59992a001']) await assert.rejects(db.prepare('UPDATE driver_accounts SET phone=? WHERE driver_id=?').run(phone, 1), /check constraint|CHECK constraint/i);
+      await db.prepare('UPDATE driver_accounts SET phone=? WHERE driver_id=?').run(DRIVER_PHONES[0], 1);
+      await assert.rejects(db.prepare('UPDATE driver_accounts SET phone=? WHERE driver_id=?').run(DRIVER_PHONES[0], 2), /unique|duplicate/i);
+    } finally { await db.close(); await stored.close(); }
+  });
+}
+
+test('phone-only driver login accepts Georgian formatting aliases and rejects credentials, landlines and foreign numbers', async () => {
+  await isolated(async f => {
+    for (const phone of ['599920001', '599 92 00 01', '+995 599 92 00 01', '995599920001', '00995 (599) 92-00-01']) {
+      const result = await f.request('/driver/auth/login', 'POST', { phone });
+      assert.equal(result.status, 200); assert.equal(result.data.driver.id, 1); assert.equal(result.data.driver.phone, DRIVER_PHONES[0]);
+    }
+    assert.equal((await f.request('/driver/auth/login', 'POST', { phone: DRIVER_PHONES[0], login: 'driver_two' })).status, 400);
+    assert.equal((await f.request('/driver/auth/login', 'POST', { login: 'operator', password: DRIVER_PASSWORD })).status, 400);
+  });
+  await isolated(async f => {
+    for (const phone of ['', null, 599920001, {}, '59912', '+1 212 555 0101', '+995 322 12 34 56', '5'.repeat(41)]) {
+      const result = await f.request('/driver/auth/login', 'POST', { phone });
+      assert.equal(result.status, 400); assert.equal(result.data.code, 'VALIDATION');
+    }
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM driver_sessions').get())?.count, 0);
+  });
+  await isolated(async f => {
+    for (const body of [null, [], true, 123, 'phone', undefined]) {
+      assert.equal((await f.request('/driver/auth/login', 'POST', body)).status, 400);
+      assert.equal((await f.request('/admin/drivers/3/phone', 'PATCH', body, 'employee')).status, 400);
+    }
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM driver_sessions').get())?.count, 0);
+    assert.equal(await f.db.prepare('SELECT driver_id FROM driver_accounts WHERE driver_id=?').get(3), undefined);
+  });
+});
+
+test('staff configures a phone for any existing roster driver without changing legacy accounts, staff access or daily plans', async () => {
+  await isolated(async f => {
+    const legacy = await f.db.prepare('SELECT login,password_hash,active,created_at FROM driver_accounts WHERE driver_id=?').get(1);
+    const snapshot = new Map<string, string>();
+    for (const table of ['drivers', 'driver_day_overrides', 'bookings', 'users', 'sessions']) snapshot.set(table, JSON.stringify(await f.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()));
+    const roster = await successful(f, `/admin/drivers/schedule?direction=gori-tbilisi&date=${TODAY}`, 'GET', undefined, 'employee');
+    assert.equal(roster.drivers.find((driver: any) => driver.id === 1).phone, DRIVER_PHONES[0]);
+    assert.equal(roster.drivers.find((driver: any) => driver.id === 3).phone, null);
+    const configured = await successful(f, '/admin/drivers/3/phone', 'PATCH', { phone: '+995 (555) 93-01-03' }, 'employee');
+    assert.deepEqual(configured, { driverId: 3, phone: '555930103' });
+    const newAccount = await f.db.prepare('SELECT login,password_hash,phone,active FROM driver_accounts WHERE driver_id=?').get(3);
+    assert.equal(newAccount?.phone, '555930103'); assert.equal(newAccount?.active, 1);
+    assert.match(newAccount!.login, /^phone_driver_3_[a-f0-9]{24}$/); assert.match(newAccount!.password_hash, /^[a-f0-9]{32}:[a-f0-9]{128}$/);
+    const login = await f.request('/driver/auth/login', 'POST', { phone: '555930103' }); assert.equal(login.status, 200); assert.equal(login.data.driver.id, 3);
+    const savedRoster = await successful(f, `/admin/drivers/schedule?direction=gori-tbilisi&date=${TODAY}`, 'GET', undefined, 'employee');
+    assert.equal(savedRoster.drivers.find((driver: any) => driver.id === 3).phone, '555930103');
+    const empty = await successful(f, '/admin/drivers/4/phone', 'PATCH', { phone: null }, 'employee');
+    assert.deepEqual(empty, { driverId: 4, phone: null }); assert.equal(await f.db.prepare('SELECT driver_id FROM driver_accounts WHERE driver_id=?').get(4), undefined);
+    assert.deepEqual(await f.db.prepare('SELECT login,password_hash,active,created_at FROM driver_accounts WHERE driver_id=?').get(1), legacy);
+    for (const [table, value] of snapshot) assert.equal(JSON.stringify(await f.db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()), value, table);
+    const audit = await f.db.prepare("SELECT user_id,details FROM audit_log WHERE action='driver.phone' ORDER BY id DESC").get();
+    assert.equal(audit?.user_id, 1); assert.deepEqual(JSON.parse(audit!.details), { driverId: 3, phoneConfigured: true });
+    assert.equal(JSON.stringify((await f.request('/public/config')).data).includes('555930103'), false);
+  });
+});
+
+test('phone updates require staff and reject invalid, duplicate or extra fields atomically including normalized aliases', async () => {
+  await isolated(async f => {
+    const driver = await f.login();
+    const accountBefore = JSON.stringify(await f.db.prepare('SELECT * FROM driver_accounts ORDER BY driver_id').all());
+    const sessionsBefore = JSON.stringify(await f.db.prepare('SELECT * FROM driver_sessions ORDER BY token_hash').all());
+    const auditBefore = await f.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get();
+    for (const actor of ['none', 'driver'] as const) assert.equal((await f.request('/admin/drivers/3/phone', 'PATCH', { phone: '555930103' }, actor)).status, 401);
+    for (const body of [{}, { phone: 599920001 }, { phone: '+995 322 12 34 56' }, { phone: '+1 2125550101' }, { phone: 'bad' }, { phone: '555930103', active: 1 }, { phone: '555930103', driverId: 2 }]) {
+      const result = await f.request('/admin/drivers/3/phone', 'PATCH', body, 'employee'); assert.equal(result.status, 400); assert.equal(result.data.code, 'VALIDATION');
+    }
+    for (const id of [2, 3]) {
+      const result = await f.request(`/admin/drivers/${id}/phone`, 'PATCH', { phone: '+995 599 92 00 01' }, 'employee');
+      assert.equal(result.status, 409); assert.equal(result.data.code, 'PHONE_TAKEN');
+    }
+    assert.equal((await f.request('/admin/drivers/99999/phone', 'PATCH', { phone: '555930103' }, 'employee')).status, 404);
+    assert.equal(JSON.stringify(await f.db.prepare('SELECT * FROM driver_accounts ORDER BY driver_id').all()), accountBefore);
+    assert.equal(JSON.stringify(await f.db.prepare('SELECT * FROM driver_sessions ORDER BY token_hash').all()), sessionsBefore);
+    assert.deepEqual(await f.db.prepare('SELECT COUNT(*) AS count FROM audit_log').get(), auditBefore);
+    assert.equal((await f.request('/driver/auth/session', 'GET', undefined, 'none', { Cookie: driver.cookie })).data.driver.id, 1);
+  });
+});
+
+test('changing or clearing a phone revokes only that driver sessions while an equivalent canonical save keeps them', async () => {
+  await isolated(async f => {
+    const first = await f.login(); const second = await f.login(); const other = await f.login(2);
+    const legacy = await f.db.prepare('SELECT login,password_hash,active,created_at FROM driver_accounts WHERE driver_id=?').get(1);
+    await successful(f, '/admin/drivers/1/phone', 'PATCH', { phone: '+995 599 92 00 01' }, 'employee');
+    assert.equal((await f.request('/driver/auth/session', 'GET', undefined, 'none', { Cookie: first.cookie })).data.driver.id, 1);
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM driver_sessions WHERE driver_id=?').get(1))?.count, 2);
+    await successful(f, '/admin/drivers/1/phone', 'PATCH', { phone: '555930111' }, 'employee');
+    for (const cookie of [first.cookie, second.cookie]) assert.equal((await f.request('/driver/dashboard', 'GET', undefined, 'none', { Cookie: cookie })).status, 401);
+    assert.equal((await f.request('/driver/auth/login', 'POST', { phone: DRIVER_PHONES[0] })).status, 401);
+    const fresh = await f.request('/driver/auth/login', 'POST', { phone: '+995 555 93 01 11' }); assert.equal(fresh.status, 200);
+    await successful(f, '/admin/drivers/1/phone', 'PATCH', { phone: '  ' }, 'employee');
+    assert.equal((await f.request('/driver/auth/session', 'GET', undefined, 'none', { Cookie: cookieValue(fresh.headers.get('set-cookie')!) })).data.driver, null);
+    assert.equal((await f.request('/driver/auth/login', 'POST', { phone: '555930111' })).status, 401);
+    assert.deepEqual(await f.db.prepare('SELECT login,password_hash,active,created_at FROM driver_accounts WHERE driver_id=?').get(1), legacy);
+    assert.equal((await f.db.prepare('SELECT phone FROM driver_accounts WHERE driver_id=?').get(1))?.phone, null);
+    assert.equal((await f.request('/driver/auth/session', 'GET', undefined, 'none', { Cookie: other.cookie })).data.driver.id, 2);
+    assert.equal((await f.request('/admin/settings', 'GET', undefined, 'employee')).status, 200);
+  });
+});
+
+test('setting a phone does not reactivate an explicitly disabled existing driver account', async () => {
+  await isolated(async f => {
+    const loggedIn = await f.login(2);
+    await f.db.prepare('UPDATE driver_accounts SET active=0 WHERE driver_id=?').run(2);
+    await successful(f, '/admin/drivers/2/phone', 'PATCH', { phone: '555930112' }, 'employee');
+    assert.equal((await f.db.prepare('SELECT active FROM driver_accounts WHERE driver_id=?').get(2))?.active, 0);
+    assert.equal((await f.request('/driver/auth/login', 'POST', { phone: '555930112' })).status, 401);
+    assert.equal((await f.request('/driver/auth/session', 'GET', undefined, 'none', { Cookie: loggedIn.cookie })).data.driver, null);
+  });
+});
+
+test('legacy password-only session records cannot authorize phone login and are revoked when staff first configures the phone', async () => {
+  await isolated(async f => {
+    await createDriverAccount(f.db, { driverId: 3, login: 'legacy_three', password: DRIVER_PASSWORD });
+    const raw = randomBytes(32).toString('hex');
+    await f.db.prepare('INSERT INTO driver_sessions(token_hash,driver_id,expires_at) VALUES (?,?,?)').run(createHash('sha256').update(raw).digest('hex'), 3, 1894060800000);
+    const headers = { Cookie: `greentaxi_driver_session=${raw}` };
+    assert.equal((await f.request('/driver/auth/session', 'GET', undefined, 'none', headers)).data.driver, null);
+    assert.equal((await f.request('/driver/dashboard', 'GET', undefined, 'none', headers)).status, 401);
+    assert.equal((await f.request('/driver/auth/login', 'POST', { login: 'legacy_three', password: DRIVER_PASSWORD })).status, 400);
+    await successful(f, '/admin/drivers/3/phone', 'PATCH', { phone: '555930113' }, 'employee');
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM driver_sessions WHERE driver_id=?').get(3))?.count, 0);
+    assert.equal((await f.request('/driver/auth/session', 'GET', undefined, 'none', headers)).data.driver, null);
+    const login = await f.request('/driver/auth/login', 'POST', { phone: '555930113' }); assert.equal(login.status, 200); assert.equal(login.data.driver.id, 3);
+  });
+});
+
+test('concurrent staff phone assignments keep a canonical number unique and leave the losing driver unchanged', async () => {
+  await isolated(async f => {
+    const results = await Promise.all([3, 4].map(id => f.request(`/admin/drivers/${id}/phone`, 'PATCH', { phone: id === 3 ? '555930114' : '+995 555 93 01 14' }, 'employee')));
+    assert.deepEqual(results.map(result => result.status).sort(), [200, 409]);
+    assert.equal(results.find(result => result.status === 409)?.data.code, 'PHONE_TAKEN');
+    const accounts = await f.db.prepare('SELECT driver_id FROM driver_accounts WHERE phone=?').all('555930114');
+    assert.equal(accounts.length, 1);
+    const loser = results[0].status === 409 ? 3 : 4;
+    assert.equal(await f.db.prepare('SELECT driver_id FROM driver_accounts WHERE driver_id=?').get(loser), undefined);
   });
 });

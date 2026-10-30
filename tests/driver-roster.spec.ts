@@ -48,6 +48,12 @@ function driverRow(page: Page, id: number): Locator { return page.locator(`.admi
 function driverAttendance(page: Page, driver: Pick<DriverDay, 'id' | 'name'>): Locator {
   return driverRow(page, driver.id).getByRole('switch', { name: `${driver.name} — მონაწილეობა ამ დღეს`, exact: true });
 }
+function driverPhone(page: Page, driver: Pick<DriverDay, 'id' | 'name'>): Locator {
+  return driverRow(page, driver.id).getByRole('textbox', { name: `${driver.name} — ტელეფონის ნომერი`, exact: true });
+}
+function saveDriverPhone(page: Page, driver: Pick<DriverDay, 'id' | 'name'>): Locator {
+  return driverRow(page, driver.id).getByRole('button', { name: `${driver.name} — ტელეფონის შენახვა`, exact: true });
+}
 function scheduleCard(page: Page): Locator { return page.locator('.admin-config-schedule'); }
 function dateInput(page: Page): Locator { return scheduleCard(page).getByLabel('თარიღი', { exact: true }); }
 
@@ -92,6 +98,15 @@ async function chooseDate(page: Page, date: string) {
 
 function isDriverPatch(response: Response, id: number): boolean {
   return new URL(response.url()).pathname === `/api/admin/drivers/${id}/day` && response.request().method() === 'PATCH';
+}
+function isPhonePatch(response: Response, id: number): boolean {
+  return new URL(response.url()).pathname === `/api/admin/drivers/${id}/phone` && response.request().method() === 'PATCH';
+}
+async function setPhone(page: Page, driver: Pick<DriverDay, 'id' | 'name'>, phone: string): Promise<Response> {
+  await driverPhone(page, driver).fill(phone);
+  const response = page.waitForResponse(result => isPhonePatch(result, driver.id));
+  await saveDriverPhone(page, driver).click();
+  return await response;
 }
 
 async function assignDriver(date: string, id: number, time: string): Promise<TripCapacity> {
@@ -257,7 +272,96 @@ test('the queue belongs only to Gori departures and anonymous users cannot read 
   try {
     expect((await anonymous.get(`/api/admin/drivers/schedule?direction=gori-tbilisi&date=${ANCHOR}`)).status()).toBe(401);
     expect((await anonymous.patch('/api/admin/drivers/1/day', { data: { direction: 'gori-tbilisi', date: ANCHOR, declined: true } })).status()).toBe(401);
+    expect((await anonymous.patch('/api/admin/drivers/1/phone', { data: { phone: '555930199' } })).status()).toBe(401);
   } finally { await anonymous.dispose(); }
+});
+
+test('an administrator saves canonical driver phones, retains invalid drafts and revokes only driver access when a phone changes or is cleared', async ({ page }) => {
+  test.setTimeout(60_000);
+  const date = '2030-05-18';
+  const nextDate = '2030-05-19';
+  for (const value of [date, nextDate]) await resetDay(value);
+  const before = await getDriverDay(date);
+  const first = before.drivers.find(driver => driver.id === 35)!;
+  const second = before.drivers.find(driver => driver.id === 36)!;
+  const originalPhone = first.phone;
+  const originalOtherPhone = second.phone;
+  const originalNumber = '555930101';
+  const otherNumber = '555930102';
+  const replacement = '555930103';
+  const driverPage = await page.context().newPage();
+  const queueState = (schedule: DriverSchedule) => schedule.drivers.map(driver => ({ id: driver.id, queuePosition: driver.queuePosition, declined: driver.declined, assignedTime: driver.assignedTime }));
+  try {
+    expect((await adminApi.patch(`/api/admin/drivers/${second.id}/phone`, { data: { phone: otherNumber } })).ok()).toBeTruthy();
+    await openSettings(page, date);
+    const saved = await setPhone(page, first, '+995 555 93 01 01');
+    expect(saved.status()).toBe(200);
+    expect(saved.request().postDataJSON()).toEqual({ phone: originalNumber });
+    expect(await saved.json()).toEqual({ driverId: first.id, phone: originalNumber });
+    await expect(driverPhone(page, first)).toHaveValue('555 93 01 01');
+    await chooseDate(page, nextDate);
+    await expect(driverPhone(page, first)).toHaveValue('555 93 01 01');
+    expect((await getDriverDay(nextDate)).drivers.find(driver => driver.id === first.id)?.phone).toBe(originalNumber);
+    await chooseDate(page, date);
+
+    await driverPhone(page, first).fill('123');
+    await saveDriverPhone(page, first).click();
+    await expect(driverRow(page, first.id).locator('[data-driver-phone-feedback][role="alert"]')).toBeVisible();
+    await expect(driverPhone(page, first)).toHaveValue('123');
+    expect((await getDriverDay(date)).drivers.find(driver => driver.id === first.id)?.phone).toBe(originalNumber);
+    const duplicateDraft = '+995 555 93 01 02';
+    const duplicate = await setPhone(page, first, duplicateDraft);
+    expect(duplicate.status()).toBe(409);
+    expect(await duplicate.json()).toMatchObject({ code: 'PHONE_TAKEN' });
+    await expect(driverRow(page, first.id).locator('[data-driver-phone-feedback][role="alert"]')).toBeVisible();
+    await expect(driverPhone(page, first)).toHaveValue(duplicateDraft);
+    expect((await getDriverDay(date)).drivers.find(driver => driver.id === first.id)?.phone).toBe(originalNumber);
+
+    await driverPage.goto('/driver');
+    const loginPhone = driverPage.getByRole('textbox', { name: 'ტელეფონის ნომერი', exact: true });
+    await expect(driverPage.locator('input[type="password"]')).toHaveCount(0);
+    await loginPhone.fill('+995 555 93 01 01');
+    const loggedIn = driverPage.waitForResponse(response => new URL(response.url()).pathname === '/api/driver/auth/login' && response.request().method() === 'POST');
+    await driverPage.getByRole('button', { name: 'შესვლა', exact: true }).click();
+    const login = await loggedIn;
+    expect(login.ok()).toBeTruthy();
+    expect(login.request().postDataJSON()).toEqual({ phone: originalNumber });
+    expect((await login.json()).driver.id).toBe(first.id);
+    await expect(driverPage.locator('[data-driver-portal]')).toContainText(first.name);
+    await driverPage.reload();
+    await expect(driverPage.locator('[data-driver-portal]')).toBeVisible();
+
+    const changed = await setPhone(page, first, '+995 555 93 01 03');
+    expect(changed.ok()).toBeTruthy();
+    expect(await changed.json()).toEqual({ driverId: first.id, phone: replacement });
+    expect((await driverPage.request.get('/api/driver/dashboard')).status()).toBe(401);
+    await driverPage.reload();
+    await expect(driverPage.getByRole('heading', { name: 'მძღოლის შესვლა', exact: true })).toBeVisible();
+    expect((await driverPage.request.post('/api/driver/auth/login', { data: { phone: originalNumber } })).status()).toBe(401);
+    expect((await (await page.request.get('/api/auth/session')).json()).user.login).toBe(EMPLOYEE.login);
+
+    await loginPhone.fill(replacement);
+    await driverPage.getByRole('button', { name: 'შესვლა', exact: true }).click();
+    await expect(driverPage.locator('[data-driver-portal]')).toContainText(first.name);
+    const cleared = await setPhone(page, first, '');
+    expect(cleared.ok()).toBeTruthy();
+    expect(cleared.request().postDataJSON()).toEqual({ phone: null });
+    expect(await cleared.json()).toEqual({ driverId: first.id, phone: null });
+    await expect(driverPhone(page, first)).toHaveValue('');
+    expect((await driverPage.request.get('/api/driver/dashboard')).status()).toBe(401);
+    expect((await driverPage.request.post('/api/driver/auth/login', { data: { phone: replacement } })).status()).toBe(401);
+    await driverPage.reload();
+    await expect(driverPage.getByRole('heading', { name: 'მძღოლის შესვლა', exact: true })).toBeVisible();
+    expect((await (await page.request.get('/api/auth/session')).json()).user.login).toBe(EMPLOYEE.login);
+    expect(queueState(await getDriverDay(date))).toEqual(queueState(before));
+    expect((await getDriverDay(nextDate)).drivers.find(driver => driver.id === first.id)?.phone).toBeNull();
+    expect((await getDriverDay(date)).drivers.find(driver => driver.id === second.id)?.phone).toBe(otherNumber);
+  } finally {
+    await driverPage.close();
+    for (const [id, phone] of [[first.id, originalPhone], [second.id, originalOtherPhone]] as const) {
+      expect((await adminApi.patch(`/api/admin/drivers/${id}/phone`, { data: { phone } })).ok()).toBeTruthy();
+    }
+  }
 });
 
 test('a late response from another date cannot replace the displayed driver queue', async ({ page }) => {
@@ -353,5 +457,21 @@ for (const width of [320, 390]) {
     await setAttendance(page, first, true);
     await expect(roster(page).getByRole('combobox')).toHaveCount(0);
     expect((await getDriverDay(date)).drivers.every(driver => driver.assignedTime === null)).toBeTruthy();
+    const phone = driverPhone(page, first);
+    await phone.fill('555 93 01 99');
+    for (const control of [phone, saveDriverPhone(page, first)]) {
+      await control.scrollIntoViewIfNeeded();
+      const box = await control.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.height).toBeGreaterThanOrEqual(58);
+      expect(box!.width).toBeGreaterThanOrEqual(48);
+      expect(box!.x).toBeGreaterThanOrEqual(-1);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width + 1);
+      expect(await control.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(18);
+    }
+    expect(await phone.evaluate(input => input.scrollWidth <= input.clientWidth + 1), 'The full grouped driver number must fit its field').toBeTruthy();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
+    await driverRow(page, first.id).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `/tmp/driver-phone-roster-${width}.png` });
   });
 }

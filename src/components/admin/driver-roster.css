@@ -40,6 +40,20 @@
 .admin-settings .admin-driver-name strong { color: #183f29; font-size: 19px; overflow-wrap: anywhere; }
 .admin-settings .declined .admin-driver-name strong { color: #525e56; }
 .admin-settings .admin-driver-name small { display: block; color: #345f43; margin-top: 5px; font-size: 13px; line-height: 1.6; }
+.admin-settings p.admin-driver-phone-note { display: flex; align-items: flex-start; gap: 10px; padding: 14px; margin-top: 14px; border: 1px solid #b7cebf; border-radius: 10px; color: #244e35; background: #f0f8f2; font-size: 16px; line-height: 1.8; }
+.admin-settings .admin-driver-phone-note svg { flex-shrink: 0; margin-top: 4px; }
+.admin-settings .admin-driver-phone-editor { margin-top: 17px; min-width: 0; }
+.admin-settings .admin-driver-phone-editor label { display: block; margin-bottom: 7px; color: #244e35; font-size: 16px; font-weight: 600; line-height: 1.6; }
+.admin-settings .admin-driver-phone-controls { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; min-width: 0; }
+.admin-shell .admin-settings .admin-driver-phone-controls input { flex: 1 1 180px; width: 100%; min-width: 0; min-height: 58px; padding: 12px 10px; border: 2px solid #a0bda9; border-radius: 10px; color: #173f29; background: #fff; font-size: 20px; font-variant-numeric: tabular-nums; }
+.admin-settings .admin-driver-phone-controls input::placeholder { color: #627d6c; font-size: 18px; }
+.admin-settings .admin-driver-phone-controls input[aria-invalid=true] { border-color: #b7433b; }
+.admin-settings .admin-driver-phone-editor .admin-driver-phone-save { display: inline-flex; flex: 1 1 auto; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; min-width: 0; min-height: 58px; padding: 11px 12px; border: 2px solid #2b784b; border-radius: 10px; background: #096b3b; color: #fff; font: inherit; font-size: 18px; font-weight: 600; line-height: 1.6; cursor: pointer; }
+.admin-settings .admin-driver-phone-editor .admin-driver-phone-save svg { flex-shrink: 0; }
+.admin-settings .admin-driver-phone-editor .admin-driver-phone-save:hover:not(:disabled) { background: #07552e; }
+.admin-settings .admin-driver-phone-editor .admin-driver-phone-save:disabled { cursor: default; background: #e1eae4; border-color: #b4c5b9; color: #45624f; opacity: 1; }
+.admin-settings p.admin-driver-phone-feedback { margin: 10px 0 0; padding: 10px; border: 1px solid #a8c8b3; border-radius: 8px; color: #205735; background: #edf7f0; font-size: 16px; line-height: 1.8; overflow-wrap: anywhere; }
+.admin-settings p.admin-driver-phone-feedback.error { color: #8e2e27; background: #fff0ed; border-color: #ca948b; }
 .admin-settings .admin-driver-capacity > span { display: inline-flex; align-items: center; gap: 6px; color: #385b44; font-size: 15px; white-space: nowrap; }
 .admin-settings .admin-driver-attendance { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 56px; padding: 12px; background: #e1f3e7; color: #13572e; border: 2px solid #7ab58d; border-radius: 10px; font: inherit; font-size: 16px; font-weight: 600; cursor: pointer; }
 .admin-settings .admin-driver-attendance svg { flex-shrink: 0; }

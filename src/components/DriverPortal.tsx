@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowRight, CalendarDays, CarFront, Check, CheckCircle2, Clock3, Dog, Leaf, LoaderCircle, LockKeyhole, LogOut, Luggage, MapPin, Package, Phone, RefreshCw, UserRound, UsersRound, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CalendarDays, CarFront, Check, CheckCircle2, Clock3, Dog, Leaf, LoaderCircle, LogOut, Luggage, MapPin, Package, Phone, RefreshCw, UsersRound, X } from 'lucide-react';
 import { ApiError, directions, request, type DriverBooking, type DriverDashboard, type DriverDayStatus, type DriverIdentity, type DriverSession } from '../api';
-import { formatPhone, phoneDialNumber } from '../../shared/phone';
+import { formatPhone, normalizePhone, phoneDialNumber } from '../../shared/phone';
 import './driver-portal.css';
 
 type Calendar = { today: string; tomorrow: string };
@@ -50,8 +50,7 @@ function DriverBrand() {
 }
 
 function DriverLogin({ notice, onLogin }: { notice: string; onLogin: (session: DriverSession) => void }) {
-  const [login, setLogin] = useState('');
-  const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const saving = useRef(false);
@@ -59,18 +58,19 @@ function DriverLogin({ notice, onLogin }: { notice: string; onLogin: (session: D
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   async function submit(event: FormEvent) {
     event.preventDefault(); if (saving.current) return;
+    const normalized = normalizePhone(phone);
+    if (!normalized || !/^5\d{8}$/.test(normalized)) { setError('შეიყვანეთ მობილურის სწორი ნომერი, მაგალითად: 599 12 34 56.'); return; }
     saving.current = true; setBusy(true); setError('');
     try {
-      const session = await request<DriverSession>('/driver/auth/login', { method: 'POST', body: JSON.stringify({ login: login.trim(), password }) });
-      if (!session.driver) throw new Error('შესვლა ვერ მოხერხდა. გადაამოწმეთ სახელი და პაროლი.');
+      const session = await request<DriverSession>('/driver/auth/login', { method: 'POST', body: JSON.stringify({ phone: normalized }) });
+      if (!session.driver) throw new Error('შესვლა ვერ მოხერხდა. გადაამოწმეთ ტელეფონის ნომერი.');
       if (mounted.current) onLogin(session);
     } catch (cause) { if (mounted.current) setError(message(cause)); }
     finally { saving.current = false; if (mounted.current) setBusy(false); }
   }
-  return <main className="driver-portal driver-login-page"><DriverBrand /><section className="driver-login-card" aria-labelledby="driver-login-title"><span className="driver-login-icon"><CarFront size={34} /></span><h1 id="driver-login-title">მძღოლის შესვლა</h1><p>შედით თქვენი მომხმარებლის სახელით და პაროლით.</p>{notice && <p className="driver-feedback" role="status">{notice}</p>}<form onSubmit={submit} aria-busy={busy}>
-    <label>მომხმარებლის სახელი<span className="driver-login-input"><UserRound size={23} /><input aria-label="მომხმარებლის სახელი" value={login} onChange={event => setLogin(event.target.value)} autoComplete="username" autoCapitalize="none" autoCorrect="off" spellCheck={false} maxLength={80} required disabled={busy} /></span></label>
-    <label>პაროლი<span className="driver-login-input"><LockKeyhole size={23} /><input aria-label="პაროლი" type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" required disabled={busy} /></span></label>
-    {error && <p className="driver-feedback error" role="alert">{error}</p>}
+  return <main className="driver-portal driver-login-page"><DriverBrand /><section className="driver-login-card" aria-labelledby="driver-login-title"><span className="driver-login-icon"><CarFront size={34} /></span><h1 id="driver-login-title">მძღოლის შესვლა</h1><p id="driver-login-phone-help">შეიყვანეთ ადმინისტრატორთან მითითებული ტელეფონის ნომერი.</p>{notice && <p className="driver-feedback" role="status">{notice}</p>}<form onSubmit={submit} aria-busy={busy}>
+    <label>ტელეფონის ნომერი<span className="driver-login-input"><Phone size={23} /><input aria-label="ტელეფონის ნომერი" aria-describedby={`driver-login-phone-help${error ? ' driver-login-phone-error' : ''}`} aria-invalid={error ? true : undefined} type="tel" inputMode="tel" value={phone} onChange={event => { setPhone(event.target.value); setError(''); }} onBlur={() => setPhone(value => formatPhone(value))} autoComplete="tel" placeholder="599 12 34 56" maxLength={32} required disabled={busy} /></span></label>
+    {error && <p id="driver-login-phone-error" className="driver-feedback error" role="alert">{error}</p>}
     <button type="submit" className="driver-button primary driver-login-submit" disabled={busy}>{busy ? <LoaderCircle size={24} className="driver-spin" /> : <ArrowRight size={24} />}შესვლა</button>
   </form></section><a className="driver-back-link" href="/"><ArrowLeft size={22} />მთავარ გვერდზე დაბრუნება</a></main>;
 }
