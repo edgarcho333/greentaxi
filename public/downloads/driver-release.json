@@ -1,0 +1,12 @@
+{
+  "applicationId": "ge.greentaxi.driver",
+  "versionCode": 1,
+  "versionName": "1.0.0",
+  "minSdk": 26,
+  "targetSdk": 35,
+  "downloadPath": "/downloads/GreenTaxi-Driver-Android.apk",
+  "websiteUrl": "https://green-taxi.ge/driver",
+  "bytes": 16832,
+  "sha256": "d40a16ae3e387ed7f23cea56fbb70f2f8a365e28c4c8fd0ad50bf837eb53d774",
+  "certificateSha256": "683b50d2a66b2751d5253598a756ef2415f7d3cb25eb59a557a6fa9bce2bfbca"
+}

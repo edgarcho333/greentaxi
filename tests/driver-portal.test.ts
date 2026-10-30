@@ -241,7 +241,7 @@ test('declining a reserved whole-car day returns a clear conflict and leaves ass
   });
 });
 
-test('the driver dashboard exposes only active confirmed orders explicitly assigned to that driver and a restricted contact DTO', async () => {
+test('whole-car performers see only their own active confirmed orders and a restricted contact DTO', async () => {
   await isolated(async f => {
     await f.login();
     const canceled = await whole(f, 1); await successful(f, `/admin/bookings/${canceled.id}/delete`, 'POST', {}, 'employee');
@@ -270,6 +270,64 @@ test('the driver dashboard exposes only active confirmed orders explicitly assig
     const second = await successful(f, `/driver/dashboard?date=${TOMORROW}`);
     assert.deepEqual(second.bookings.map((booking: any) => booking.id), [foreign.id]);
     assert.ok(!second.bookings.some((booking: any) => [own.id, passenger.id, parcel.id, waiting.data.id, canceled.id].includes(booking.id)));
+    await f.login();
+    await successful(f, `/admin/bookings/${own.id}/delete`, 'POST', {}, 'employee');
+    const shared = await successful(f, `/driver/dashboard?date=${TOMORROW}`);
+    assert.equal(shared.bookingScope, 'trip');
+    assert.deepEqual(shared.bookings.map((booking: any) => booking.id), [passenger.id, parcel.id], 'Canceling the exclusive order restores the assigned driver\'s shared trip list');
+  });
+});
+
+test('working drivers assigned to the same trip share passenger and parcel orders without seeing any whole-car customers or other trips', async () => {
+  await isolated(async f => {
+    await f.login();
+    assert.deepEqual((await successful(f, `/driver/dashboard?date=${TOMORROW}`)).bookings, []);
+    await assign(f, 1); await assign(f, 2);
+    const passenger = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880001', luggage: true, seatPreference: 'front' }), 'employee');
+    const parcel = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880002', bookingType: 'parcel' }), 'employee');
+    const exclusive = await whole(f, 3, { phone: '599880003' });
+    const otherHour = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880004', requestedTime: '09:30' }), 'employee');
+    const otherDay = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880005', requestedDate: TODAY }), 'employee');
+    const config = await successful(f, '/public/config');
+    const otherDirection = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880006', direction: 'tbilisi-gori', pickupStopId: config.stops.find((stop: any) => stop.active).id }), 'employee');
+    const deleted = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880007' }), 'employee');
+    await successful(f, `/admin/bookings/${deleted.id}/delete`, 'POST', {}, 'employee');
+    const waiting = await f.request('/bookings', 'POST', bookingInput({ phone: '599880008' })); assert.equal(waiting.status, 201);
+    // Assigned date/time, rather than a passenger's original request, owns the list.
+    await f.db.prepare('UPDATE bookings SET requested_date=?,requested_time=? WHERE id=?').run(TODAY, '09:30', passenger.id);
+    for (const driverId of [1, 2]) {
+      await f.login(driverId);
+      const dashboard = await successful(f, `/driver/dashboard?date=${TOMORROW}&driverId=3&time=09:30&direction=tbilisi-gori`);
+      assert.equal(dashboard.driver.id, driverId);
+      assert.equal(dashboard.bookingScope, 'trip');
+      assert.deepEqual(dashboard.trip, { direction: 'gori-tbilisi', time: '08:30', active: true });
+      assert.deepEqual(dashboard.bookings.map((booking: any) => booking.id), [passenger.id, parcel.id]);
+      assert.deepEqual(dashboard.bookings.map((booking: any) => [booking.bookingType, booking.seats]), [['passenger', 2], ['parcel', 0]]);
+      assert.equal(dashboard.bookings[0].luggage, true); assert.equal(dashboard.bookings[0].seatPreference, 'front');
+      for (const hidden of [exclusive.id, otherHour.id, otherDay.id, otherDirection.id, deleted.id, waiting.data.id]) assert.ok(!dashboard.bookings.some((booking: any) => booking.id === hidden));
+      assert.deepEqual((await successful(f, `/driver/dashboard?date=${TODAY}`)).bookings, []);
+    }
+  });
+});
+
+test('shared trip orders remain readable when its hour is disabled but disappear after declining or removing that driver assignment', async () => {
+  await isolated(async f => {
+    await f.login(); await assign(f, 1);
+    const passenger = await successful(f, '/admin/bookings', 'POST', bookingInput(), 'employee');
+    const plan = await successful(f, `/admin/schedule?direction=gori-tbilisi&date=${TOMORROW}`, 'GET', undefined, 'employee');
+    await successful(f, '/admin/schedule/date', 'PUT', { direction: 'gori-tbilisi', date: TOMORROW, times: plan.slots.filter((slot: any) => slot.active && slot.time !== '08:30').map((slot: any) => slot.time) }, 'employee');
+    const disabled = await successful(f, `/driver/dashboard?date=${TOMORROW}`);
+    assert.deepEqual(disabled.trip, { direction: 'gori-tbilisi', time: '08:30', active: false });
+    assert.equal(disabled.bookingScope, 'trip');
+    assert.deepEqual(disabled.bookings.map((booking: any) => booking.id), [passenger.id]);
+    await successful(f, '/driver/attendance', 'PATCH', { date: TOMORROW, working: false });
+    const declined = await successful(f, `/driver/dashboard?date=${TOMORROW}`);
+    assert.equal(declined.trip, null); assert.deepEqual(declined.bookings, []);
+    await successful(f, '/driver/attendance', 'PATCH', { date: TOMORROW, working: true });
+    assert.deepEqual((await successful(f, `/driver/dashboard?date=${TOMORROW}`)).bookings.map((booking: any) => booking.id), [passenger.id]);
+    await f.db.prepare('UPDATE driver_day_overrides SET manual_time=NULL WHERE driver_id=? AND date=?').run(1, TOMORROW);
+    const unassigned = await successful(f, `/driver/dashboard?date=${TOMORROW}`);
+    assert.equal(unassigned.trip, null); assert.deepEqual(unassigned.bookings, []);
   });
 });
 

@@ -106,17 +106,27 @@ export function mountDriverPortal(app: Express, dependencies: {
       const date = selectedDate(req.query.date ?? window.today, window);
       const status = await days(driver.id, window);
       const selected = status.find(day => day.date === date)!;
-      const rows = await database.prepare(`SELECT id,name,phone,direction,seats,booking_type,luggage,dog,seat_preference,
-        gori_address,pickup_stop_name,didube_name,didube_address,assigned_date,assigned_time FROM bookings
+      const columns = `id,name,phone,direction,seats,booking_type,luggage,dog,seat_preference,
+        gori_address,pickup_stop_name,didube_name,didube_address,assigned_date,assigned_time`;
+      // A whole-car performer sees only that driver's exclusive orders. The
+      // shared passenger list belongs to working drivers assigned to the trip.
+      let rows = await database.prepare(`SELECT ${columns} FROM bookings
         WHERE direction=? AND assigned_date=? AND status='confirmed' AND deleted_at IS NULL
         AND booking_type='whole_car' AND assigned_vehicle_key=? ORDER BY assigned_time,id`).all(DRIVER_DIRECTION, date, `roster:${driver.id}`);
+      let bookingScope: DriverDashboard['bookingScope'] = 'assigned';
+      if (!rows.length && selected.assignedTime) {
+        bookingScope = 'trip';
+        rows = await database.prepare(`SELECT ${columns} FROM bookings
+          WHERE direction=? AND assigned_date=? AND assigned_time=? AND status='confirmed' AND deleted_at IS NULL
+          AND booking_type IN ('passenger','parcel') ORDER BY assigned_time,id`).all(DRIVER_DIRECTION, date, selected.assignedTime);
+      }
       const bookings: DriverBooking[] = rows.map(row => ({
         id: row.id, name: row.name, phone: normalizePhone(row.phone) ?? row.phone, direction: row.direction,
         seats: row.seats, bookingType: row.booking_type, luggage: row.luggage === 1, dog: row.dog === 1,
         seatPreference: row.seat_preference, goriAddress: row.gori_address, pickupStopName: row.pickup_stop_name,
         didubeName: row.didube_name, didubeAddress: row.didube_address, date: row.assigned_date, time: row.assigned_time,
       }));
-      return { driver, ...window, days: status, date, bookings, bookingScope: 'assigned', trip: selected.assignedTime ? { direction: DRIVER_DIRECTION, time: selected.assignedTime, active: selected.assignmentActive } : null };
+      return { driver, ...window, days: status, date, bookings, bookingScope, trip: selected.assignedTime ? { direction: DRIVER_DIRECTION, time: selected.assignedTime, active: selected.assignmentActive } : null };
     });
     res.json(result);
   });

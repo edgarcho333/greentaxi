@@ -7,3 +7,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = 'GreenTaxiCalls'
 include ':app'
+include ':driver'

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GreenTaxi Driver</string>
+    <string name="loading">იტვირთება…</string>
+    <string name="connection_title">დაკავშირება ვერ მოხერხდა</string>
+    <string name="connection_message">შეამოწმეთ ინტერნეტი და სცადეთ ხელახლა.</string>
+    <string name="retry">ხელახლა ცდა</string>
+    <string name="browser_unavailable">ბმულის გახსნა ვერ მოხერხდა.</string>
+    <string name="dialer_unavailable">ტელეფონის აპი ვერ მოიძებნა.</string>
+</resources>

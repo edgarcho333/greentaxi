@@ -1,0 +1,36 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'ge.greentaxi.driver'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+
+    defaultConfig {
+        applicationId 'ge.greentaxi.driver'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    signingConfigs {
+        driver {
+            def keyPath = providers.environmentVariable('GREENTAXI_DRIVER_KEYSTORE').orNull
+            def driverPassword = providers.environmentVariable('GREENTAXI_DRIVER_KEY_PASSWORD').orNull
+            if (keyPath && driverPassword) {
+                storeFile file(keyPath)
+                storePassword driverPassword
+                keyAlias 'greentaxi-driver'
+                keyPassword driverPassword
+            }
+        }
+    }
+    buildTypes {
+        debug { applicationIdSuffix '.debug' }
+        release { signingConfig signingConfigs.driver }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
