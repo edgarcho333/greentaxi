@@ -84,6 +84,7 @@ function attendance(page: Page): Locator { return page.locator('[data-driver-att
 function bookings(page: Page): Locator { return page.locator('[data-driver-bookings]'); }
 function selectedDays(page: Page): Locator { return page.getByRole('group', { name: 'დღეები', exact: true }); }
 function tripTimes(page: Page): Locator { return page.getByRole('group', { name: 'რეისის დრო', exact: true }); }
+function bookedSeats(page: Page): Locator { return bookings(page).locator('[data-driver-seat-count]'); }
 async function openDriver(page: Page) {
   await page.context().addCookies((await driverApi.storageState()).cookies);
   await page.goto('/driver');
@@ -99,13 +100,13 @@ async function setWork(page: Page, date: 'დღეს' | 'ხვალ', value:
   await button.click();
   return await saved;
 }
-async function seedWhole(driverId: number, phone: string): Promise<Booking> {
+async function seedWhole(driverId: number, phone: string, callerPhone?: string): Promise<Booking> {
   const options = await admin.get(`/api/admin/trips/whole-car-options?direction=gori-tbilisi&date=${tomorrow()}&time=09:30`);
   expect(options.ok()).toBeTruthy();
   const candidate = (await options.json() as WholeCarOptions).drivers.find(driver => driver.key === `roster:${driverId}`)!;
   expect(candidate).toBeTruthy();
   const response = await admin.post('/api/admin/bookings', { data: {
-    phone, seats: 1, bookingType: 'whole_car', assignedVehicleKey: candidate.key, expectedVehicleRevision: candidate.revision,
+    phone, ...(callerPhone ? { callerPhone } : {}), seats: 1, bookingType: 'whole_car', assignedVehicleKey: candidate.key, expectedVehicleRevision: candidate.revision,
     direction: 'gori-tbilisi', goriAddress: `გორი, მძღოლის სატესტო მისამართი ${phone}`, requestedDate: tomorrow(), requestedTime: '09:30', luggage: true, dog: true,
   } });
   expect(response.status()).toBe(201);
@@ -206,6 +207,8 @@ test('the driver reads his confirmed booking while another driver and deleted or
   const card = bookings(page).locator(`[data-driver-booking="${own.id}"]`);
   await expect(tripTimes(page).getByRole('button', { name: '09:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(card).not.toContainText('09:30'); await expect(card).toContainText(own.goriAddress);
+  await expect(bookedSeats(page)).toHaveText(String(own.seats));
+  await expect(bookings(page).locator('[data-driver-booking-count]')).toHaveText('1');
   await expect(card.locator('a[href^="tel:"]')).toHaveCount(1);
   await expect(card.locator('a[href^="tel:"]')).toHaveText(formatPhone(own.phone));
   await expect(card.locator('a[href^="tel:"]')).toHaveAttribute('href', `tel:+995${own.phone}`);
@@ -241,6 +244,8 @@ test('a driver assigned to a shared trip sees its passengers and parcels while a
   await selectedDays(page).getByRole('button', { name: 'ხვალ', exact: true }).click();
   await expect(tripTimes(page).getByRole('button', { name: '09:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(2);
+  await expect(bookedSeats(page)).toHaveText('2');
+  await expect(bookings(page).locator('[data-driver-booking-count]')).toHaveText('2');
   for (const booking of [passenger, parcel]) {
     const card = bookings(page).locator(`[data-driver-booking="${booking.id}"]`);
     await expect(card).toContainText(booking.goriAddress);
@@ -276,26 +281,31 @@ test('one day selector and trip hours filter cards, retain the chosen hour on re
   const dashboard = await original.json() as DriverDashboard;
   const morning = dashboard.bookings.find(booking => booking.id === own.id)!;
   expect(morning).toBeTruthy();
-  const noon = { ...morning, id: 900001, time: '12:30', phone: '599910110', goriAddress: 'გორი, შუადღის პირველი მისამართი' };
-  const noonSecond = { ...noon, id: 900002, phone: '599910111', goriAddress: 'გორი, შუადღის მეორე მისამართი' };
-  const evening = { ...morning, id: 900003, date: today(), time: '17:00', phone: '599910112', goriAddress: 'გორი, დღევანდელი მისამართი' };
+  const noon = { ...morning, id: 900001, bookingType: 'passenger' as const, seats: 3, time: '12:30', phone: '599910110', callerPhone: '+995 599 91 01 99', goriAddress: 'გორი, შუადღის პირველი მისამართი' };
+  const noonSecond = { ...noon, id: 900002, seats: 1, phone: '599910111', callerPhone: '+995 599 91 01 11', goriAddress: 'გორი, შუადღის მეორე მისამართი' };
+  const noonParcel = { ...noon, id: 900004, bookingType: 'parcel' as const, seats: 0, phone: '599910117', callerPhone: null, goriAddress: 'გორი, შუადღის გზავნილი' };
+  const evening = { ...morning, id: 900003, bookingType: 'passenger' as const, seats: 2, callerPhone: null, date: today(), time: '17:00', phone: '599910112', goriAddress: 'გორი, დღევანდელი მისამართი' };
   let withoutNoon = false;
   let empty = false;
   await page.route('**/api/driver/dashboard?**', async route => {
     const date = new URL(route.request().url()).searchParams.get('date');
-    const rows = empty ? [] : date === today() ? [evening] : withoutNoon ? [morning] : [morning, noon, noonSecond];
+    const rows = empty ? [] : date === today() ? [evening] : withoutNoon ? [morning] : [morning, noon, noonSecond, noonParcel];
     await route.fulfill({ json: { ...dashboard, date, bookings: rows, trip: empty ? null : { direction: 'gori-tbilisi', time: date === today() ? '17:00' : '09:30', active: true } } });
   });
   await openDriver(page);
   await expect(tripTimes(page).getByRole('button', { name: '17:00', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(1);
+  await expect(bookedSeats(page)).toHaveText('2');
   await selectedDays(page).getByRole('button', { name: 'ხვალ', exact: true }).click();
   await expect(attendance(page)).toHaveAttribute('data-date', tomorrow());
   await expect(bookings(page)).toHaveAttribute('data-date', tomorrow());
   await expect(tripTimes(page).getByRole('button', { name: '09:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(bookedSeats(page)).toHaveText(String(morning.seats));
   await tripTimes(page).getByRole('button', { name: '12:30', exact: true }).click();
-  await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(2);
-  for (const booking of [noon, noonSecond]) {
+  await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(3);
+  await expect(bookedSeats(page)).toHaveText('4');
+  await expect(bookings(page).locator('[data-driver-booking-count]')).toHaveText('3');
+  for (const booking of [noon, noonSecond, noonParcel]) {
     const card = bookings(page).locator(`[data-driver-booking="${booking.id}"]`);
     await expect(card).toContainText(booking.goriAddress);
     await expect(card).not.toContainText('12:30');
@@ -303,17 +313,23 @@ test('one day selector and trip hours filter cards, retain the chosen hour on re
     await expect(card.locator('a[href^="tel:"]')).toHaveAttribute('href', `tel:+995${booking.phone}`);
     await expect(card).not.toContainText('დარეკვა');
   }
+  const distinctCaller = bookings(page).locator(`[data-driver-booking="${noon.id}"] [data-driver-caller]`);
+  await expect(distinctCaller).toContainText(formatPhone(noon.callerPhone));
+  await expect(distinctCaller).toContainText('ზარი:');
+  for (const booking of [morning, noonSecond, noonParcel]) await expect(bookings(page).locator(`[data-driver-booking="${booking.id}"] [data-driver-caller]`)).toHaveCount(0);
   const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/driver/dashboard');
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await refreshed;
   await expect(tripTimes(page).getByRole('button', { name: '12:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(2);
+  await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(3);
+  await expect(bookedSeats(page)).toHaveText('4');
   await selectedDays(page).getByRole('button', { name: 'დღეს', exact: true }).click();
   await expect(attendance(page)).toHaveAttribute('data-date', today());
   await expect(bookings(page)).toHaveAttribute('data-date', today());
   await expect(tripTimes(page).getByRole('button', { name: '17:00', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(tripTimes(page).getByRole('button', { name: '12:30', exact: true })).toHaveCount(0);
   await expect(bookings(page).locator(`[data-driver-booking="${evening.id}"]`)).toBeVisible();
+  await expect(bookedSeats(page)).toHaveText('2');
   await selectedDays(page).getByRole('button', { name: 'ხვალ', exact: true }).click();
   await expect(tripTimes(page).getByRole('button', { name: '09:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await tripTimes(page).getByRole('button', { name: '12:30', exact: true }).click();
@@ -323,10 +339,13 @@ test('one day selector and trip hours filter cards, retain the chosen hour on re
   await expect(tripTimes(page).getByRole('button', { name: '09:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(bookings(page).locator(`[data-driver-booking="${morning.id}"]`)).toBeVisible();
   await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(1);
+  await expect(bookedSeats(page)).toHaveText(String(morning.seats));
   empty = true;
   await page.getByRole('button', { name: 'ჯავშნების განახლება', exact: true }).click();
   await expect(tripTimes(page).getByRole('button')).toHaveCount(0);
   await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(0);
+  await expect(bookedSeats(page)).toHaveText('0');
+  await expect(bookings(page).locator('[data-driver-booking-count]')).toHaveText('0');
 });
 
 test('a late dashboard response for today cannot replace tomorrow’s bookings', async ({ page }) => {
@@ -352,7 +371,8 @@ test('a late dashboard response for today cannot replace tomorrow’s bookings',
 
 for (const width of [320, 390]) {
   test(`the Georgian driver page has readable cards and large controls at ${width}px`, async ({ page }) => {
-    const own = await seedWhole(DRIVER_A.driverId, width === 320 ? '599910107' : '599910108');
+    const callerPhone = width === 320 ? '599910207' : '599910208';
+    const own = await seedWhole(DRIVER_A.driverId, width === 320 ? '599910107' : '599910108', callerPhone);
     await page.setViewportSize({ width, height: 850 });
     await page.goto('/driver');
     await expect(page.getByRole('heading', { name: 'მძღოლის შესვლა', exact: true })).toBeVisible();
@@ -374,8 +394,6 @@ for (const width of [320, 390]) {
     for (const control of [
       selectedDays(page).getByRole('button', { name: 'დღეს', exact: true }),
       selectedDays(page).getByRole('button', { name: 'ხვალ', exact: true }),
-      attendance(page).getByRole('button', { name: 'ვმუშაობ', exact: true }),
-      attendance(page).getByRole('button', { name: 'არ ვმუშაობ', exact: true }),
       tripTimes(page).getByRole('button', { name: '09:30', exact: true }),
     ]) {
       await control.scrollIntoViewIfNeeded(); const box = await control.boundingBox(); expect(box).not.toBeNull();
@@ -383,6 +401,28 @@ for (const width of [320, 390]) {
       expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.x + box!.width).toBeLessThanOrEqual(width);
       expect(await control.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(18);
     }
+    const workButtons = attendance(page).getByRole('group', { name: 'მონაწილეობა', exact: true }).getByRole('button');
+    await expect(workButtons).toHaveCount(2);
+    const workLayout = await workButtons.evaluateAll(buttons => buttons.map(button => {
+      const rect = button.getBoundingClientRect();
+      const label = button.querySelector('span')!;
+      const style = getComputedStyle(label);
+      return { left: rect.left, right: rect.right, top: rect.top, height: rect.height,
+        font: parseFloat(style.fontSize), labelHeight: label.getBoundingClientRect().height,
+        lineHeight: parseFloat(style.lineHeight), overflow: button.scrollWidth > button.clientWidth + 2 };
+    }));
+    expect(Math.abs(workLayout[0].top - workLayout[1].top), 'Working and not-working buttons must share one row').toBeLessThanOrEqual(1);
+    expect(workLayout[0].right).toBeLessThanOrEqual(workLayout[1].left);
+    for (const control of workLayout) {
+      expect(control.height).toBeGreaterThanOrEqual(52);
+      expect(control.font).toBeGreaterThanOrEqual(16);
+      expect(control.left).toBeGreaterThanOrEqual(0); expect(control.right).toBeLessThanOrEqual(width);
+      expect(control.labelHeight, 'The compact work choices must retain complete one-line labels').toBeLessThanOrEqual(control.lineHeight + 1);
+      expect(control.overflow).toBe(false);
+    }
+    const headingFonts = await page.locator('.driver-welcome h1,.driver-section-heading h2').evaluateAll(headings => headings.map(heading => parseFloat(getComputedStyle(heading).fontSize)));
+    expect(Math.min(...headingFonts)).toBeGreaterThanOrEqual(18);
+    expect(Math.max(...headingFonts), 'Home headings should remain smaller than the main phone action').toBeLessThanOrEqual(20);
     const hour = tripTimes(page).getByRole('button', { name: '09:30', exact: true });
     expect(await hour.evaluate(element => parseFloat(getComputedStyle(element).fontSize)), 'Time digits should stay readable without dominating the phone').toBeLessThanOrEqual(26);
     const phone = card.locator('a[href^="tel:"]');
@@ -396,9 +436,27 @@ for (const width of [320, 390]) {
       return { width: rect.width, height: rect.height, font: parseFloat(getComputedStyle(element).fontSize), cardContentWidth: card.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), overflows: element.scrollWidth > element.clientWidth + 2 };
     });
     expect(callLayout.height).toBeGreaterThanOrEqual(56);
-    expect(callLayout.font).toBeGreaterThanOrEqual(18);
+    expect(callLayout.font).toBeGreaterThanOrEqual(20);
     expect(Math.abs(callLayout.width - callLayout.cardContentWidth), 'The number itself should occupy the broad call button').toBeLessThanOrEqual(2);
     expect(callLayout.overflows).toBe(false);
+    await expect(bookedSeats(page)).toHaveText(String(own.seats));
+    await expect(bookings(page).locator('[data-driver-booking-count]')).toHaveText('1');
+    const caller = card.locator('[data-driver-caller]');
+    await expect(caller).toContainText(formatPhone(callerPhone));
+    const callerLayout = await caller.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      const seats = element.closest('[data-driver-booking]')!.querySelector('[data-driver-booking-seats]')!.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, seatsRight: seats.right,
+        seatsTop: seats.top, seatsBottom: seats.bottom, font: parseFloat(getComputedStyle(element).fontSize),
+        overflow: element.scrollWidth > element.clientWidth + 2 };
+    });
+    expect(callerLayout.left, 'The caller number belongs next to the seat badge').toBeGreaterThanOrEqual(callerLayout.seatsRight - 1);
+    expect(callerLayout.top).toBeLessThan(callerLayout.seatsBottom);
+    expect(callerLayout.bottom).toBeGreaterThan(callerLayout.seatsTop);
+    expect(callerLayout.font).toBeGreaterThanOrEqual(14);
+    expect(callerLayout.font).toBeLessThanOrEqual(16);
+    expect(callerLayout.overflow).toBe(false);
+    expect(callerLayout.right).toBeLessThanOrEqual(width);
     await expect(card).not.toContainText('09:30');
     expect((await card.innerText()).split(formatPhone(own.phone))).toHaveLength(2);
     const headingOverlaps = await bookings(page).locator('.driver-orders-heading').evaluate(element => {

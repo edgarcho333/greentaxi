@@ -13,6 +13,7 @@ export type DriverIdentity = { id: number; name: string; login: string; phone: s
 export type DriverDayStatus = { date: string; working: boolean; assignedTime: string | null; assignmentActive: boolean };
 export type DriverBooking = {
   id: number; name: string; phone: string; direction: Direction; seats: number; bookingType: BookingType;
+  callerPhone?: string | null;
   luggage: boolean; dog: boolean; seatPreference: SeatPreference | null; goriAddress: string; pickupStopName: string | null;
   didubeName: string; didubeAddress: string; date: string; time: string;
 };

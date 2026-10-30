@@ -98,6 +98,7 @@ function DriverHome({ session, onExpired, onLogout }: { session: DriverSession &
   const timeKey = availableTimes.join(',');
   const selectedTime = hourSelection?.date === selectedDate && availableTimes.includes(hourSelection.time) ? hourSelection.time : availableTimes[0] ?? null;
   const selectedBookings = visible?.bookings.filter(booking => booking.time === selectedTime) ?? [];
+  const reservedSeats = selectedBookings.reduce((total, booking) => total + (booking.bookingType === 'parcel' ? 0 : booking.seats), 0);
   const calendarRef = useRef(calendar); calendarRef.current = calendar;
   const selection = useRef(bookingsDate); selection.current = bookingsDate;
   const mounted = useRef(false);
@@ -202,7 +203,7 @@ function DriverHome({ session, onExpired, onLogout }: { session: DriverSession &
       {loading && !visible && <p className="driver-loading-status" role="status"><LoaderCircle size={24} className="driver-spin" />ჯავშნები იტვირთება…</p>}
       {readError && <div className="driver-feedback error" role="alert"><span>{readError}</span><button type="button" className="driver-button" onClick={() => setRetry(value => value + 1)} disabled={loading}><RefreshCw size={21} />ხელახლა ცდა</button></div>}
       {visible && <><div className="driver-section-heading driver-time-heading"><Clock3 size={25} /><h2>რეისის დრო</h2></div>{availableTimes.length ? <div className="driver-time-buttons" role="group" aria-label="რეისის დრო">{availableTimes.map(time => <button type="button" key={time} aria-pressed={selectedTime === time} disabled={loggingOut} onClick={() => setHourSelection({ date: selectedDate, time })}>{time}</button>)}</div> : <p className="driver-no-trips">რეისები ჯერ არ არის.</p>}{visible.trip && selectedTime === visible.trip.time && !visible.trip.active && <p className="driver-trip-status" role="status">არჩეული რეისის დრო გამორთულია.</p>}
-        <div className="driver-section-heading driver-orders-heading"><CarFront size={26} /><h2>ჩემი შეკვეთები</h2><span className="driver-booking-count" data-driver-booking-count>{selectedBookings.length}</span><button type="button" className="driver-refresh" aria-label="ჯავშნების განახლება" onClick={() => setRetry(value => value + 1)} disabled={loading || loggingOut}><RefreshCw size={24} /></button></div>{selectedBookings.length ? <div className="driver-booking-list">{selectedBookings.map(booking => <BookingCard key={booking.id} booking={booking} />)}</div> : <div className="driver-empty"><CarFront size={32} /><p>ჯავშნები ჯერ არ არის.</p></div>}</>}
+        <div className="driver-section-heading driver-orders-heading"><CarFront size={26} /><h2>ჩემი შეკვეთები</h2><span className="driver-booking-count" aria-label={`შეკვეთები: ${selectedBookings.length}`} data-driver-booking-count>{selectedBookings.length}</span><button type="button" className="driver-refresh" aria-label="ჯავშნების განახლება" onClick={() => setRetry(value => value + 1)} disabled={loading || loggingOut}><RefreshCw size={24} /></button></div><div className="driver-seat-summary" role="status"><UsersRound size={21} /><span>დაჯავშნილი ადგილები</span><strong data-driver-seat-count>{reservedSeats}</strong></div>{selectedBookings.length ? <div className="driver-booking-list">{selectedBookings.map(booking => <BookingCard key={booking.id} booking={booking} />)}</div> : <div className="driver-empty"><CarFront size={32} /><p>ჯავშნები ჯერ არ არის.</p></div>}</>}
     </section><footer className="driver-page-footer">GreenTaxi · გორი ↔ თბილისი</footer>
   </main>;
 }
@@ -214,5 +215,15 @@ function DayButtons({ calendar, value, onChange, label, disabled }: { calendar: 
 function BookingCard({ booking }: { booking: DriverBooking }) {
   const preference = booking.seatPreference ? { front: 'წინ', middle: 'შუაში', back: 'უკან' }[booking.seatPreference] : null;
   const pickup = booking.direction === 'gori-tbilisi' ? booking.goriAddress : booking.pickupStopName || booking.didubeName;
-  return <article className="driver-booking-card" data-driver-booking={booking.id}><header><strong>{directions[booking.direction]}</strong></header>{booking.name?.trim() && <h3>{booking.name}</h3>}<div className="driver-booking-address"><MapPin size={24} /><div><span>აყვანა</span><strong>{pickup || '—'}</strong></div></div><div className="driver-booking-badges"><span>{booking.bookingType === 'parcel' ? <Package size={21} /> : booking.bookingType === 'whole_car' ? <CarFront size={21} /> : <UsersRound size={21} />}{booking.bookingType === 'parcel' ? 'გზავნილი · ადგილების გარეშე' : booking.bookingType === 'whole_car' ? `მთლიანი მანქანა · ${booking.seats} ადგილი` : `${booking.seats} ადგილი`}</span>{booking.luggage && <span><Luggage size={21} />ბარგი</span>}{booking.dog && <span><Dog size={21} />ძაღლი</span>}{preference && <span>ადგილი: {preference}</span>}</div><a className="driver-booking-phone" href={`tel:${phoneDialNumber(booking.phone) || booking.phone}`}><Phone size={25} />{formatPhone(booking.phone)}</a></article>;
+  const normalizedCaller = booking.callerPhone ? normalizePhone(booking.callerPhone) : null;
+  const caller = normalizedCaller && normalizedCaller !== normalizePhone(booking.phone) ? normalizedCaller : null;
+  const hasBadges = booking.bookingType !== 'passenger' || booking.luggage || booking.dog || preference;
+  return <article className="driver-booking-card" data-driver-booking={booking.id}>
+    <header><strong>{directions[booking.direction]}</strong></header>
+    {booking.name?.trim() && <h3>{booking.name}</h3>}
+    <div className="driver-booking-address"><MapPin size={24} /><div><span>აყვანა</span><strong>{pickup || '—'}</strong></div></div>
+    <div className="driver-booking-meta"><span className="driver-booking-seats" data-driver-booking-seats>{booking.bookingType === 'parcel' ? <Package size={19} /> : booking.bookingType === 'whole_car' ? <CarFront size={19} /> : <UsersRound size={19} />}{booking.bookingType === 'parcel' ? 0 : booking.seats} ადგილი</span>{caller && <span className="driver-booking-caller" data-driver-caller><span>ზარი:</span><strong>{formatPhone(caller)}</strong></span>}</div>
+    {hasBadges && <div className="driver-booking-badges">{booking.bookingType === 'parcel' && <span><Package size={19} />გზავნილი · ადგილების გარეშე</span>}{booking.bookingType === 'whole_car' && <span><CarFront size={19} />მთლიანი მანქანა</span>}{booking.luggage && <span><Luggage size={19} />ბარგი</span>}{booking.dog && <span><Dog size={19} />ძაღლი</span>}{preference && <span>ადგილი: {preference}</span>}</div>}
+    <a className="driver-booking-phone" href={`tel:${phoneDialNumber(booking.phone) || booking.phone}`}><Phone size={25} />{formatPhone(booking.phone)}</a>
+  </article>;
 }

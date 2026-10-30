@@ -108,7 +108,7 @@ export function mountDriverPortal(app: Express, dependencies: {
       const date = selectedDate(req.query.date ?? window.today, window);
       const status = await days(driver.id, window);
       const selected = status.find(day => day.date === date)!;
-      const columns = `id,name,phone,direction,seats,booking_type,luggage,dog,seat_preference,
+      const columns = `id,name,phone,caller_phone,direction,seats,booking_type,luggage,dog,seat_preference,
         gori_address,pickup_stop_name,didube_name,didube_address,assigned_date,assigned_time`;
       // A whole-car performer sees only that driver's exclusive orders. The
       // shared passenger list belongs to working drivers assigned to the trip.
@@ -124,6 +124,7 @@ export function mountDriverPortal(app: Express, dependencies: {
       }
       const bookings: DriverBooking[] = rows.map(row => ({
         id: row.id, name: row.name, phone: normalizePhone(row.phone) ?? row.phone, direction: row.direction,
+        callerPhone: row.caller_phone == null ? null : normalizePhone(row.caller_phone) ?? row.caller_phone,
         seats: row.seats, bookingType: row.booking_type, luggage: row.luggage === 1, dog: row.dog === 1,
         seatPreference: row.seat_preference, goriAddress: row.gori_address, pickupStopName: row.pickup_stop_name,
         didubeName: row.didube_name, didubeAddress: row.didube_address, date: row.assigned_date, time: row.assigned_time,

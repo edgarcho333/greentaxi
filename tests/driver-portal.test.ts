@@ -246,8 +246,8 @@ test('whole-car performers see only their own active confirmed orders and a rest
   await isolated(async f => {
     await f.login();
     const canceled = await whole(f, 1); await successful(f, `/admin/bookings/${canceled.id}/delete`, 'POST', {}, 'employee');
-    const own = await whole(f, 1, { callerPhone: '599999888', luggage: true, dog: true });
-    const foreign = await whole(f, 2);
+    const own = await whole(f, 1, { callerPhone: '+995 599 99 98 88', luggage: true, dog: true });
+    const foreign = await whole(f, 2, { callerPhone: '599888777' });
     const passenger = await successful(f, '/admin/bookings', 'POST', bookingInput(), 'employee');
     const parcel = await successful(f, '/admin/bookings', 'POST', bookingInput({ bookingType: 'parcel' }), 'employee');
     const waiting = await f.request('/bookings', 'POST', bookingInput()); assert.equal(waiting.status, 201);
@@ -256,9 +256,10 @@ test('whole-car performers see only their own active confirmed orders and a rest
     assert.equal(dashboard.driver.id, 1); assert.equal(dashboard.bookingScope, 'assigned');
     assert.deepEqual(dashboard.trip, { direction: 'gori-tbilisi', time: '08:30', active: true });
     assert.deepEqual(dashboard.bookings.map((booking: any) => booking.id), [own.id]);
-    assert.deepEqual(Object.keys(dashboard.bookings[0]).sort(), ['id', 'name', 'phone', 'direction', 'seats', 'bookingType', 'luggage', 'dog', 'seatPreference', 'goriAddress', 'pickupStopName', 'didubeName', 'didubeAddress', 'date', 'time'].sort());
+    assert.deepEqual(Object.keys(dashboard.bookings[0]).sort(), ['id', 'name', 'phone', 'callerPhone', 'direction', 'seats', 'bookingType', 'luggage', 'dog', 'seatPreference', 'goriAddress', 'pickupStopName', 'didubeName', 'didubeAddress', 'date', 'time'].sort());
     assert.equal(dashboard.bookings[0].phone, '599111222'); assert.equal(dashboard.bookings[0].luggage, true); assert.equal(dashboard.bookings[0].dog, true);
-    assert.equal(JSON.stringify(dashboard.bookings).includes('599999888'), false);
+    assert.equal(dashboard.bookings[0].callerPhone, '599999888');
+    assert.equal(JSON.stringify(dashboard.bookings).includes('599888777'), false);
     for (const parameters of ['path=driver%2Fdashboard', 'driverId=2', 'userId=2', 'path=driver%2Fdashboard&driverId=2&userId=2&accountId=2']) {
       const routed = await successful(f, `/driver/dashboard?date=${TOMORROW}&${parameters}`);
       assert.equal(routed.driver.id, 1);
@@ -284,7 +285,7 @@ test('working drivers assigned to the same trip share passenger and parcel order
     await f.login();
     assert.deepEqual((await successful(f, `/driver/dashboard?date=${TOMORROW}`)).bookings, []);
     await assign(f, 1); await assign(f, 2);
-    const passenger = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880001', luggage: true, seatPreference: 'front' }), 'employee');
+    const passenger = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880001', callerPhone: '+995 599 88 09 99', luggage: true, seatPreference: 'front' }), 'employee');
     const parcel = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880002', bookingType: 'parcel' }), 'employee');
     const exclusive = await whole(f, 3, { phone: '599880003' });
     const otherHour = await successful(f, '/admin/bookings', 'POST', bookingInput({ phone: '599880004', requestedTime: '09:30' }), 'employee');
@@ -305,6 +306,8 @@ test('working drivers assigned to the same trip share passenger and parcel order
       assert.deepEqual(dashboard.bookings.map((booking: any) => booking.id), [passenger.id, parcel.id]);
       assert.deepEqual(dashboard.bookings.map((booking: any) => [booking.bookingType, booking.seats]), [['passenger', 2], ['parcel', 0]]);
       assert.equal(dashboard.bookings[0].luggage, true); assert.equal(dashboard.bookings[0].seatPreference, 'front');
+      assert.equal(dashboard.bookings[0].callerPhone, '599880999');
+      assert.equal(dashboard.bookings[1].callerPhone, null);
       for (const hidden of [exclusive.id, otherHour.id, otherDay.id, otherDirection.id, deleted.id, waiting.data.id]) assert.ok(!dashboard.bookings.some((booking: any) => booking.id === hidden));
       assert.deepEqual((await successful(f, `/driver/dashboard?date=${TODAY}`)).bookings, []);
     }
