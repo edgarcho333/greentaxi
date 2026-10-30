@@ -47,7 +47,7 @@ test.beforeAll(async ({ playwright, baseURL }, info) => {
   for (const account of [DRIVER_A, DRIVER_B]) {
     const saved = await admin.patch(`/api/admin/drivers/${account.driverId}/phone`, { data: { phone: account.phone } });
     expect(saved.ok()).toBeTruthy();
-    expect(await saved.json()).toEqual({ driverId: account.driverId, phone: account.phone });
+    expect(await saved.json()).toMatchObject({ driverId: account.driverId, phone: account.phone });
   }
   driverName = (await day(today())).drivers.find(driver => driver.id === DRIVER_A.driverId)!.name;
   driverApi = await playwright.request.newContext({ baseURL });

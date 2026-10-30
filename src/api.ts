@@ -33,12 +33,12 @@ export type Booking = {
 };
 export type Schedule = { direction: Direction; date: string; baseTimes: string[]; overrideTimes: string[] | null; slots: Slot[] };
 export type DriverDay = {
-  id: number; name: string; phone?: string | null; capacity: number; order: number; queuePosition: number;
+  id: number; name: string; phone?: string | null; capacity: number; revision?: number; order: number; queuePosition: number;
   declined: boolean; assignmentMode: 'auto' | 'manual';
   automaticTime: string | null; assignedTime: string | null; assignmentActive: boolean;
 };
 export type DriverSchedule = {
-  direction: 'gori-tbilisi'; date: string; anchorDate: string; firstDriverId: number;
+  direction: 'gori-tbilisi'; date: string; anchorDate: string; firstDriverId: number | null;
   times: string[]; drivers: DriverDay[];
 };
 export type TripDriver = {

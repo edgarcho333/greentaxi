@@ -41,7 +41,7 @@ export async function createDriverAccount(database: Database, input: {
   const login = normalizeDriverLogin(input.login);
   const hash = await hashDriverPassword(input.password);
   return database.transaction(async () => {
-    const driver = await database.prepare('SELECT id,name,capacity FROM drivers WHERE id=?').get(input.driverId);
+    const driver = await database.prepare('SELECT id,name,capacity FROM drivers WHERE id=? AND deleted_at IS NULL').get(input.driverId);
     if (!driver) throw new DriverAccountError(404, 'NOT_FOUND', 'მძღოლი ვერ მოიძებნა.');
     if (input.expectedName !== undefined && driver.name !== input.expectedName) throw new DriverAccountError(409, 'DRIVER_CHANGED', 'მძღოლის მონაცემები შეიცვალა.');
     if (await database.prepare('SELECT driver_id FROM driver_accounts WHERE driver_id=?').get(driver.id)) throw new DriverAccountError(409, 'ACCOUNT_EXISTS', 'მძღოლის ანგარიში უკვე არსებობს.');
@@ -57,18 +57,18 @@ export async function createDriverAccount(database: Database, input: {
 
 /** Staff edit one existing driver's phone without altering legacy credentials. */
 export async function setDriverPhone(database: Database, input: {
-  driverId: number; phone: unknown; employeeId?: number; now?: () => Date;
-}): Promise<{ driverId: number; phone: string | null }> {
+  driverId: number; phone: unknown; employeeId?: number; now?: () => Date; touchRevision?: boolean;
+}): Promise<{ driverId: number; phone: string | null; revision: number }> {
   if (!Number.isSafeInteger(input.driverId) || input.driverId < 1) throw new DriverAccountError(400, 'VALIDATION', 'აირჩიეთ მძღოლი.');
   const phone = normalizeDriverPhone(input.phone, true);
   return database.transaction(async () => {
-    const driver = await database.prepare('SELECT id FROM drivers WHERE id=?').get(input.driverId);
+    const driver = await database.prepare('SELECT id,revision FROM drivers WHERE id=? AND deleted_at IS NULL').get(input.driverId);
     if (!driver) throw new DriverAccountError(404, 'NOT_FOUND', 'მძღოლი ვერ მოიძებნა.');
     const previous = await database.prepare('SELECT phone FROM driver_accounts WHERE driver_id=?').get(driver.id);
     if (phone !== null && await database.prepare('SELECT driver_id FROM driver_accounts WHERE phone=? AND driver_id<>?').get(phone, driver.id)) {
       throw new DriverAccountError(409, 'PHONE_TAKEN', 'ეს ნომერი უკვე სხვა მძღოლს ეკუთვნის.');
     }
-    if ((!previous && phone === null) || (phone !== null && previous?.phone === phone)) return { driverId: driver.id, phone };
+    if ((!previous && phone === null) || previous?.phone === phone) return { driverId: driver.id, phone, revision: driver.revision };
     const timestamp = (input.now?.() ?? new Date()).toISOString();
     if (previous) {
       await database.prepare('UPDATE driver_accounts SET phone=?,updated_at=? WHERE driver_id=?').run(phone, timestamp, driver.id);
@@ -81,8 +81,10 @@ export async function setDriverPhone(database: Database, input: {
         .run(driver.id, login, hash, phone, timestamp, timestamp);
     }
     await database.prepare('DELETE FROM driver_sessions WHERE driver_id=?').run(driver.id);
+    if (input.touchRevision !== false) await database.prepare('UPDATE drivers SET revision=revision+1 WHERE id=?').run(driver.id);
     await database.prepare('INSERT INTO audit_log(user_id,booking_id,action,details,created_at) VALUES (?,NULL,?,?,?)')
       .run(input.employeeId ?? null, 'driver.phone', JSON.stringify({ driverId: driver.id, phoneConfigured: phone !== null }), timestamp);
-    return { driverId: driver.id, phone };
+    const current = await database.prepare('SELECT revision FROM drivers WHERE id=?').get(driver.id);
+    return { driverId: driver.id, phone, revision: current!.revision };
   });
 }

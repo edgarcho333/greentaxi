@@ -48,7 +48,7 @@ export function mountDriverPortal(app: Express, dependencies: {
     const row = await database.prepare(`SELECT driver.id,driver.name,driver.capacity,account.login,account.phone FROM driver_sessions session
       JOIN driver_accounts account ON account.driver_id=session.driver_id
       JOIN drivers driver ON driver.id=account.driver_id
-      WHERE session.token_hash=? AND session.expires_at>? AND account.active=1 AND account.phone IS NOT NULL`).get(digest(value), now().getTime());
+      WHERE session.token_hash=? AND session.expires_at>? AND account.active=1 AND account.phone IS NOT NULL AND driver.deleted_at IS NULL`).get(digest(value), now().getTime());
     return row ? identity(row) : null;
   }
   async function days(driverId: number, window: ReturnType<typeof dateWindow>): Promise<DriverDayStatus[]> {
@@ -75,7 +75,7 @@ export function mountDriverPortal(app: Express, dependencies: {
     const value = randomBytes(32).toString('hex');
     const driver = await database.transaction(async () => {
       const current = await database.prepare(`SELECT driver.id,driver.name,driver.capacity,account.login,account.phone FROM driver_accounts account
-        JOIN drivers driver ON driver.id=account.driver_id WHERE account.phone=? AND account.active=1`).get(phone);
+        JOIN drivers driver ON driver.id=account.driver_id WHERE account.phone=? AND account.active=1 AND driver.deleted_at IS NULL`).get(phone);
       if (!current) reject(401, 'ნომერი ვერ მოიძებნა. დაუკავშირდით ადმინისტრატორს.', 'INVALID_LOGIN');
       await database.prepare('DELETE FROM driver_sessions WHERE expires_at<=?').run(now().getTime());
       await database.prepare('INSERT INTO driver_sessions(token_hash,driver_id,expires_at) VALUES (?,?,?)').run(digest(value), current.id, now().getTime() + SESSION_LIFETIME);
@@ -102,6 +102,8 @@ export function mountDriverPortal(app: Express, dependencies: {
     // account identity always comes from the authenticated driver session.
     const driver = req.portalDriver!;
     const result = await database.transaction(async (): Promise<DriverDashboard> => {
+      const currentDriver = await session(req);
+      if (!currentDriver || currentDriver.id !== driver.id) reject(401, 'შედით მძღოლის ანგარიშში.', 'UNAUTHORIZED');
       const window = dateWindow();
       const date = selectedDate(req.query.date ?? window.today, window);
       const status = await days(driver.id, window);
@@ -126,7 +128,7 @@ export function mountDriverPortal(app: Express, dependencies: {
         seatPreference: row.seat_preference, goriAddress: row.gori_address, pickupStopName: row.pickup_stop_name,
         didubeName: row.didube_name, didubeAddress: row.didube_address, date: row.assigned_date, time: row.assigned_time,
       }));
-      return { driver, ...window, days: status, date, bookings, bookingScope, trip: selected.assignedTime ? { direction: DRIVER_DIRECTION, time: selected.assignedTime, active: selected.assignmentActive } : null };
+      return { driver: currentDriver, ...window, days: status, date, bookings, bookingScope, trip: selected.assignedTime ? { direction: DRIVER_DIRECTION, time: selected.assignedTime, active: selected.assignmentActive } : null };
     });
     res.json(result);
   });
@@ -135,6 +137,8 @@ export function mountDriverPortal(app: Express, dependencies: {
     if (typeof req.body.working !== 'boolean') reject(400, 'აირჩიეთ მუშაობთ თუ არა.', 'VALIDATION');
     const driver = req.portalDriver!;
     const result = await database.transaction(async () => {
+      const currentDriver = await session(req);
+      if (!currentDriver || currentDriver.id !== driver.id) reject(401, 'შედით მძღოლის ანგარიშში.', 'UNAUTHORIZED');
       const window = dateWindow();
       const date = selectedDate(req.body.date, window);
       if (!req.body.working && await database.prepare(`SELECT id FROM bookings WHERE direction=? AND assigned_date=? AND assigned_vehicle_key=?

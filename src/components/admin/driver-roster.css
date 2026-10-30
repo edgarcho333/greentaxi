@@ -87,3 +87,53 @@
   .admin-settings .admin-driver-table tbody tr { padding: 13px 10px; gap: 10px; }
   .admin-settings .admin-driver-name strong { font-size: 18px; }
 }
+
+.admin-settings .admin-driver-management-toolbar { display: flex; margin-top: 18px; }
+.admin-settings .admin-driver-management-toolbar .admin-driver-add { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 60px; padding: 12px 18px; border: 2px solid #267246; border-radius: 10px; color: #fff; background: #096b3b; font: inherit; font-size: 19px; font-weight: 600; line-height: 1.6; cursor: pointer; }
+.admin-settings .admin-driver-row-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 15px; }
+.admin-settings .admin-driver-row-actions :is(.admin-driver-edit, .admin-driver-delete) { display: inline-flex; flex: 1 1 150px; align-items: center; justify-content: center; gap: 8px; min-width: 0; min-height: 58px; padding: 11px 12px; border: 2px solid #8aaf98; border-radius: 10px; color: #215b37; background: #eff8f2; font: inherit; font-size: 18px; font-weight: 600; line-height: 1.6; cursor: pointer; }
+.admin-settings .admin-driver-row-actions .admin-driver-delete { color: #942e29; background: #fff2ef; border-color: #c88b82; }
+.admin-settings .admin-driver-management-toolbar button:disabled, .admin-settings .admin-driver-row-actions button:disabled { opacity: .6; cursor: default; }
+.admin-settings .admin-driver-row-actions button svg, .admin-settings .admin-driver-add svg { flex-shrink: 0; }
+.admin-settings .admin-driver-row-actions button:focus-visible, .admin-settings .admin-driver-add:focus-visible { outline: 3px solid #1645a0; outline-offset: 3px; }
+.admin-driver-editor-overlay { padding: 20px; }
+.admin-driver-editor-dialog.admin-dialog { width: min(680px, 100%); max-width: 680px; min-width: 0; max-height: calc(100dvh - 40px); color: #173f29; font-family: var(--font-body); }
+.admin-driver-editor-dialog.admin-dialog > header { align-items: flex-start; gap: 14px; padding: 24px; }
+.admin-driver-editor-dialog.admin-dialog > header > div { min-width: 0; }
+.admin-driver-editor-dialog.admin-dialog > header h2 { font-size: 25px; line-height: 1.6; overflow-wrap: anywhere; }
+.admin-driver-editor-dialog.admin-dialog > header p { margin: 8px 0 0; color: #3e614b; font-size: 16px; line-height: 1.8; }
+.admin-driver-editor-dialog.admin-dialog .admin-icon-button { flex: 0 0 54px; width: 54px; height: 54px; border-color: #a3c0ad; color: #245238; }
+.admin-driver-editor-dialog .admin-driver-editor-form { min-width: 0; padding: 22px 24px 0; }
+.admin-driver-editor-dialog .admin-driver-editor-form > label { display: flex; flex-direction: column; gap: 8px; margin: 0 0 20px; color: #284e36; font-size: 18px; font-weight: 600; line-height: 1.7; }
+.admin-driver-editor-dialog .admin-driver-editor-form input { width: 100%; min-width: 0; min-height: 60px; padding: 12px 13px; border: 2px solid #a6c2af; border-radius: 10px; background: #fff; color: #173f29; font: inherit; font-size: 20px; }
+.admin-driver-editor-dialog .admin-driver-editor-form label small { color: #486752; font-size: 15px; font-weight: 400; line-height: 1.8; }
+.admin-driver-editor-dialog .admin-driver-editor-capacity { min-width: 0; margin: 0 0 20px; padding: 0; border: 0; }
+.admin-driver-editor-dialog .admin-driver-editor-capacity legend { margin-bottom: 10px; color: #284e36; font-size: 18px; font-weight: 600; }
+.admin-driver-editor-dialog .admin-driver-editor-capacity > div { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; }
+.admin-driver-editor-dialog .admin-driver-editor-capacity button { min-width: 0; min-height: 60px; padding: 10px 5px; border: 2px solid #a0bfa9; border-radius: 10px; color: #28583a; background: #f2f8f4; font: inherit; font-size: 21px; font-weight: 700; }
+.admin-driver-editor-dialog .admin-driver-editor-capacity button[aria-pressed=true] { color: #fff; background: #096b3b; border-color: #096b3b; }
+.admin-driver-editor-dialog .admin-driver-editor-capacity p { margin: 10px 0 0; color: #45654e; font-size: 16px; }
+.admin-driver-editor-dialog .admin-driver-delete-summary { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 17px; margin-bottom: 20px; border: 1px solid #d0a29a; border-radius: 11px; color: #8c332b; background: #fff4f1; }
+.admin-driver-editor-dialog .admin-driver-delete-summary strong { color: #44221c; font-size: 25px; overflow-wrap: anywhere; max-width: 100%; }
+.admin-driver-editor-dialog .admin-driver-delete-summary span, .admin-driver-editor-dialog .admin-driver-delete-summary p { margin: 0; color: #64372d; font-size: 18px; line-height: 1.8; overflow-wrap: anywhere; }
+.admin-driver-editor-dialog .admin-driver-editor-feedback, .admin-driver-editor-dialog .admin-driver-editor-conflict { padding: 14px; margin: 16px 0; border: 1px solid #cea298; border-radius: 10px; color: #8a2f27; background: #fff1ed; font-size: 17px; line-height: 1.8; overflow-wrap: anywhere; }
+.admin-driver-editor-dialog .admin-driver-editor-feedback.pending { color: #6e4c1d; border-color: #c5aa72; background: #fff7e8; }
+.admin-driver-editor-dialog .admin-driver-editor-conflict p { margin: 0 0 12px; color: inherit; font-size: inherit; line-height: inherit; }
+.admin-driver-editor-dialog .admin-driver-editor-conflict button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; max-width: 100%; min-height: 58px; padding: 11px 12px; border: 2px solid #ad8074; border-radius: 9px; color: #673a2e; background: #fff; font: inherit; font-size: 17px; font-weight: 600; }
+.admin-driver-editor-dialog.admin-dialog .admin-dialog-footer { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px; position: sticky; bottom: 0; margin: 22px -24px 0; padding: 17px 24px; background: #f9fcfa; }
+.admin-driver-editor-dialog.admin-dialog .admin-dialog-footer button { flex: 1 1 170px; min-width: 0; min-height: 60px; padding: 12px 15px; font-size: 18px; white-space: normal; }
+.admin-driver-editor-dialog :is(button, input):focus-visible { outline: 3px solid #1645a0; outline-offset: 3px; }
+.admin-driver-editor-dialog button:disabled { opacity: .6; cursor: default; }
+@media (max-width: 600px) {
+  .admin-settings .admin-driver-management-toolbar .admin-driver-add { width: 100%; padding-inline: 10px; font-size: 18px; }
+  .admin-settings .admin-driver-row-actions :is(.admin-driver-edit, .admin-driver-delete) { flex-basis: 100%; font-size: 18px; }
+  .admin-driver-editor-overlay { padding: 12px; }
+  .admin-driver-editor-dialog.admin-dialog { max-height: calc(100dvh - 24px); }
+  .admin-driver-editor-dialog.admin-dialog > header { padding: 19px 16px; gap: 10px; }
+  .admin-driver-editor-dialog.admin-dialog > header h2 { font-size: 22px; }
+  .admin-driver-editor-dialog.admin-dialog > header p { font-size: 15px; }
+  .admin-driver-editor-dialog.admin-dialog .admin-icon-button { flex-basis: 50px; width: 50px; height: 50px; }
+  .admin-driver-editor-dialog .admin-driver-editor-form { padding: 18px 16px 0; }
+  .admin-driver-editor-dialog .admin-driver-editor-capacity > div { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .admin-driver-editor-dialog.admin-dialog .admin-dialog-footer { margin-inline: -16px; padding-inline: 16px; }
+}

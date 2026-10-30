@@ -109,10 +109,11 @@ export function buildDriverSchedule(
   // Traverse the permanent roster from bottom to top without changing stored
   // IDs or positions. Anchor by driver identity, independently of attendance.
   const permanent = [...drivers].sort((first, second) => second.order - first.order || second.id - first.id);
-  const anchorIndex = permanent.findIndex(driver => driver.id === DRIVER_ROTATION_ANCHOR_DRIVER_ID);
+  const exactAnchor = permanent.findIndex(driver => driver.id === DRIVER_ROTATION_ANCHOR_DRIVER_ID);
+  // A retired anchor hands its place to the next original queue position.
+  const anchorIndex = exactAnchor >= 0 ? exactAnchor : permanent.findIndex(driver => driver.order < DRIVER_ROTATION_ANCHOR_DRIVER_ID);
   const anchored = anchorIndex > 0 ? [...permanent.slice(anchorIndex), ...permanent.slice(0, anchorIndex)] : permanent;
   const queue = rotateDriverQueue(anchored, DRIVER_ROTATION_ANCHOR, date);
-  if (queue.length === 0) throw new RangeError('Driver roster is empty.');
   const preferences = new Map(overrides.map(override => [override.driverId, override]));
   const plan: DriverDay[] = queue.map((driver, index) => {
     const preference = preferences.get(driver.id);
@@ -130,5 +131,5 @@ export function buildDriverSchedule(
       assignmentActive: assignedTime !== null && effectiveTimes.includes(assignedTime),
     };
   });
-  return { direction: DRIVER_DIRECTION, date, anchorDate: DRIVER_ROTATION_ANCHOR, firstDriverId: queue[0].id, times: effectiveTimes, drivers: plan };
+  return { direction: DRIVER_DIRECTION, date, anchorDate: DRIVER_ROTATION_ANCHOR, firstDriverId: queue[0]?.id ?? null, times: effectiveTimes, drivers: plan };
 }

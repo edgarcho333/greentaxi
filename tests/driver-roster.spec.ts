@@ -1,5 +1,6 @@
 import { test as base, expect, type APIRequestContext, type Locator, type Page, type Response } from '@playwright/test';
-import type { DriverDay, DriverSchedule, TripCapacity } from '../src/api';
+import { randomUUID } from 'node:crypto';
+import { addDays, today, type DriverDay, type DriverSchedule, type TripCapacity } from '../src/api';
 
 // Reuse the isolated browser employee: each spec file may be the first to set up
 // the disposable database, and Playwright can restart a worker after a failure.
@@ -91,8 +92,8 @@ async function openSettings(page: Page, date: string) {
 async function chooseDate(page: Page, date: string) {
   await dateInput(page).fill(date);
   await expect(roster(page).getByRole('table', { name: 'მძღოლები არჩეულ დღეს', exact: true })).toBeVisible();
-  await expect(roster(page).locator('[data-driver-id]')).toHaveCount(43);
   const actual = await getDriverDay(date);
+  await expect(roster(page).locator('[data-driver-id]')).toHaveCount(actual.drivers.length);
   await expect(roster(page).locator('[data-driver-id]').first()).toHaveAttribute('data-driver-id', String(actual.firstDriverId));
 }
 
@@ -131,6 +132,56 @@ async function setAttendance(page: Page, driver: Pick<DriverDay, 'id' | 'name'>,
   await expect(toggle).toHaveAttribute('aria-checked', String(participates));
   await expect(toggle).toBeEnabled();
   return await saved.json() as DriverSchedule;
+}
+
+type ManagedDriver = Pick<DriverDay, 'id' | 'name' | 'capacity' | 'phone'> & { revision: number };
+function editDriver(page: Page, driver: Pick<DriverDay, 'id' | 'name'>): Locator {
+  return driverRow(page, driver.id).getByRole('button', { name: `${driver.name} — რედაქტირება`, exact: true });
+}
+function deleteDriver(page: Page, driver: Pick<DriverDay, 'id' | 'name'>): Locator {
+  return driverRow(page, driver.id).getByRole('button', { name: `${driver.name} — წაშლა`, exact: true });
+}
+function driverDialog(page: Page, kind: 'create' | 'edit' | 'delete'): Locator {
+  return page.getByRole('dialog', { name: { create: 'მძღოლის დამატება', edit: 'მძღოლის რედაქტირება', delete: 'მძღოლის წაშლა' }[kind], exact: true });
+}
+function isDriverCrud(response: Response, method: 'POST' | 'PATCH' | 'DELETE', id?: number): boolean {
+  return new URL(response.url()).pathname === `/api/admin/drivers${id === undefined ? '' : `/${id}`}` && response.request().method() === method;
+}
+async function fillDriver(dialog: Locator, name: string, phone: string, capacity: number): Promise<void> {
+  await dialog.getByLabel('მძღოლის სახელი', { exact: true }).fill(name);
+  await dialog.getByLabel('ტელეფონის ნომერი', { exact: true }).fill(phone);
+  await dialog.getByRole('group', { name: 'მანქანის ტევადობა', exact: true }).getByRole('button', { name: `${capacity} ადგილი`, exact: true }).click();
+}
+async function freshDriver(id: number, date = ANCHOR): Promise<ManagedDriver | undefined> {
+  return (await getDriverDay(date)).drivers.find(driver => driver.id === id) as ManagedDriver | undefined;
+}
+async function createDriverApi(name: string, phone: string | null, capacity = 7): Promise<ManagedDriver> {
+  const response = await adminApi.post('/api/admin/drivers', { headers: { 'Idempotency-Key': randomUUID() }, data: { name, capacity, phone } });
+  expect(response.status()).toBe(201);
+  return (await response.json()).driver as ManagedDriver;
+}
+async function editDriverApi(driver: ManagedDriver, change: Partial<Pick<ManagedDriver, 'name' | 'capacity' | 'phone'>>): Promise<ManagedDriver> {
+  const response = await adminApi.patch(`/api/admin/drivers/${driver.id}`, { headers: { 'Idempotency-Key': randomUUID() }, data: {
+    name: driver.name, capacity: driver.capacity, phone: driver.phone, ...change, expectedRevision: driver.revision,
+  } });
+  expect(response.status()).toBe(200);
+  return (await response.json()).driver as ManagedDriver;
+}
+async function archiveDriverApi(id: number): Promise<void> {
+  const driver = await freshDriver(id);
+  if (!driver) return;
+  const response = await adminApi.delete(`/api/admin/drivers/${id}`, { headers: { 'Idempotency-Key': randomUUID() }, data: { expectedRevision: driver.revision } });
+  expect(response.status()).toBe(200);
+}
+async function removeDriverAssignment(date: string, id: number, time: string): Promise<void> {
+  const response = await adminApi.get(`/api/admin/trips/capacity?direction=gori-tbilisi&date=${date}&time=${time}`);
+  expect(response.ok()).toBeTruthy();
+  const trip = await response.json() as TripCapacity;
+  if (!trip.drivers.some(driver => driver.key === `roster:${id}`)) return;
+  const removed = await adminApi.post('/api/admin/trips/drivers', { data: {
+    direction: 'gori-tbilisi', date, time, expectedRevision: trip.revision, action: 'remove', removeKey: `roster:${id}`,
+  } });
+  expect(removed.ok()).toBeTruthy();
 }
 
 test('the saved schedule starts with Sukhita on October 19 and follows the descending circular queue', async ({ page }) => {
@@ -297,7 +348,7 @@ test('an administrator saves canonical driver phones, retains invalid drafts and
     const saved = await setPhone(page, first, '+995 555 93 01 01');
     expect(saved.status()).toBe(200);
     expect(saved.request().postDataJSON()).toEqual({ phone: originalNumber });
-    expect(await saved.json()).toEqual({ driverId: first.id, phone: originalNumber });
+    expect(await saved.json()).toMatchObject({ driverId: first.id, phone: originalNumber });
     await expect(driverPhone(page, first)).toHaveValue('555 93 01 01');
     await chooseDate(page, nextDate);
     await expect(driverPhone(page, first)).toHaveValue('555 93 01 01');
@@ -333,7 +384,7 @@ test('an administrator saves canonical driver phones, retains invalid drafts and
 
     const changed = await setPhone(page, first, '+995 555 93 01 03');
     expect(changed.ok()).toBeTruthy();
-    expect(await changed.json()).toEqual({ driverId: first.id, phone: replacement });
+    expect(await changed.json()).toMatchObject({ driverId: first.id, phone: replacement });
     expect((await driverPage.request.get('/api/driver/dashboard')).status()).toBe(401);
     await driverPage.reload();
     await expect(driverPage.getByRole('heading', { name: 'მძღოლის შესვლა', exact: true })).toBeVisible();
@@ -346,7 +397,7 @@ test('an administrator saves canonical driver phones, retains invalid drafts and
     const cleared = await setPhone(page, first, '');
     expect(cleared.ok()).toBeTruthy();
     expect(cleared.request().postDataJSON()).toEqual({ phone: null });
-    expect(await cleared.json()).toEqual({ driverId: first.id, phone: null });
+    expect(await cleared.json()).toMatchObject({ driverId: first.id, phone: null });
     await expect(driverPhone(page, first)).toHaveValue('');
     expect((await driverPage.request.get('/api/driver/dashboard')).status()).toBe(401);
     expect((await driverPage.request.post('/api/driver/auth/login', { data: { phone: replacement } })).status()).toBe(401);
@@ -473,5 +524,237 @@ for (const width of [320, 390]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
     await driverRow(page, first.id).scrollIntoViewIfNeeded();
     await page.screenshot({ path: `/tmp/driver-phone-roster-${width}.png` });
+    for (const control of [editDriver(page, first), deleteDriver(page, first), roster(page).getByRole('button', { name: 'მძღოლის დამატება', exact: true })]) {
+      await control.scrollIntoViewIfNeeded();
+      const box = await control.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.height).toBeGreaterThanOrEqual(48);
+      expect(box!.width).toBeGreaterThanOrEqual(48);
+      expect(box!.x).toBeGreaterThanOrEqual(-1);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width + 1);
+    }
+    await roster(page).getByRole('button', { name: 'მძღოლის დამატება', exact: true }).click();
+    const create = driverDialog(page, 'create');
+    await fillDriver(create, 'ახალი მძღოლი', '+995 555 94 49 99', 8);
+    await expect(create.getByRole('group', { name: 'მანქანის ტევადობა', exact: true }).getByRole('button')).toHaveCount(8);
+    for (const control of [create.getByLabel('მძღოლის სახელი', { exact: true }), create.getByLabel('ტელეფონის ნომერი', { exact: true }), create.getByRole('button', { name: 'მძღოლის დამატება', exact: true })]) {
+      await control.scrollIntoViewIfNeeded();
+      const box = await control.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.height).toBeGreaterThanOrEqual(48);
+      expect(box!.x).toBeGreaterThanOrEqual(-1);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(width + 1);
+      expect(await control.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
+    }
+    expect(await create.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBeTruthy();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy();
+    await page.screenshot({ path: `/tmp/driver-crud-create-${width}.png` });
+    await create.getByRole('button', { name: 'გაუქმება', exact: true }).click();
+    await expect(create).toHaveCount(0);
+    await deleteDriver(page, first).click();
+    const confirmation = driverDialog(page, 'delete');
+    await expect(confirmation).toContainText(first.name);
+    expect(await confirmation.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBeTruthy();
+    await page.screenshot({ path: `/tmp/driver-crud-delete-${width}.png` });
+    await confirmation.getByRole('button', { name: 'გაუქმება', exact: true }).click();
+    await expect(confirmation).toHaveCount(0);
+    expect((await getDriverDay(date)).drivers).toHaveLength(43);
   });
 }
+
+test('an administrator creates one driver after a lost reply, edits his details and phone, then cancels and confirms removal', async ({ page }) => {
+  test.setTimeout(60_000);
+  const originalName = 'სატესტო ახალი მძღოლი';
+  const changedName = 'განახლებული სატესტო მძღოლი';
+  const originalPhone = '555944101';
+  const changedPhone = '555944102';
+  const before = await getDriverDay(ANCHOR);
+  const attempts: { body: string | null; key: string | undefined }[] = [];
+  let created: ManagedDriver | undefined;
+  const driverPage = await page.context().newPage();
+  await page.route('**/api/admin/drivers', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const request = route.request();
+    attempts.push({ body: request.postData(), key: request.headers()['idempotency-key'] });
+    const response = await route.fetch();
+    if (response.status() === 201) created = (await response.json()).driver as ManagedDriver;
+    if (attempts.length === 1) {
+      expect(response.status()).toBe(201);
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'პასუხი დროებით მიუწვდომელია.' }) });
+    }
+    return route.fulfill({ response });
+  });
+  try {
+    await openSettings(page, ANCHOR);
+    await roster(page).getByRole('button', { name: 'მძღოლის დამატება', exact: true }).click();
+    const create = driverDialog(page, 'create');
+    await fillDriver(create, originalName, '+995 555 94 41 01', 6);
+    const lost = page.waitForResponse(response => isDriverCrud(response, 'POST'));
+    await create.getByRole('button', { name: 'მძღოლის დამატება', exact: true }).click();
+    expect((await lost).status()).toBe(503);
+    await expect(create.getByRole('button', { name: 'განმეორებით გაგზავნა', exact: true })).toBeEnabled();
+    await expect(create.getByLabel('მძღოლის სახელი', { exact: true })).toBeDisabled();
+    await expect(create.getByLabel('ტელეფონის ნომერი', { exact: true })).toBeDisabled();
+    expect((await getDriverDay(ANCHOR)).drivers.filter(driver => driver.phone === originalPhone)).toHaveLength(1);
+    const replayed = page.waitForResponse(response => isDriverCrud(response, 'POST'));
+    await create.getByRole('button', { name: 'განმეორებით გაგზავნა', exact: true }).click();
+    expect((await replayed).status()).toBe(201);
+    await expect(create).toHaveCount(0);
+    expect(created).toBeDefined();
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0].key).toBeTruthy();
+    expect(attempts[1]).toEqual(attempts[0]);
+    const first = (await freshDriver(created!.id))!;
+    expect(first).toMatchObject({ name: originalName, phone: originalPhone, capacity: 6 });
+    const added = (await getDriverDay(ANCHOR)).drivers.find(driver => driver.id === first.id)!;
+    expect(added.order).toBeGreaterThan(Math.max(...before.drivers.map(driver => driver.order)));
+    expect((await getDriverDay(ANCHOR)).drivers).toHaveLength(before.drivers.length + 1);
+    await expect(driverRow(page, first.id)).toContainText(originalName);
+
+    await driverPage.goto('/driver');
+    await driverPage.getByRole('textbox', { name: 'ტელეფონის ნომერი', exact: true }).fill(originalPhone);
+    await driverPage.getByRole('button', { name: 'შესვლა', exact: true }).click();
+    await expect(driverPage.locator('[data-driver-name]')).toHaveText(originalName);
+    await editDriver(page, first).click();
+    const edit = driverDialog(page, 'edit');
+    await fillDriver(edit, changedName, '+995 555 94 41 02', 8);
+    const edited = page.waitForResponse(response => isDriverCrud(response, 'PATCH', first.id));
+    await edit.getByRole('button', { name: 'შენახვა', exact: true }).click();
+    const updated = await edited;
+    expect(updated.status()).toBe(200);
+    expect(updated.request().postDataJSON()).toMatchObject({ expectedRevision: first.revision });
+    const changed = (await updated.json()).driver as ManagedDriver;
+    await expect(edit).toHaveCount(0);
+    await expect(driverRow(page, changed.id)).toContainText(changedName);
+    expect(await freshDriver(changed.id)).toMatchObject({ name: changedName, phone: changedPhone, capacity: 8 });
+    expect((await driverPage.request.get('/api/driver/dashboard')).status()).toBe(401);
+    await driverPage.reload();
+    await driverPage.getByRole('textbox', { name: 'ტელეფონის ნომერი', exact: true }).fill(changedPhone);
+    await driverPage.getByRole('button', { name: 'შესვლა', exact: true }).click();
+    await expect(driverPage.locator('[data-driver-name]')).toHaveText(changedName);
+    expect((await (await driverPage.request.get('/api/driver/auth/session')).json()).driver.id).toBe(changed.id);
+
+    await deleteDriver(page, changed).click();
+    const confirmation = driverDialog(page, 'delete');
+    await expect(confirmation).toContainText(changedName);
+    await confirmation.getByRole('button', { name: 'გაუქმება', exact: true }).click();
+    await expect(confirmation).toHaveCount(0);
+    expect(await freshDriver(changed.id)).toMatchObject({ name: changedName, phone: changedPhone });
+    expect((await driverPage.request.get('/api/driver/dashboard')).status()).toBe(200);
+    await deleteDriver(page, changed).click();
+    const removed = page.waitForResponse(response => isDriverCrud(response, 'DELETE', changed.id));
+    await driverDialog(page, 'delete').getByRole('button', { name: 'მძღოლის წაშლა', exact: true }).click();
+    expect((await removed).status()).toBe(200);
+    await expect(driverDialog(page, 'delete')).toHaveCount(0);
+    await expect(driverRow(page, changed.id)).toHaveCount(0);
+    expect(await freshDriver(changed.id)).toBeUndefined();
+    expect((await getDriverDay(ANCHOR)).drivers).toHaveLength(before.drivers.length);
+    expect((await driverPage.request.get('/api/driver/dashboard')).status()).toBe(401);
+    expect((await (await page.request.get('/api/auth/session')).json()).user.login).toBe(EMPLOYEE.login);
+  } finally {
+    await driverPage.close();
+    await page.unroute('**/api/admin/drivers');
+    if (created) await archiveDriverApi(created.id);
+  }
+});
+
+test('driver dialogs preserve duplicate-phone and stale-edit drafts and require fresh details before retrying', async ({ page }) => {
+  test.setTimeout(60_000);
+  let driver = await createDriverApi('შესაცვლელი მძღოლი', '555944201');
+  try {
+    await openSettings(page, ANCHOR);
+    await editDriver(page, driver).click();
+    const edit = driverDialog(page, 'edit');
+    const draftName = 'ჩემი შეუნახავი ცვლილება';
+    await fillDriver(edit, draftName, '555944201', 8);
+    driver = await editDriverApi(driver, { name: 'სხვა ოპერატორის ცვლილება', capacity: 6 });
+    const staleEdit = page.waitForResponse(response => isDriverCrud(response, 'PATCH', driver.id));
+    await edit.getByRole('button', { name: 'შენახვა', exact: true }).click();
+    const conflict = await staleEdit;
+    expect(conflict.status()).toBe(409);
+    expect(await conflict.json()).toMatchObject({ code: 'DRIVER_CHANGED' });
+    await expect(edit.getByRole('alert')).toBeVisible();
+    await expect(edit.getByLabel('მძღოლის სახელი', { exact: true })).toHaveValue(draftName);
+    await expect(edit.getByRole('group', { name: 'მანქანის ტევადობა', exact: true }).getByRole('button', { name: '8 ადგილი', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    expect(await freshDriver(driver.id)).toMatchObject({ name: driver.name, capacity: 6 });
+    await edit.getByRole('button', { name: 'მონაცემების განახლება', exact: true }).click();
+    await expect(edit.getByLabel('მძღოლის სახელი', { exact: true })).toHaveValue(driver.name);
+    await expect(edit.getByRole('group', { name: 'მანქანის ტევადობა', exact: true }).getByRole('button', { name: '6 ადგილი', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await fillDriver(edit, 'განახლებული სწორად', '555944201', 8);
+    const retry = page.waitForResponse(response => isDriverCrud(response, 'PATCH', driver.id));
+    await edit.getByRole('button', { name: 'შენახვა', exact: true }).click();
+    const saved = await retry;
+    expect(saved.status()).toBe(200);
+    expect(saved.request().postDataJSON()).toMatchObject({ expectedRevision: driver.revision });
+    driver = (await saved.json()).driver as ManagedDriver;
+    await expect(edit).toHaveCount(0);
+
+    await deleteDriver(page, driver).click();
+    const confirmation = driverDialog(page, 'delete');
+    driver = await editDriverApi(driver, { name: 'წაშლამდე სხვა ცვლილება' });
+    const staleDelete = page.waitForResponse(response => isDriverCrud(response, 'DELETE', driver.id));
+    await confirmation.getByRole('button', { name: 'მძღოლის წაშლა', exact: true }).click();
+    const rejected = await staleDelete;
+    expect(rejected.status()).toBe(409);
+    expect(await rejected.json()).toMatchObject({ code: 'DRIVER_CHANGED' });
+    await expect(confirmation.getByRole('alert')).toBeVisible();
+    expect(await freshDriver(driver.id)).toMatchObject({ name: driver.name, phone: '555944201' });
+    await confirmation.getByRole('button', { name: 'გაუქმება', exact: true }).click();
+    await expect(confirmation).toHaveCount(0);
+
+    await roster(page).getByRole('button', { name: 'მძღოლის დამატება', exact: true }).click();
+    const create = driverDialog(page, 'create');
+    await fillDriver(create, '   ', '555944202', 7);
+    await create.getByRole('button', { name: 'მძღოლის დამატება', exact: true }).click();
+    await expect(create.getByRole('alert')).toContainText('მიუთითეთ მძღოლის სახელი');
+    await expect(create.getByLabel('მძღოლის სახელი', { exact: true })).toHaveValue('   ');
+    expect((await getDriverDay(ANCHOR)).drivers.some(row => row.phone === '555944202')).toBe(false);
+    const duplicateName = 'მეორე ნომრის მძღოლი';
+    await fillDriver(create, duplicateName, '+995 555 94 42 01', 7);
+    const phoneDraft = await create.getByLabel('ტელეფონის ნომერი', { exact: true }).inputValue();
+    const duplicateResponse = page.waitForResponse(response => isDriverCrud(response, 'POST'));
+    await create.getByRole('button', { name: 'მძღოლის დამატება', exact: true }).click();
+    const duplicate = await duplicateResponse;
+    expect(duplicate.status()).toBe(409);
+    expect(await duplicate.json()).toMatchObject({ code: 'PHONE_TAKEN' });
+    await expect(create.getByRole('alert')).toBeVisible();
+    await expect(create.getByLabel('მძღოლის სახელი', { exact: true })).toHaveValue(duplicateName);
+    await expect(create.getByLabel('ტელეფონის ნომერი', { exact: true })).toHaveValue(phoneDraft);
+    expect((await getDriverDay(ANCHOR)).drivers.filter(row => row.phone === '555944201')).toHaveLength(1);
+    await create.getByRole('button', { name: 'გაუქმება', exact: true }).click();
+    await expect(create).toHaveCount(0);
+  } finally { await archiveDriverApi(driver.id); }
+});
+
+test('removing a driver with an assigned future trip is blocked until the administrator unlinks the trip', async ({ page }) => {
+  const date = addDays(today(), 1);
+  await resetDay(date);
+  const created = await createDriverApi('რეისზე მიბმული მძღოლი', '555944301', 6);
+  try {
+    await assignDriver(date, created.id, '09:30');
+    await openSettings(page, date);
+    await deleteDriver(page, created).click();
+    const confirmation = driverDialog(page, 'delete');
+    const deletion = page.waitForResponse(response => isDriverCrud(response, 'DELETE', created.id));
+    await confirmation.getByRole('button', { name: 'მძღოლის წაშლა', exact: true }).click();
+    const rejected = await deletion;
+    expect(rejected.status()).toBe(409);
+    expect(await rejected.json()).toMatchObject({ code: 'DRIVER_ASSIGNED' });
+    await expect(confirmation.getByRole('alert')).toBeVisible();
+    await expect(confirmation).toContainText(created.name);
+    expect(await freshDriver(created.id, date)).toMatchObject({ assignedTime: '09:30', assignmentActive: true });
+    expect((await (await adminApi.get(`/api/admin/trips/capacity?direction=gori-tbilisi&date=${date}&time=09:30`)).json()).drivers).toEqual(expect.arrayContaining([expect.objectContaining({ key: `roster:${created.id}` })]));
+    await confirmation.getByRole('button', { name: 'გაუქმება', exact: true }).click();
+    await removeDriverAssignment(date, created.id, '09:30');
+    await roster(page).getByRole('button', { name: 'მძღოლების რიგის განახლება', exact: true }).click();
+    await expect(editDriver(page, created)).toBeEnabled();
+    await deleteDriver(page, created).click();
+    const deleted = page.waitForResponse(response => isDriverCrud(response, 'DELETE', created.id));
+    await driverDialog(page, 'delete').getByRole('button', { name: 'მძღოლის წაშლა', exact: true }).click();
+    expect((await deleted).status()).toBe(200);
+    await expect(driverRow(page, created.id)).toHaveCount(0);
+  } finally {
+    await removeDriverAssignment(date, created.id, '09:30');
+    await archiveDriverApi(created.id);
+  }
+});

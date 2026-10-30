@@ -12,6 +12,7 @@ import { readTripCapacity } from './trip-capacity.js';
 import { readWholeCarOptions } from './whole-car-options.js';
 import { mountDriverPortal } from './driver-portal.js';
 import { DriverAccountError, setDriverPhone } from './driver-accounts.js';
+import { archiveManagedDriver, createManagedDriver, updateManagedDriver } from './driver-management.js';
 import { callBookingRelated, readActiveCallBookings, readPreferredBookingPhones } from './call-bookings.js';
 
 const scrypt = promisify(scryptCallback);
@@ -308,7 +309,13 @@ export async function createApp(options: Options = {}) {
   }
   async function protectWholeCars(day: string) {
     const rows = await db.prepare("SELECT * FROM bookings WHERE booking_type='whole_car' AND status='confirmed' AND deleted_at IS NULL AND assigned_date=?").all(day);
-    for (const row of rows) await validateWholeCar(row, day, row.assigned_time);
+    for (const row of rows) {
+      // Retired identities stay attached to historical bookings. A global base
+      // schedule edit must not demand that a historical car become active again.
+      if (day < todayInTbilisi() && /^roster:[1-9]\d*$/.test(row.assigned_vehicle_key ?? '') &&
+        await db.prepare('SELECT id FROM drivers WHERE id=? AND deleted_at IS NOT NULL').get(Number(row.assigned_vehicle_key.slice(7)))) continue;
+      await validateWholeCar(row, day, row.assigned_time);
+    }
   }
   async function inputBooking(body: Row, existing?: Row, employee = false) {
     const d = existing ? existing.direction as Direction : direction(body.direction);
@@ -881,6 +888,22 @@ export async function createApp(options: Options = {}) {
     const result = await transaction(async () => readDriverSchedule(db, day, (await configuredTimes(d, day)).effective));
     res.json(result);
   });
+  async function driverOperation(operation: () => Promise<unknown>) {
+    try { return await operation(); }
+    catch (error) { if (error instanceof DriverAccountError) reject(error.status, error.message, error.code); throw error; }
+  }
+  app.post('/api/admin/drivers', async (req: ContextRequest, res) => {
+    if (!req.get('Idempotency-Key')) reject(400, 'მოთხოვნის იდენტიფიკატორი აუცილებელია.', 'VALIDATION');
+    await idempotent(req, res, `driver-create:${req.employee!.id}`, () => driverOperation(() => createManagedDriver(db, req.body, { employeeId: req.employee!.id, now, today: todayInTbilisi() })));
+  });
+  app.patch('/api/admin/drivers/:id', async (req: ContextRequest, res) => {
+    const id = numberId(req.params.id);
+    await idempotent(req, res, `driver-edit:${req.employee!.id}:${id}`, () => driverOperation(() => updateManagedDriver(db, id, req.body, { employeeId: req.employee!.id, now, today: todayInTbilisi() })), 200);
+  });
+  app.delete('/api/admin/drivers/:id', async (req: ContextRequest, res) => {
+    const id = numberId(req.params.id);
+    await idempotent(req, res, `driver-delete:${req.employee!.id}:${id}`, () => driverOperation(() => archiveManagedDriver(db, id, req.body, { employeeId: req.employee!.id, now, today: todayInTbilisi() })), 200);
+  });
   app.get('/api/admin/trips/capacity', async (req, res) => {
     const d = driverDirection(req.query.direction);
     const day = date(req.query.date);
@@ -976,7 +999,7 @@ export async function createApp(options: Options = {}) {
     if (Object.hasOwn(req.body, 'assignment')) reject(400, 'მძღოლი რეისზე ჯავშნების გვერდიდან დანიშნეთ.', 'VALIDATION');
     if (!hasDeclined || typeof req.body.declined !== 'boolean') reject(400, 'მძღოლის სტატუსი არასწორია.', 'VALIDATION');
     const result = await transaction(async () => {
-      if (!await db.prepare('SELECT id FROM drivers WHERE id=?').get(id)) reject(404, 'მძღოლი ვერ მოიძებნა.', 'NOT_FOUND');
+      if (!await db.prepare('SELECT id FROM drivers WHERE id=? AND deleted_at IS NULL').get(id)) reject(404, 'მძღოლი ვერ მოიძებნა.', 'NOT_FOUND');
       const effective = (await configuredTimes(d, day)).effective;
       await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,?,'manual',NULL,?)
         ON CONFLICT(driver_id,date) DO UPDATE SET declined=excluded.declined,updated_at=excluded.updated_at`)
