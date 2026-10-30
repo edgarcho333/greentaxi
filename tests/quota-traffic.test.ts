@@ -113,7 +113,7 @@ test('incoming counts exclude converted/deleted calls and deleted/confirmed orde
     f.reads.length = 0;
     const result = await f.request('/admin/incoming-counts');
     assert.equal(result.status, 200);
-    assert.deepEqual(result.data, { calls: 2, bookings: 2, total: 4 });
+    assert.deepEqual(result.data, { calls: 2, bookings: 2, total: 4, website: 0, lastWebsiteId: null });
     assert.equal(f.reads.length, 2); // One session lookup and one scalar aggregate.
     assert.equal(f.reads[1].count, 1);
     assert.ok(f.reads[1].sql.includes('COUNT(*)'));

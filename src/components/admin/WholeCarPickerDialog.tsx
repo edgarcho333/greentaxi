@@ -8,11 +8,12 @@ import './whole-car-picker.css';
 type Props = {
   direction: Direction; date: string; time: string; drivers: WholeCarDriver[];
   selectedKey: string; bookingId?: number; active: boolean; loading: boolean; error: string; disabled: boolean;
+  deferredConfirmation?: boolean;
   onSelect: (driver: WholeCarDriver) => void; onClose: () => void; onRetry: () => void;
 };
 const assignedTimes = (driver: WholeCarDriver) => driver.assignedTimes ?? (driver.assignedTime ? [driver.assignedTime] : []);
 
-export default function WholeCarPickerDialog({ direction, date, time, drivers, selectedKey, bookingId, active, loading, error, disabled, onSelect, onClose, onRetry }: Props) {
+export default function WholeCarPickerDialog({ direction, date, time, drivers, selectedKey, bookingId, active, loading, error, disabled, deferredConfirmation = false, onSelect, onClose, onRetry }: Props) {
   const id = useId();
   const dialog = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -70,13 +71,13 @@ export default function WholeCarPickerDialog({ direction, date, time, drivers, s
   return createPortal(<div className="admin-driver-dialog-backdrop whole-car-picker-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <div ref={dialog} className="admin-driver-dialog whole-car-picker-dialog" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`} aria-busy={loading} tabIndex={-1} data-whole-car-dialog data-trip-date={date} data-trip-time={time}>
       <header className="admin-driver-dialog-heading"><div><h2 id={`${id}-title`}>აირჩიეთ მძღოლი</h2><p><strong>{time}</strong> · {date.split('-').reverse().join('/')} · {directions[direction]}</p></div><button type="button" className="admin-driver-dialog-close" aria-label="მანქანის არჩევის დახურვა" onClick={onClose}><X size={25} /></button></header>
-      <p className="admin-driver-dialog-description" id={`${id}-description`}>ყველა მძღოლი, დღის რიგით. მთლიანი მანქანა დაიჯავშნება ჯავშნის შენახვისას. სხვა საათებზე მიბმა შენარჩუნდება.</p>
+      <p className="admin-driver-dialog-description" id={`${id}-description`}>ყველა მძღოლი, დღის რიგით. მთლიანი მანქანა დაიჯავშნება {deferredConfirmation ? 'ჯავშნის დადასტურებისას' : 'ჯავშნის შენახვისას'}. სხვა საათებზე მიბმა შენარჩუნდება.</p>
       {loading && <p className="whole-car-picker-status" role="status"><LoaderCircle size={23} className="admin-spin" />მძღოლები იტვირთება…</p>}
       {error && <div className="admin-trip-capacity-feedback error" role="alert"><AlertCircle size={20} /><span>{error}</span><button type="button" className="admin-trip-capacity-button" onClick={onRetry} disabled={loading || disabled}><RefreshCw size={19} />ხელახლა ცდა</button></div>}
       {!active && !loading && !error && <p className="admin-trip-capacity-warning" role="status"><AlertCircle size={19} /><span>ეს დრო გამორთულია. სხვა მძღოლის ასარჩევად ჯერ ჩართეთ დრო პარამეტრებში.</span></p>}
       {confirmation ? <div className="admin-driver-transfer" data-whole-car-activation>
         <h3>{confirmation.name}</h3>
-        <p>ეს მძღოლი ამ დღეს არ მონაწილეობს. ჯავშნის შენახვისას ამ დღის მონაწილე გახდება და <strong>{time}</strong>-ზე მიებმება. სხვა საათებზე მიბმა შენარჩუნდება.</p>
+        <p>ეს მძღოლი ამ დღეს არ მონაწილეობს. {deferredConfirmation ? 'ჯავშნის დადასტურებისას' : 'ჯავშნის შენახვისას'} ამ დღის მონაწილე გახდება და <strong>{time}</strong>-ზე მიებმება. სხვა საათებზე მიბმა შენარჩუნდება.</p>
         <div className="admin-driver-dialog-buttons"><button type="button" className="admin-trip-capacity-button primary" data-whole-car-confirm data-whole-car-activation-confirm disabled={disabled || loading || !!error || blocked(confirmation) || !slotAllowed(confirmation)} onClick={() => onSelect(confirmation)}><Check size={20} />ჩართვა და არჩევა</button><button type="button" className="admin-trip-capacity-button" onClick={() => setActivationKey('')}>უკან</button></div>
       </div> : <div className="admin-driver-choice-grid" role="group" aria-label="მთლიანი მანქანის მძღოლები">{available.map(driver => {
         const reserved = blocked(driver);

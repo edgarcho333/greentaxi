@@ -6,8 +6,8 @@ import './whole-car-picker.css';
 
 export type BookingTypeValue = { bookingType: BookingType; assignedVehicleKey: string; expectedVehicleRevision?: string };
 type Result = { context: string; data: WholeCarOptions | null; loading: boolean; error: string };
-export function BookingTypeFields({ value, onChange, direction, date, time, bookingId, disabled = false, lockType = false, inline = false }: {
-  value: BookingTypeValue; onChange: (value: BookingTypeValue) => void; direction: Direction; date: string; time: string; bookingId?: number; disabled?: boolean; lockType?: boolean; inline?: boolean;
+export function BookingTypeFields({ value, onChange, direction, date, time, bookingId, disabled = false, lockType = false, inline = false, deferredConfirmation = false }: {
+  value: BookingTypeValue; onChange: (value: BookingTypeValue) => void; direction: Direction; date: string; time: string; bookingId?: number; disabled?: boolean; lockType?: boolean; inline?: boolean; deferredConfirmation?: boolean;
 }) {
   const context = `${direction}:${date}:${time}`;
   const selection = useRef(context);
@@ -58,7 +58,7 @@ export function BookingTypeFields({ value, onChange, direction, date, time, book
     setOpenContext(null);
     onChange({ bookingType, assignedVehicleKey: '', expectedVehicleRevision: undefined });
   }
-  const hint = direction !== 'gori-tbilisi' ? 'ამ მიმართულებაზე მანქანების სია არ არის.' : !date || !time ? 'ჯერ აირჩიეთ მგზავრობის დრო.' : needsConfirmation ? 'დაადასტურეთ მძღოლის არჩევანი.' : selected ? 'მანქანა მთლიანად დაიჯავშნება ჯავშნის შენახვისას.' : 'აირჩიეთ მძღოლი დღის რიგიდან.';
+  const hint = direction !== 'gori-tbilisi' ? 'ამ მიმართულებაზე მანქანების სია არ არის.' : !date || !time ? 'ჯერ აირჩიეთ მგზავრობის დრო.' : needsConfirmation ? 'დაადასტურეთ მძღოლის არჩევანი.' : selected ? deferredConfirmation ? 'მანქანა მთლიანად დაიჯავშნება ჯავშნის დადასტურებისას.' : 'მანქანა მთლიანად დაიჯავშნება ჯავშნის შენახვისას.' : 'აირჩიეთ მძღოლი დღის რიგიდან.';
   return <div className={inline ? 'operator-booking-type-controls' : 'admin-form-grid'}>
     {inline ? <>
       <button type="button" disabled={disabled || lockType} aria-pressed={value.bookingType === 'parcel'} onClick={() => toggleType(value.bookingType === 'parcel' ? 'passenger' : 'parcel')}><Package size={21} />გზავნილი</button>
@@ -71,7 +71,7 @@ export function BookingTypeFields({ value, onChange, direction, date, time, book
       <small className={needsConfirmation ? 'whole-car-confirmation-needed' : undefined}>{hint}</small>
       {current?.error && !open && <div className="whole-car-selection-error" role="alert"><span>{current.error}</span><button type="button" onClick={retry} disabled={disabled || current.loading}><RefreshCw size={18} />ხელახლა ცდა</button></div>}
     </div>}
-    {open && <WholeCarPickerDialog key={context} direction={direction} date={date} time={time} drivers={current?.data?.drivers ?? []} selectedKey={value.assignedVehicleKey} bookingId={bookingId} active={current?.data?.active ?? false} loading={!current || current.loading} error={current?.error ?? ''} disabled={disabled} onSelect={selectDriver} onClose={() => setOpenContext(null)} onRetry={retry} />}
+    {open && <WholeCarPickerDialog key={context} direction={direction} date={date} time={time} drivers={current?.data?.drivers ?? []} selectedKey={value.assignedVehicleKey} bookingId={bookingId} active={current?.data?.active ?? false} loading={!current || current.loading} error={current?.error ?? ''} disabled={disabled} deferredConfirmation={deferredConfirmation} onSelect={selectDriver} onClose={() => setOpenContext(null)} onRetry={retry} />}
   </div>;
 }
 export function BookingTypeSummary({ bookingType, assignedVehicleName }: { bookingType?: BookingType; assignedVehicleName?: string | null }) {

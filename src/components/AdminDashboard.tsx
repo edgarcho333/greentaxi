@@ -1,12 +1,13 @@
 import { BookingTypeFields, BookingTypeSummary, type BookingTypeValue } from './admin/BookingTypeFields';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowRightLeft, BarChart3, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock3, Edit3, History, Inbox, Leaf, Loader2, LogOut, MapPin, Menu, MoreHorizontal, Phone, Plus, Printer, RefreshCw, Search, Settings, Trash2, Users, X } from 'lucide-react';
+import { ArrowRightLeft, BarChart3, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock3, Edit3, Globe, History, Inbox, Leaf, Loader2, LogOut, MapPin, Menu, MoreHorizontal, Phone, Plus, Printer, RefreshCw, Search, Settings, Trash2, Users, X } from 'lucide-react';
 import { ApiError, addDays, directions, request, today, type Analytics, type Booking, type CallInquiry, type Direction, type PublicConfig, type Schedule, type User } from '../api';
 import AdminSettings from './admin/AdminSettings';
 import CallQueue from './admin/CallQueue';
 import BookingPrint from './admin/BookingPrint';
 import Passengers from './admin/Passengers';
 import TripCapacity from './admin/TripCapacity';
+import WebsiteBookings from './admin/WebsiteBookings';
 import usePassengerProfile, { canonicalPassengerPhone } from './admin/usePassengerProfile';
 import SavedAddressPicker, { savedGoriAddresses } from './admin/SavedAddressPicker';
 import { BookingOptions, BookingOptionsSummary, type BookingOptionsValue } from './admin/BookingOptions';
@@ -16,6 +17,7 @@ import './admin.css';
 import './admin-reference.css';
 import './admin-booking-form.css';
 import './operator-accessibility.css';
+import './admin/website-queue-trigger.css';
 
 type View = 'scheduled' | 'incoming' | 'passengers' | 'analytics' | 'settings' | 'history';
 type Modal = { kind: 'create'; inquiry?: CallInquiry } | { kind: 'edit' | 'confirm' | 'move' | 'delete' | 'restore'; booking: Booking };
@@ -64,6 +66,11 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [incomingCount, setIncomingCount] = useState(0);
+  const [websiteCount, setWebsiteCount] = useState(0);
+  const [websiteOpen, setWebsiteOpen] = useState(false);
+  const [websiteNotice, setWebsiteNotice] = useState('');
+  const latestWebsiteId = useRef<number | null | undefined>(undefined);
+  const notificationAudio = useRef<AudioContext | null>(null);
   const [config, setConfig] = useState<PublicConfig>({ stops: [], didubeName: 'დიდუბე', didubeAddress: '' });
   const [refresh, setRefresh] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -92,6 +99,23 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
 
   useEffect(() => { const timer = window.setTimeout(() => setSearchQuery(search.trim()), 250); return () => window.clearTimeout(timer); }, [search]);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 4500); return () => window.clearTimeout(timer); }, [toast]);
+  useEffect(() => {
+    // Browsers permit notification audio after an administrator interacts with
+    // the page. Nothing is played for the initial backlog or on each poll.
+    const enable = () => {
+      try {
+        const context = notificationAudio.current ?? new AudioContext();
+        notificationAudio.current = context;
+        if (context.state === 'suspended') void context.resume().catch(() => {});
+      } catch { /* The visible counter works when audio is unavailable. */ }
+    };
+    window.addEventListener('pointerdown', enable);
+    window.addEventListener('keydown', enable);
+    return () => {
+      window.removeEventListener('pointerdown', enable); window.removeEventListener('keydown', enable);
+      void notificationAudio.current?.close().catch(() => {}); notificationAudio.current = null;
+    };
+  }, []);
   useEffect(() => { setPage(1); setMenuId(null); }, [view, date, time, direction, searchQuery, pageSize]);
   useEffect(() => {
     let active = true;
@@ -101,8 +125,27 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
       if (document.visibilityState === 'hidden' || inFlight) return;
       inFlight = true; controller = new AbortController();
       const signal = controller.signal;
-      return request<{ calls: number; bookings: number; total: number }>('/admin/incoming-counts', { signal }).then(result => {
-        if (active && !signal.aborted) setIncomingCount(result.total);
+      return request<{ calls: number; bookings: number; total: number; website?: number; lastWebsiteId?: number | null }>('/admin/incoming-counts', { signal }).then(result => {
+        if (!active || signal.aborted) return;
+        const website = result.website ?? 0;
+        setIncomingCount(Math.max(0, result.total - website)); setWebsiteCount(website);
+        if (website === 0) setWebsiteNotice('');
+        if (result.lastWebsiteId != null && latestWebsiteId.current !== undefined && result.lastWebsiteId > (latestWebsiteId.current ?? 0)) {
+          setWebsiteNotice('საიტიდან ახალი განაცხადია');
+          const context = notificationAudio.current;
+          if (context?.state === 'running') {
+            try {
+              const oscillator = context.createOscillator(); const gain = context.createGain();
+              oscillator.connect(gain); gain.connect(context.destination);
+              oscillator.frequency.setValueAtTime(740, context.currentTime);
+              oscillator.frequency.setValueAtTime(880, context.currentTime + .12);
+              gain.gain.setValueAtTime(.045, context.currentTime);
+              gain.gain.exponentialRampToValueAtTime(.001, context.currentTime + .32);
+              oscillator.start(); oscillator.stop(context.currentTime + .33);
+            } catch { /* Keep the counter visible if audio is unavailable. */ }
+          }
+        }
+        latestWebsiteId.current = Math.max(latestWebsiteId.current ?? 0, result.lastWebsiteId ?? 0);
       }).catch(() => { /* Keep the last count while a refresh is unavailable. */ }).finally(() => { inFlight = false; });
     };
     void load();
@@ -129,7 +172,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
     const sequence = ++listSequence.current;
     if (view === 'settings' || view === 'analytics' || view === 'passengers') { setLoading(false); setError(''); return; }
     setLoading(true); setError(''); setMenuId(null);
-    const load = request<{ bookings: Booking[] }>(`/admin/bookings?${query({ scope: view === 'history' ? 'deleted' : view, direction, date: view === 'scheduled' ? date : undefined, time: view === 'scheduled' ? time : undefined, search: searchQuery })}`).then(result => { if (sequence === listSequence.current) setBookings(result.bookings); });
+    const load = request<{ bookings: Booking[] }>(`/admin/bookings?${query({ scope: view === 'history' ? 'deleted' : view, excludeSource: view === 'incoming' ? 'public' : undefined, direction, date: view === 'scheduled' ? date : undefined, time: view === 'scheduled' ? time : undefined, search: searchQuery })}`).then(result => { if (sequence === listSequence.current) setBookings(result.bookings); });
     load.catch(cause => { if (sequence === listSequence.current) setError(errorMessage(cause)); }).finally(() => { if (sequence === listSequence.current) setLoading(false); });
   }, [view, direction, date, time, searchQuery, refresh]);
 
@@ -157,6 +200,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
       <div className="admin-sidebar-visual"><img src={sidebarNight} alt="" /><div className="admin-sidebar-caption"><p>კომფორტული მგზავრობა<br />ყოველი მიმართულებით.</p><div className="admin-sidebar-progress"><span /><span /></div><div className="admin-sidebar-signature"><strong>Green Taxi</strong><small>მე შენი საიმედო მეგზური.</small></div><div className="admin-user admin-sidebar-user"><span className="admin-avatar">{user.name.slice(0, 1)}</span><div><strong>{user.name}</strong><small>ადმინისტრატორი</small></div></div></div></div>
     </aside>
     <main className="admin-main">
+      <div className="admin-website-toolbar"><button type="button" className={`admin-website-trigger${websiteCount > 0 ? ' has-requests' : ''}`} data-website-bookings-trigger aria-label={`საიტის ჯავშნები: ${websiteCount}`} aria-haspopup="dialog" aria-expanded={websiteOpen} onClick={() => { setWebsiteNotice(''); setWebsiteOpen(true); }}><Globe size={23} /><span>საიტის ჯავშნები</span><b data-website-bookings-count>{websiteCount}</b></button><span className="admin-website-announcement" role="status" aria-live="polite">{websiteNotice}</span></div>
       {referenceView ? <h1 className="admin-sr-only">{titles[view]}</h1> : <header className="admin-page-header"><div className="admin-heading"><button className="admin-mobile-menu admin-icon-button" onClick={() => setMobileNav(true)} aria-label="მენიუს გახსნა"><Menu size={23} /></button><div><p className="admin-eyebrow">GREEN TAXI / მართვის პანელი</p><h1>{titles[view]}</h1></div></div><div className="admin-header-actions"><span className="admin-current-date"><CalendarDays size={16} /> {dateLabel(today(), { day: 'numeric', month: 'long' })}</span><button className="admin-primary" onClick={() => setModal({ kind: 'create' })}><Plus size={18} /><span>ახალი ჯავშანი</span></button></div></header>}
       {(view === 'scheduled' || view === 'incoming' || view === 'history') && <>
         <section className="admin-filters" aria-label="ჯავშნების ფილტრები">
@@ -178,7 +222,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
         {view === 'history' && <div className="admin-section-note"><History size={18} />წაშლილი ჯავშნები ინახება ისტორიაში. აღდგენისას შეგიძლიათ აირჩიოთ მოქმედი დრო.</div>}
         {(view === 'incoming' || view === 'history') && <CallQueue scope={view === 'incoming' ? 'incoming' : 'deleted'} search={searchQuery} refresh={refresh} config={config} onChange={reload} />}
         <section className="admin-table-card"><div className="admin-sr-only"><h2>{view === 'scheduled' ? `${dateLabel(date, { day: 'numeric', month: 'long', year: 'numeric' })}${time ? ` · ${time}` : ''}` : view === 'incoming' ? 'ახალი განაცხადები' : 'წაშლილი ჯავშნები'}</h2><span>{loading ? 'იტვირთება…' : `${bookings.length} ჯავშანი · ${bookings.reduce((sum, item) => sum + item.seats, 0)} ადგილი`}</span></div>
-          {error ? <div className="admin-error">{error}<button onClick={reload}>ხელახლა ცდა</button></div> : loading ? <Loading /> : bookings.length === 0 ? <Empty icon={view === 'incoming' ? Inbox : view === 'history' ? History : CalendarDays} title={searchQuery ? 'ჯავშანი ვერ მოიძებნა' : view === 'incoming' ? 'საიტიდან განაცხადები ჯერ არ არის' : view === 'history' ? 'წაშლილი ჯავშნები არ არის' : 'ამ დროისთვის ჯავშნები არ არის'} text={searchQuery ? 'სცადეთ სხვა სახელი ან ტელეფონის ნომერი.' : view === 'scheduled' ? 'შექმენით ჯავშანი ან დაამატეთ განაცხადი შემოსულებიდან.' : view === 'incoming' ? 'მგზავრის მიერ გამოგზავნილი განაცხადები აქ გამოჩნდება.' : 'წაშლილი ჯავშნები აქ გამოჩნდება.'} /> : <><div className="admin-table-scroll"><table className="admin-booking-table"><thead><tr><th><span className="admin-time-column-heading">{view === 'scheduled' ? 'დრო' : 'თარიღი / დრო'}{view === 'scheduled' && <ChevronDown size={14} />}</span></th><th>მგზავრი</th><th>ტელეფონი</th><th>მიმართულება</th><th>აყვანის ადგილი</th><th>ჩამოსვლის ადგილი</th><th className="admin-center">ადგილები</th><th>სტატუსი</th><th className="admin-actions-heading">მოქმედება</th></tr></thead><tbody>{visibleBookings.map(booking => <tr key={booking.id} data-booking-id={booking.id}>
+          {error ? <div className="admin-error">{error}<button onClick={reload}>ხელახლა ცდა</button></div> : loading ? <Loading /> : bookings.length === 0 ? <Empty icon={view === 'incoming' ? Inbox : view === 'history' ? History : CalendarDays} title={searchQuery ? 'ჯავშანი ვერ მოიძებნა' : view === 'incoming' ? 'სხვა შემოსული განაცხადები არ არის' : view === 'history' ? 'წაშლილი ჯავშნები არ არის' : 'ამ დროისთვის ჯავშნები არ არის'} text={searchQuery ? 'სცადეთ სხვა სახელი ან ტელეფონის ნომერი.' : view === 'scheduled' ? 'შექმენით ჯავშანი ან დაამატეთ განაცხადი შემოსულებიდან.' : view === 'incoming' ? 'საიტის განაცხადები იხილეთ ღილაკით „საიტის ჯავშნები“.' : 'წაშლილი ჯავშნები აქ გამოჩნდება.'} /> : <><div className="admin-table-scroll"><table className="admin-booking-table"><thead><tr><th><span className="admin-time-column-heading">{view === 'scheduled' ? 'დრო' : 'თარიღი / დრო'}{view === 'scheduled' && <ChevronDown size={14} />}</span></th><th>მგზავრი</th><th>ტელეფონი</th><th>მიმართულება</th><th>აყვანის ადგილი</th><th>ჩამოსვლის ადგილი</th><th className="admin-center">ადგილები</th><th>სტატუსი</th><th className="admin-actions-heading">მოქმედება</th></tr></thead><tbody>{visibleBookings.map(booking => <tr key={booking.id} data-booking-id={booking.id}>
             <td>{view === 'scheduled' ? <button className="admin-row-time" aria-label={`${bookingActionIdentity(booking)}: დროის შეცვლა`} onClick={() => setModal({ kind: 'move', booking })}><strong className="admin-time-value">{booking.assignedTime || booking.requestedTime}</strong><ChevronDown size={14} /></button> : <><strong className="admin-time-value">{booking.assignedTime || booking.requestedTime}</strong><small className="admin-cell-subtitle">{dateLabel(booking.assignedDate || booking.requestedDate)}</small></>}</td><td><strong className="admin-passenger-name">{bookingIdentity(booking)}</strong>{view !== 'scheduled' && <small className="admin-cell-subtitle">#{String(booking.id).padStart(4, '0')}</small>}</td><td className="admin-phone-cell"><a href={`tel:${phoneDialNumber(booking.phone) || booking.phone}`}>{formatPhone(booking.phone)}</a>{booking.callerPhone && canonicalPassengerPhone(booking.callerPhone) !== canonicalPassengerPhone(booking.phone) && <small className="operator-booking-caller">ზარის ნომერი: <a href={`tel:${phoneDialNumber(booking.callerPhone) || booking.callerPhone}`}>{formatPhone(booking.callerPhone)}</a></small>}</td><td className="admin-direction-cell">{directions[booking.direction]}</td><td className="admin-pickup-cell">{booking.direction === 'gori-tbilisi' ? booking.goriAddress : booking.pickupStopName || 'გაჩერება არ არის მითითებული'}<BookingOptionsSummary luggage={booking.luggage} dog={booking.dog} seatPreference={booking.seatPreference} /></td><td>{booking.direction === 'gori-tbilisi' ? booking.didubeName : booking.goriAddress}</td><td className="admin-center"><span className="admin-seat-badge">{booking.bookingType && booking.bookingType !== 'passenger' ? <BookingTypeSummary {...booking} /> : booking.seats}</span></td><td><span className={`admin-status ${booking.status === 'confirmed' ? 'confirmed' : 'waiting'}`}>{statusLabel(booking)}</span></td><td><div className="admin-row-actions">{view === 'incoming' ? <button className="admin-confirm-button" onClick={() => setModal({ kind: 'confirm', booking })}><Check size={15} /> დამატება</button> : view === 'history' ? <button className="admin-restore-button" onClick={() => setModal({ kind: 'restore', booking })}><History size={15} /> აღდგენა</button> : <a className="admin-icon-button" href={`tel:${phoneDialNumber(booking.phone) || booking.phone}`} aria-label={`${bookingActionIdentity(booking)}: დარეკვა`}><Phone size={15} /></a>}{view !== 'history' && <><button className="admin-icon-button" onClick={() => setModal({ kind: 'edit', booking })} aria-label={`${bookingActionIdentity(booking)}: რედაქტირება`}><Edit3 size={15} /></button><div className="admin-more-wrap"><button className="admin-icon-button" onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); setMenuPosition({ top: Math.min(rect.bottom + 5, window.innerHeight - 140), left: Math.max(8, rect.right - 139) }); setMenuId(menuId === booking.id ? null : booking.id); }} aria-label={`${bookingActionIdentity(booking)}: სხვა მოქმედებები`} aria-expanded={menuId === booking.id}><MoreHorizontal size={19} /></button>{menuId === booking.id && <><button className="admin-menu-dismiss" onClick={() => setMenuId(null)} aria-label="მოქმედებების დახურვა" /><div className="admin-row-menu" style={{ position: 'fixed', top: menuPosition.top, left: menuPosition.left, right: 'auto' }}>{view === 'scheduled' && <button onClick={() => { setModal({ kind: 'move', booking }); setMenuId(null); }}><ArrowRightLeft size={15} /> გადატანა</button>}<a href={`tel:${phoneDialNumber(booking.phone) || booking.phone}`}><Phone size={15} /> დარეკვა</a><button className="admin-danger-text" onClick={() => { setModal({ kind: 'delete', booking }); setMenuId(null); }}><Trash2 size={15} /> წაშლა</button></div></>}</div></>}</div></td>
           </tr>)}</tbody></table></div><div className="admin-pagination"><div className="admin-page-buttons"><button className="admin-icon-button" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label="წინა გვერდი"><ChevronLeft size={18} /></button>{Array.from({ length: Math.min(pageCount, 5) }, (_, index) => { const value = Math.max(1, Math.min(page - 2, pageCount - 4)) + index; return <button className={page === value ? 'selected' : ''} key={value} onClick={() => setPage(value)}>{value}</button>; })}<button className="admin-icon-button" disabled={page >= pageCount} onClick={() => setPage(page + 1)} aria-label="შემდეგი გვერდი"><ChevronRight size={18} /></button><span>{Math.min((page - 1) * pageSize + 1, bookings.length)}–{Math.min(page * pageSize, bookings.length)} / {bookings.length}</span></div><label>ჩანაწერები გვერდზე<select value={pageSize} onChange={event => setPageSize(Number(event.target.value))}><option>15</option><option>30</option><option>50</option></select></label></div></>}
         </section>
@@ -189,6 +233,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
       <footer className="admin-footer"><span><span className="admin-live-dot" /> Green Taxi</span><span>გორი ↔ თბილისი</span></footer>
     </main>
     {printOpen && <BookingPrint date={date} direction={direction} time={time} onClose={() => setPrintOpen(false)} />}
+    {websiteOpen && <WebsiteBookings config={config} onClose={() => setWebsiteOpen(false)} onChange={reload} />}
     {modal?.kind === 'create' && <CreateBookingGroupDialog modal={modal} config={config} defaultDirection={direction} defaultDate={date} defaultTime={time} onClose={() => setModal(null)} onComplete={completed} />}
     {modal && modal.kind !== 'create' && <BookingModal modal={modal} config={config} defaultDirection={direction} defaultDate={date} defaultTime={time} onClose={() => setModal(null)} onComplete={completed} />}
     {toast && <div className="admin-toast" role="status"><CheckCircle2 size={19} />{toast}<button onClick={() => setToast('')} aria-label="შეტყობინების დახურვა"><X size={16} /></button></div>}
@@ -543,7 +588,7 @@ function BookingModal({ modal, config, defaultDirection, defaultDate, defaultTim
         {modal.kind === 'confirm' && <p className="admin-form-hint"><CheckCircle2 size={16} />დამატება განაცხადს ავტომატურად დაადასტურებს.</p>}
       </>}
     </>}
-    {modal.kind === 'restore' && booking?.status === 'waiting' && <p className="admin-form-hint"><Inbox size={16} />განაცხადი შემოსულების რიგში დაბრუნდება და დადასტურებას დაელოდება.</p>}
+    {modal.kind === 'restore' && booking?.status === 'waiting' && <p className="admin-form-hint"><Inbox size={16} />{booking.source === 'public' ? 'განაცხადი საიტის ჯავშნების რიგში დაბრუნდება და დადასტურებას დაელოდება.' : 'განაცხადი შემოსულების რიგში დაბრუნდება და დადასტურებას დაელოდება.'}</p>}
     {error && <div className="admin-error" role="alert">{error}</div>}
   </>;
   if (embedded) return <div className="admin-manual-passenger-fields">{body}</div>;

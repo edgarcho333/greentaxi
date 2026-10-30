@@ -141,9 +141,9 @@ test('incoming polling transfers one actual page and keeps a total for all forty
   expect(first.calls).toHaveLength(15);
   await expect(page.locator('.admin-calls-table tbody tr[data-call-id]')).toHaveCount(15);
   await expect(page.locator('.admin-call-count')).toHaveText('46');
-  const counts = await (await adminApi.get('/api/admin/incoming-counts')).json() as { calls: number; bookings: number; total: number };
+  const counts = await (await adminApi.get('/api/admin/incoming-counts')).json() as { calls: number; bookings: number; total: number; website: number };
   expect(counts.total).toBe(counts.calls + counts.bookings);
-  await expect(page.locator('.admin-incoming-button b')).toHaveText(String(counts.total));
+  await expect(page.locator('.admin-incoming-button b')).toHaveText(String(counts.total - counts.website));
   for (const expectedPage of [2, 3, 4]) {
     const result = await next(page, expectedPage);
     responses.push(result);

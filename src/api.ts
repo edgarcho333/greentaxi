@@ -25,6 +25,7 @@ export type DriverDashboard = {
   trips?: { direction: Direction; time: string; active: boolean }[];
 };
 export type Booking = {
+  source?: 'public' | 'employee' | 'android';
   bookingType?: BookingType; assignedVehicleKey?: string | null; assignedVehicleName?: string | null;
   id: number; name: string; phone: string; seats: number; direction: Direction;
   callerPhone?: string | null; luggage?: boolean; dog?: boolean; seatPreference?: SeatPreference | null;

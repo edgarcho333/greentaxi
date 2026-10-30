@@ -136,7 +136,7 @@ function booking(row: Row): Booking {
     didubeName: row.didube_name, didubeAddress: row.didube_address,
     requestedDate: row.requested_date, requestedTime: row.requested_time,
     assignedDate: row.assigned_date, assignedTime: row.assigned_time,
-    status: row.status, deletedAt: row.deleted_at, createdAt: row.created_at, updatedAt: row.updated_at,
+    status: row.status, source: row.source, deletedAt: row.deleted_at, createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
 
@@ -601,10 +601,12 @@ export async function createApp(options: Options = {}) {
     // Header polling needs counts, not every call's passenger history and address.
     const row = await db.prepare(`SELECT
       (SELECT COUNT(*) FROM call_inquiries WHERE deleted_at IS NULL AND booking_id IS NULL) AS calls,
-      (SELECT COUNT(*) FROM bookings WHERE deleted_at IS NULL AND status='waiting') AS bookings`).get();
+      (SELECT COUNT(*) FROM bookings WHERE deleted_at IS NULL AND status='waiting') AS bookings,
+      (SELECT COUNT(*) FROM bookings WHERE deleted_at IS NULL AND status='waiting' AND source='public') AS website,
+      (SELECT MAX(id) FROM bookings WHERE deleted_at IS NULL AND status='waiting' AND source='public') AS last_website_id`).get();
     const calls = Number(row?.calls ?? 0);
     const bookings = Number(row?.bookings ?? 0);
-    res.json({ calls, bookings, total: calls + bookings });
+    res.json({ calls, bookings, total: calls + bookings, website: Number(row?.website ?? 0), lastWebsiteId: row?.last_website_id == null ? null : Number(row.last_website_id) });
   });
   app.get('/api/admin/calls', async (req, res) => {
     const scope = req.query.scope ?? 'incoming';
@@ -769,6 +771,96 @@ export async function createApp(options: Options = {}) {
     });
     res.json(result);
   });
+  // Website requests stay separate from the familiar phone queue. Edits are
+  // proposals only: a car and passenger profile are changed upon confirmation.
+  async function waitingWebsiteBooking(req: ContextRequest) {
+    const row = await getBooking(numberId(req.params.id));
+    if (row.source !== 'public') reject(404, 'საიტის განაცხადი ვერ მოიძებნა.', 'NOT_FOUND');
+    if (typeof req.body.expectedUpdatedAt !== 'string' || req.body.expectedUpdatedAt.length > 64) reject(400,
+      'განაცხადის ვერსია აუცილებელია.', 'VALIDATION');
+    if (row.status !== 'waiting' || row.deleted_at || req.body.expectedUpdatedAt !== row.updated_at) reject(409,
+      'განაცხადი უკვე შეიცვალა ან დამუშავდა. განაახლეთ სია და შეამოწმეთ მონაცემები.', 'BOOKING_CHANGED');
+    return row;
+  }
+  function websiteUpdatedAt(row: Row) {
+    // A version must change even when two operations share a millisecond or the
+    // clock is fixed in tests. Existing records keep their original timestamps.
+    return new Date(Math.max(now().getTime(), new Date(row.updated_at).getTime() + 1)).toISOString();
+  }
+  function requireWebsiteKey(req: Request) {
+    if (!req.get('Idempotency-Key')) reject(400, 'მოთხოვნის იდენტიფიკატორი აუცილებელია.', 'VALIDATION');
+  }
+  app.get('/api/admin/website-bookings', async (req, res) => {
+    const requestedPage = req.query.page === undefined ? 1 : numberId(req.query.page);
+    const pageSize = req.query.pageSize === undefined ? 15 : numberId(req.query.pageSize);
+    if (![15, 30, 50].includes(pageSize)) reject(400, 'არასწორი გვერდის ზომა.', 'VALIDATION');
+    const conditions = "source='public' AND status='waiting' AND deleted_at IS NULL";
+    const count = await db.prepare(`SELECT COUNT(*) AS count FROM bookings WHERE ${conditions}`).get();
+    const total = Number(count?.count ?? 0);
+    const page = Math.min(requestedPage, Math.max(1, Math.ceil(total / pageSize)));
+    const rows = await db.prepare(`SELECT * FROM bookings WHERE ${conditions} ORDER BY created_at,id LIMIT ? OFFSET ?`)
+      .all(pageSize, (page - 1) * pageSize);
+    res.json({ bookings: rows.map(booking), total, page, pageSize });
+  });
+  app.get('/api/admin/website-bookings/:id', async (req, res) => {
+    const row = await getBooking(numberId(req.params.id));
+    if (row.source !== 'public') reject(404, 'საიტის განაცხადი ვერ მოიძებნა.', 'NOT_FOUND');
+    if (row.status !== 'waiting' || row.deleted_at) reject(409,
+      'განაცხადი უკვე დამუშავდა. განაახლეთ სია.', 'BOOKING_CHANGED');
+    res.json(booking(row));
+  });
+  app.patch('/api/admin/website-bookings/:id', async (req: ContextRequest, res) => {
+    requireWebsiteKey(req);
+    await idempotent(req, res, `website.edit:${req.employee!.id}:${numberId(req.params.id)}`, async () => {
+      const row = await waitingWebsiteBooking(req);
+      const selectedDirection = direction(req.body.direction ?? row.direction);
+      const day = date(req.body.requestedDate ?? row.requested_date, 'DATE_INVALID');
+      const slotTime = time(req.body.requestedTime ?? row.requested_time);
+      // Public customers may request any future date, unlike the short manual
+      // intake window. Operators retain that date range in the website inbox.
+      staffDateWindow(day, true);
+      await activeSlot(selectedDirection, day, slotTime, true);
+      const draft = { ...row, direction: selectedDirection, requested_date: day, requested_time: slotTime };
+      const input = await inputBooking(req.body, draft, true);
+      await db.prepare(`UPDATE bookings SET name=?,phone=?,seats=?,direction=?,gori_address=?,pickup_stop_id=?,pickup_stop_name=?,
+        requested_date=?,requested_time=?,updated_at=?,caller_phone=?,luggage=?,dog=?,seat_preference=?,booking_type=?,assigned_vehicle_key=?,assigned_vehicle_name=? WHERE id=?`)
+        .run(input.name, input.phone, input.seats, input.direction, input.goriAddress, input.pickupStopId, input.pickupStopName,
+          day, slotTime, websiteUpdatedAt(row), input.callerPhone, Number(input.luggage), Number(input.dog), input.seatPreference,
+          input.bookingType, input.assignedVehicleKey, input.assignedVehicleName, row.id);
+      await audit('website.edit', req.employee, row.id, { fields: Object.keys(req.body).filter(key => key !== 'expectedUpdatedAt') });
+      return booking(await getBooking(row.id));
+    }, 200);
+  });
+  app.post('/api/admin/website-bookings/:id/confirm', async (req: ContextRequest, res) => {
+    requireWebsiteKey(req);
+    await idempotent(req, res, `website.confirm:${req.employee!.id}:${numberId(req.params.id)}`, async () => {
+      const row = await waitingWebsiteBooking(req);
+      const day = date(row.requested_date, 'DATE_INVALID');
+      const slotTime = time(row.requested_time);
+      staffDateWindow(day, true);
+      await activeSlot(row.direction, day, slotTime, true);
+      if (req.body.assignedVehicleKey !== undefined && req.body.assignedVehicleKey !== row.assigned_vehicle_key) reject(400,
+        'მანქანის შესაცვლელად ჯერ შეინახეთ განაცხადი.', 'VALIDATION');
+      await reassignWholeCar(row, day, slotTime, row.assigned_vehicle_key, req.body.expectedVehicleRevision, req.employee);
+      await db.prepare("UPDATE bookings SET assigned_date=?,assigned_time=?,status='confirmed',updated_at=? WHERE id=?")
+        .run(day, slotTime, websiteUpdatedAt(row), row.id);
+      if (row.booking_type === 'whole_car') await protectWholeCars(day);
+      await audit('website.confirm', req.employee, row.id, { date: day, time: slotTime });
+      const confirmed = await getBooking(row.id);
+      await saveProfile(confirmed);
+      return booking(confirmed);
+    }, 200);
+  });
+  app.post('/api/admin/website-bookings/:id/reject', async (req: ContextRequest, res) => {
+    requireWebsiteKey(req);
+    await idempotent(req, res, `website.reject:${req.employee!.id}:${numberId(req.params.id)}`, async () => {
+      const row = await waitingWebsiteBooking(req);
+      const stamp = websiteUpdatedAt(row);
+      await db.prepare('UPDATE bookings SET deleted_at=?,updated_at=? WHERE id=?').run(stamp, stamp, row.id);
+      await audit('website.reject', req.employee, row.id);
+      return booking(await getBooking(row.id));
+    }, 200);
+  });
   app.get('/api/admin/bookings', async (req, res) => {
     const scope = req.query.scope ?? 'all';
     if (!['all', 'incoming', 'scheduled', 'deleted'].includes(String(scope))) reject(400, 'არასწორი ფილტრი.', 'VALIDATION');
@@ -776,6 +868,10 @@ export async function createApp(options: Options = {}) {
     const values: (string | number)[] = [];
     if (scope === 'incoming') conditions.push("status='waiting'");
     if (scope === 'scheduled') conditions.push("status='confirmed'");
+    if (req.query.excludeSource !== undefined) {
+      if (req.query.excludeSource !== 'public') reject(400, 'არასწორი წყაროს ფილტრი.', 'VALIDATION');
+      conditions.push("source<>'public'");
+    }
     if (req.query.direction) { conditions.push('direction=?'); values.push(direction(req.query.direction)); }
     if (req.query.date) { conditions.push(`${scope === 'scheduled' ? 'assigned_date' : 'COALESCE(assigned_date,requested_date)'}=?`); values.push(date(req.query.date)); }
     if (req.query.time) { conditions.push(`${scope === 'scheduled' ? 'assigned_time' : 'COALESCE(assigned_time,requested_time)'}=?`); values.push(time(req.query.time)); }
