@@ -66,12 +66,13 @@ test.afterEach(async () => {
   for (const date of [today(), tomorrow()]) for (const account of [DRIVER_A, DRIVER_B]) await working(date, account.driverId, true);
   for (const id of assignedDrivers) {
     const driver = (await day(tomorrow())).drivers.find(driver => driver.id === id)!;
-    if (!driver.assignedTime) continue;
-    const trip = await capacity(tomorrow(), driver.assignedTime);
-    expect((await admin.post('/api/admin/trips/drivers', { data: {
-      direction: 'gori-tbilisi', date: tomorrow(), time: driver.assignedTime, expectedRevision: trip.revision,
-      action: 'remove', removeKey: `roster:${id}`,
-    } })).ok()).toBeTruthy();
+    for (const time of driver.assignedTimes ?? (driver.assignedTime ? [driver.assignedTime] : [])) {
+      const trip = await capacity(tomorrow(), time);
+      expect((await admin.post('/api/admin/trips/drivers', { data: {
+        direction: 'gori-tbilisi', date: tomorrow(), time, expectedRevision: trip.revision,
+        action: 'remove', removeKey: `roster:${id}`,
+      } })).ok()).toBeTruthy();
+    }
   }
   assignedDrivers.clear();
 });
@@ -100,14 +101,14 @@ async function setWork(page: Page, date: 'დღეს' | 'ხვალ', value:
   await button.click();
   return await saved;
 }
-async function seedWhole(driverId: number, phone: string, callerPhone?: string): Promise<Booking> {
-  const options = await admin.get(`/api/admin/trips/whole-car-options?direction=gori-tbilisi&date=${tomorrow()}&time=09:30`);
+async function seedWhole(driverId: number, phone: string, callerPhone?: string, time = '09:30'): Promise<Booking> {
+  const options = await admin.get(`/api/admin/trips/whole-car-options?direction=gori-tbilisi&date=${tomorrow()}&time=${time}`);
   expect(options.ok()).toBeTruthy();
   const candidate = (await options.json() as WholeCarOptions).drivers.find(driver => driver.key === `roster:${driverId}`)!;
   expect(candidate).toBeTruthy();
   const response = await admin.post('/api/admin/bookings', { data: {
     phone, ...(callerPhone ? { callerPhone } : {}), seats: 1, bookingType: 'whole_car', assignedVehicleKey: candidate.key, expectedVehicleRevision: candidate.revision,
-    direction: 'gori-tbilisi', goriAddress: `გორი, მძღოლის სატესტო მისამართი ${phone}`, requestedDate: tomorrow(), requestedTime: '09:30', luggage: true, dog: true,
+    direction: 'gori-tbilisi', goriAddress: `გორი, მძღოლის სატესტო მისამართი ${phone}`, requestedDate: tomorrow(), requestedTime: time, luggage: true, dog: true,
   } });
   expect(response.status()).toBe(201);
   const result = await response.json() as Booking;
@@ -219,7 +220,7 @@ test('the driver reads his confirmed booking while another driver and deleted or
   await page.screenshot({ path: test.info().outputPath('driver-portal-desktop.png'), fullPage: true });
 });
 
-test('a driver assigned to a shared trip sees its passengers and parcels while another whole car and another hour stay private', async ({ page }) => {
+test('a multi-hour driver sees shared passengers, only his own whole car at its hour, and assigned hours without orders', async ({ page }) => {
   const exclusive = await seedWhole(DRIVER_B.driverId, '599910113');
   async function regular(phone: string, bookingType: 'passenger' | 'parcel', time = '09:30') {
     const response = await admin.post('/api/admin/bookings', { data: {
@@ -234,14 +235,20 @@ test('a driver assigned to a shared trip sees its passengers and parcels while a
   const passenger = await regular('599910114', 'passenger');
   const parcel = await regular('599910115', 'parcel');
   const anotherHour = await regular('599910116', 'passenger', '09:00');
-  const trip = await capacity(tomorrow(), '09:30');
-  const assigned = await admin.post('/api/admin/trips/drivers', { data: {
-    direction: 'gori-tbilisi', date: tomorrow(), time: '09:30', expectedRevision: trip.revision,
-    action: 'add', driver: { kind: 'roster', id: DRIVER_A.driverId },
-  } });
-  expect(assigned.status()).toBe(201); assignedDrivers.add(DRIVER_A.driverId);
+  const ownCar = await seedWhole(DRIVER_A.driverId, '599910118', undefined, '14:00');
+  const hiddenAtOwnHour = await regular('599910119', 'passenger', '14:00');
+  for (const time of ['09:30', '18:00']) {
+    const trip = await capacity(tomorrow(), time);
+    const assigned = await admin.post('/api/admin/trips/drivers', { data: {
+      direction: 'gori-tbilisi', date: tomorrow(), time, expectedRevision: trip.revision,
+      action: 'add', driver: { kind: 'roster', id: DRIVER_A.driverId },
+    } });
+    expect(assigned.status()).toBe(201); assignedDrivers.add(DRIVER_A.driverId);
+  }
+  expect((await day(tomorrow())).drivers.find(driver => driver.id === DRIVER_A.driverId)?.assignedTimes).toEqual(['09:30', '14:00', '18:00']);
   await openDriver(page);
   await selectedDays(page).getByRole('button', { name: 'ხვალ', exact: true }).click();
+  for (const time of ['09:30', '14:00', '18:00']) await expect(tripTimes(page).getByRole('button', { name: time, exact: true })).toBeVisible();
   await expect(tripTimes(page).getByRole('button', { name: '09:30', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(2);
   await expect(bookedSeats(page)).toHaveText('2');
@@ -252,12 +259,24 @@ test('a driver assigned to a shared trip sees its passengers and parcels while a
     await expect(card.locator('a[href^="tel:"]')).toHaveText(formatPhone(booking.phone));
   }
   await expect(bookings(page).locator(`[data-driver-booking="${parcel.id}"]`)).toContainText('გზავნილი');
-  for (const booking of [exclusive, anotherHour]) await expect(bookings(page).locator(`[data-driver-booking="${booking.id}"]`)).toHaveCount(0);
+  for (const booking of [exclusive, anotherHour, ownCar, hiddenAtOwnHour]) await expect(bookings(page).locator(`[data-driver-booking="${booking.id}"]`)).toHaveCount(0);
   const dashboard = await driverApi.get(`/api/driver/dashboard?date=${tomorrow()}`);
   expect(dashboard.ok()).toBeTruthy();
   const data = await dashboard.json() as DriverDashboard;
-  expect(data.bookingScope).toBe('trip');
-  expect(data.bookings.map(booking => booking.id)).toEqual([passenger.id, parcel.id]);
+  expect(data.bookingScope).toBe('mixed');
+  expect(data.bookings.map(booking => booking.id)).toEqual([passenger.id, parcel.id, ownCar.id]);
+  expect(data.trips?.map(trip => trip.time)).toEqual(['09:30', '14:00', '18:00']);
+
+  await tripTimes(page).getByRole('button', { name: '14:00', exact: true }).click();
+  await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(1);
+  await expect(bookings(page).locator(`[data-driver-booking="${ownCar.id}"]`)).toBeVisible();
+  await expect(bookedSeats(page)).toHaveText(String(ownCar.seats));
+  await expect(bookings(page).locator(`[data-driver-booking="${hiddenAtOwnHour.id}"]`)).toHaveCount(0);
+  await page.screenshot({ path: '/tmp/greentaxi-multi-hour-portal.png', fullPage: true });
+  await tripTimes(page).getByRole('button', { name: '18:00', exact: true }).click();
+  await expect(bookings(page).locator('[data-driver-booking]')).toHaveCount(0);
+  await expect(bookedSeats(page)).toHaveText('0');
+  await expect(tripTimes(page).getByRole('button', { name: '18:00', exact: true })).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('a driver session cannot read or mutate administrative data or impersonate another driver', async ({ page }) => {
@@ -290,7 +309,9 @@ test('one day selector and trip hours filter cards, retain the chosen hour on re
   await page.route('**/api/driver/dashboard?**', async route => {
     const date = new URL(route.request().url()).searchParams.get('date');
     const rows = empty ? [] : date === today() ? [evening] : withoutNoon ? [morning] : [morning, noon, noonSecond, noonParcel];
-    await route.fulfill({ json: { ...dashboard, date, bookings: rows, trip: empty ? null : { direction: 'gori-tbilisi', time: date === today() ? '17:00' : '09:30', active: true } } });
+    const times = [...new Set(rows.map(row => row.time))].sort();
+    const trips = times.map(time => ({ direction: 'gori-tbilisi' as const, time, active: true }));
+    await route.fulfill({ json: { ...dashboard, date, bookings: rows, trips, trip: trips[0] ?? null } });
   });
   await openDriver(page);
   await expect(tripTimes(page).getByRole('button', { name: '17:00', exact: true })).toHaveAttribute('aria-pressed', 'true');

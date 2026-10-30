@@ -56,8 +56,12 @@ export function mountDriverPortal(app: Express, dependencies: {
     for (const date of [window.today, window.tomorrow]) {
       const preference = await database.prepare('SELECT declined,assignment_mode,manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(driverId, date);
       const working = preference?.declined !== 1;
-      const assignedTime: string | null = working && preference?.assignment_mode === 'manual' ? preference.manual_time : null;
-      result.push({ date, working, assignedTime, assignmentActive: assignedTime !== null && (await dependencies.configuredTimes(DRIVER_DIRECTION, date)).effective.includes(assignedTime) });
+      const rows = await database.prepare('SELECT time FROM driver_trip_assignments WHERE driver_id=? AND date=? ORDER BY time').all(driverId, date);
+      const assignedTimes: string[] = working ? rows.map(row => row.time) : [];
+      const effective = assignedTimes.length ? (await dependencies.configuredTimes(DRIVER_DIRECTION, date)).effective : [];
+      const activeAssignedTimes = assignedTimes.filter(time => effective.includes(time));
+      const assignedTime = assignedTimes[0] ?? null;
+      result.push({ date, working, assignedTime, assignedTimes, activeAssignedTimes, assignmentActive: assignedTime !== null && effective.includes(assignedTime) });
     }
     return result;
   }
@@ -110,18 +114,17 @@ export function mountDriverPortal(app: Express, dependencies: {
       const selected = status.find(day => day.date === date)!;
       const columns = `id,name,phone,caller_phone,direction,seats,booking_type,luggage,dog,seat_preference,
         gori_address,pickup_stop_name,didube_name,didube_address,assigned_date,assigned_time`;
-      // A whole-car performer sees only that driver's exclusive orders. The
-      // shared passenger list belongs to working drivers assigned to the trip.
-      let rows = await database.prepare(`SELECT ${columns} FROM bookings
+      // Exclusivity is local to its exact departure, not the driver's whole day.
+      const exclusive = await database.prepare(`SELECT ${columns} FROM bookings
         WHERE direction=? AND assigned_date=? AND status='confirmed' AND deleted_at IS NULL
         AND booking_type='whole_car' AND assigned_vehicle_key=? ORDER BY assigned_time,id`).all(DRIVER_DIRECTION, date, `roster:${driver.id}`);
-      let bookingScope: DriverDashboard['bookingScope'] = 'assigned';
-      if (!rows.length && selected.assignedTime) {
-        bookingScope = 'trip';
-        rows = await database.prepare(`SELECT ${columns} FROM bookings
-          WHERE direction=? AND assigned_date=? AND assigned_time=? AND status='confirmed' AND deleted_at IS NULL
-          AND booking_type IN ('passenger','parcel') ORDER BY assigned_time,id`).all(DRIVER_DIRECTION, date, selected.assignedTime);
-      }
+      const ownTimes = new Set<string>(exclusive.map(row => row.assigned_time));
+      const sharedTimes = (selected.assignedTimes ?? []).filter(time => !ownTimes.has(time));
+      const shared = sharedTimes.length ? await database.prepare(`SELECT ${columns} FROM bookings
+        WHERE direction=? AND assigned_date=? AND assigned_time IN (${sharedTimes.map(() => '?').join(',')}) AND status='confirmed' AND deleted_at IS NULL
+        AND booking_type IN ('passenger','parcel') ORDER BY assigned_time,id`).all(DRIVER_DIRECTION, date, ...sharedTimes) : [];
+      const rows = [...exclusive, ...shared].sort((first, second) => first.assigned_time.localeCompare(second.assigned_time) || first.id - second.id);
+      const bookingScope: DriverDashboard['bookingScope'] = exclusive.length ? sharedTimes.length ? 'mixed' : 'assigned' : sharedTimes.length ? 'trip' : 'assigned';
       const bookings: DriverBooking[] = rows.map(row => ({
         id: row.id, name: row.name, phone: normalizePhone(row.phone) ?? row.phone, direction: row.direction,
         callerPhone: row.caller_phone == null ? null : normalizePhone(row.caller_phone) ?? row.caller_phone,
@@ -129,7 +132,9 @@ export function mountDriverPortal(app: Express, dependencies: {
         seatPreference: row.seat_preference, goriAddress: row.gori_address, pickupStopName: row.pickup_stop_name,
         didubeName: row.didube_name, didubeAddress: row.didube_address, date: row.assigned_date, time: row.assigned_time,
       }));
-      return { driver: currentDriver, ...window, days: status, date, bookings, bookingScope, trip: selected.assignedTime ? { direction: DRIVER_DIRECTION, time: selected.assignedTime, active: selected.assignmentActive } : null };
+      const effective = (await dependencies.configuredTimes(DRIVER_DIRECTION, date)).effective;
+      const trips = [...new Set([...(selected.assignedTimes ?? []), ...ownTimes])].sort().map(time => ({ direction: DRIVER_DIRECTION, time, active: selected.working && effective.includes(time) }));
+      return { driver: currentDriver, ...window, days: status, date, bookings, bookingScope, trips, trip: trips[0] ?? null };
     });
     res.json(result);
   });

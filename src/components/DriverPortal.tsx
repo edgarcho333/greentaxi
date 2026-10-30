@@ -94,10 +94,12 @@ function DriverHome({ session, onExpired, onLogout }: { session: DriverSession &
   const bookingsDate = selectedDate;
   const visible = record?.date === bookingsDate && record.today === calendar.today && record.tomorrow === calendar.tomorrow ? record : null;
   const dayStatus = days.find(day => day.date === attendanceDate);
-  const availableTimes = [...new Set(visible ? [...visible.bookings.map(booking => booking.time), ...(visible.trip ? [visible.trip.time] : [])] : [])].sort();
+  const visibleTrips = visible?.trips ?? (visible?.trip ? [visible.trip] : []);
+  const availableTimes = [...new Set(visible ? [...visible.bookings.map(booking => booking.time), ...visibleTrips.map(trip => trip.time)] : [])].sort();
   const timeKey = availableTimes.join(',');
   const selectedTime = hourSelection?.date === selectedDate && availableTimes.includes(hourSelection.time) ? hourSelection.time : availableTimes[0] ?? null;
   const selectedBookings = visible?.bookings.filter(booking => booking.time === selectedTime) ?? [];
+  const selectedTrip = visibleTrips.find(trip => trip.time === selectedTime);
   const reservedSeats = selectedBookings.reduce((total, booking) => total + (booking.bookingType === 'parcel' ? 0 : booking.seats), 0);
   const calendarRef = useRef(calendar); calendarRef.current = calendar;
   const selection = useRef(bookingsDate); selection.current = bookingsDate;
@@ -202,7 +204,7 @@ function DriverHome({ session, onExpired, onLogout }: { session: DriverSession &
     <section className="driver-section driver-bookings" aria-label="ჩემი ჯავშნები" data-driver-bookings data-date={bookingsDate}>
       {loading && !visible && <p className="driver-loading-status" role="status"><LoaderCircle size={24} className="driver-spin" />ჯავშნები იტვირთება…</p>}
       {readError && <div className="driver-feedback error" role="alert"><span>{readError}</span><button type="button" className="driver-button" onClick={() => setRetry(value => value + 1)} disabled={loading}><RefreshCw size={21} />ხელახლა ცდა</button></div>}
-      {visible && <><div className="driver-section-heading driver-time-heading"><Clock3 size={25} /><h2>რეისის დრო</h2></div>{availableTimes.length ? <div className="driver-time-buttons" role="group" aria-label="რეისის დრო">{availableTimes.map(time => <button type="button" key={time} aria-pressed={selectedTime === time} disabled={loggingOut} onClick={() => setHourSelection({ date: selectedDate, time })}>{time}</button>)}</div> : <p className="driver-no-trips">რეისები ჯერ არ არის.</p>}{visible.trip && selectedTime === visible.trip.time && !visible.trip.active && <p className="driver-trip-status" role="status">არჩეული რეისის დრო გამორთულია.</p>}
+      {visible && <><div className="driver-section-heading driver-time-heading"><Clock3 size={25} /><h2>რეისის დრო</h2></div>{availableTimes.length ? <div className="driver-time-buttons" role="group" aria-label="რეისის დრო">{availableTimes.map(time => <button type="button" key={time} aria-pressed={selectedTime === time} disabled={loggingOut} onClick={() => setHourSelection({ date: selectedDate, time })}>{time}</button>)}</div> : <p className="driver-no-trips">რეისები ჯერ არ არის.</p>}{selectedTrip && !selectedTrip.active && <p className="driver-trip-status" role="status">არჩეული რეისის დრო გამორთულია.</p>}
         <div className="driver-section-heading driver-orders-heading"><CarFront size={26} /><h2>ჩემი შეკვეთები</h2><span className="driver-booking-count" aria-label={`შეკვეთები: ${selectedBookings.length}`} data-driver-booking-count>{selectedBookings.length}</span><button type="button" className="driver-refresh" aria-label="ჯავშნების განახლება" onClick={() => setRetry(value => value + 1)} disabled={loading || loggingOut}><RefreshCw size={24} /></button></div><div className="driver-seat-summary" role="status"><UsersRound size={21} /><span>დაჯავშნილი ადგილები</span><strong data-driver-seat-count>{reservedSeats}</strong></div>{selectedBookings.length ? <div className="driver-booking-list">{selectedBookings.map(booking => <BookingCard key={booking.id} booking={booking} />)}</div> : <div className="driver-empty"><CarFront size={32} /><p>ჯავშნები ჯერ არ არის.</p></div>}</>}
     </section><footer className="driver-page-footer">GreenTaxi · გორი ↔ თბილისი</footer>
   </main>;

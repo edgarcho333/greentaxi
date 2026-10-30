@@ -225,35 +225,44 @@ test('an unassigned trip offers only participating drivers as large buttons in t
   await expectCounts(page, expectedQueue[0].capacity, 0, expectedQueue[0].capacity);
 });
 
-test('moving a driver from another hour requires a second explicit confirmation', async ({ page }) => {
+test('one driver can be added to multiple hours and removal or replacement changes only the selected trip', async ({ page }) => {
   const date = '2040-06-14';
   await fixtureDay(date);
   await assignRoster(date, '10:00', 3);
+  const driver = (await driverDay(date)).drivers.find(driver => driver.id === 3)!;
+  const first = (await driverDay(date)).drivers.find(driver => driver.id === 1)!;
   await openTrip(page, date);
   let writes = 0;
   page.on('request', request => {
     if (new URL(request.url()).pathname === '/api/admin/trips/drivers' && request.method() === 'POST') writes++;
   });
   await openDriverPicker(page);
-  await driverDialog(page).locator('[data-driver-choice="3"]').click();
-  const confirmation = driverDialog(page).locator('[data-driver-transfer-confirm]');
-  await expect(confirmation).toBeVisible();
-  await expect(driverDialog(page)).toContainText('10:00');
-  await expect(driverDialog(page)).toContainText('09:00');
-  expect(writes).toBe(0);
-  expect((await capacity(date, '10:00')).drivers.map(driver => driver.driverId)).toEqual([3]);
-  await driverDialog(page).getByRole('button', { name: 'უკან', exact: true }).click();
-  await expect(driverDialog(page).locator('[data-driver-choice="3"]')).toBeVisible();
-  expect(writes).toBe(0);
-  await driverDialog(page).locator('[data-driver-choice="3"]').click();
+  await expect(driverDialog(page).locator('[data-driver-choice="3"]')).toContainText('10:00');
+  await page.screenshot({ path: '/tmp/greentaxi-multi-hour-picker.png' });
   const saved = page.waitForResponse(isDriverMutation);
-  await confirmation.click();
+  await driverDialog(page).locator('[data-driver-choice="3"]').click();
   expect((await saved).ok()).toBeTruthy();
   await expect(driverDialog(page)).toHaveCount(0);
   expect(writes).toBe(1);
   await expectCounts(page, 22, 0, 22);
-  expect((await capacity(date, '10:00')).drivers).toEqual([]);
-  expect((await driverDay(date)).drivers.filter(driver => driver.assignedTime === '09:00').map(driver => driver.id).sort()).toEqual([1, 2, 3]);
+  expect((await capacity(date, '10:00')).drivers.map(driver => driver.driverId)).toEqual([3]);
+  expect((await driverDay(date)).drivers.find(driver => driver.id === 3)?.assignedTimes).toEqual(['09:00', '10:00']);
+
+  await removeCar(page, driver.name);
+  await expectCounts(page, 14, 0, 14);
+  expect((await capacity(date, '10:00')).drivers.map(driver => driver.driverId)).toEqual([3]);
+  expect((await driverDay(date)).drivers.find(driver => driver.id === 3)?.assignedTimes).toEqual(['10:00']);
+
+  await manage(page);
+  await capacityPanel(page).getByRole('button', { name: `${first.name} — რეისის მძღოლის შეცვლა`, exact: true }).click();
+  const replaced = page.waitForResponse(isDriverMutation);
+  await driverDialog(page).locator('[data-driver-choice="3"]').click();
+  expect((await replaced).ok()).toBeTruthy();
+  await expect(driverDialog(page)).toHaveCount(0);
+  expect((await capacity(date, '09:00')).drivers.map(driver => driver.driverId).sort()).toEqual([2, 3]);
+  expect((await capacity(date, '10:00')).drivers.map(driver => driver.driverId)).toEqual([3]);
+  expect((await driverDay(date)).drivers.find(driver => driver.id === 1)?.assignedTimes).toEqual([]);
+  expect((await driverDay(date)).drivers.find(driver => driver.id === 3)?.assignedTimes).toEqual(['09:00', '10:00']);
 });
 
 test('a whole-car reservation protects its assigned driver until the booking is cancelled', async ({ page }) => {

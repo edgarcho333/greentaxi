@@ -10,7 +10,7 @@ export type Slot = { time: string; active: boolean; bookingCount: number; seatCo
 export type SeatPreference = 'front' | 'back' | 'middle';
 export type BookingType = 'passenger' | 'parcel' | 'whole_car';
 export type DriverIdentity = { id: number; name: string; login: string; phone: string | null; capacity: number };
-export type DriverDayStatus = { date: string; working: boolean; assignedTime: string | null; assignmentActive: boolean };
+export type DriverDayStatus = { date: string; working: boolean; assignedTime: string | null; assignedTimes?: string[]; activeAssignedTimes?: string[]; assignmentActive: boolean };
 export type DriverBooking = {
   id: number; name: string; phone: string; direction: Direction; seats: number; bookingType: BookingType;
   callerPhone?: string | null;
@@ -20,7 +20,9 @@ export type DriverBooking = {
 export type DriverSession = { driver: DriverIdentity | null; today: string; tomorrow: string };
 export type DriverDashboard = {
   driver: DriverIdentity; today: string; tomorrow: string; days: DriverDayStatus[]; date: string;
-  bookings: DriverBooking[]; bookingScope: 'assigned' | 'trip'; trip: { direction: Direction; time: string; active: boolean } | null;
+  bookings: DriverBooking[]; bookingScope: 'assigned' | 'trip' | 'mixed';
+  trip: { direction: Direction; time: string; active: boolean } | null;
+  trips?: { direction: Direction; time: string; active: boolean }[];
 };
 export type Booking = {
   bookingType?: BookingType; assignedVehicleKey?: string | null; assignedVehicleName?: string | null;
@@ -36,7 +38,7 @@ export type Schedule = { direction: Direction; date: string; baseTimes: string[]
 export type DriverDay = {
   id: number; name: string; phone?: string | null; capacity: number; revision?: number; order: number; queuePosition: number;
   declined: boolean; assignmentMode: 'auto' | 'manual';
-  automaticTime: string | null; assignedTime: string | null; assignmentActive: boolean;
+  automaticTime: string | null; assignedTime: string | null; assignedTimes?: string[]; assignmentActive: boolean;
 };
 export type DriverSchedule = {
   direction: 'gori-tbilisi'; date: string; anchorDate: string; firstDriverId: number | null;
@@ -54,7 +56,7 @@ export type TripCapacity = {
 export type TripDriverSelection = { kind: 'roster'; id: number } | { kind: 'temporary'; name: string; capacity: number };
 export type WholeCarDriver = {
   key: string; driverId: number | null; kind: 'roster' | 'temporary'; name: string; capacity: number;
-  queuePosition: number | null; assignedTime: string | null; declined: boolean; revision: string; reservedBookingId?: number;
+  queuePosition: number | null; assignedTime: string | null; assignedTimes?: string[]; declined: boolean; revision: string; reservedBookingId?: number;
 };
 export type WholeCarOptions = {
   direction: 'gori-tbilisi'; date: string; time: string; active: boolean; revision: string; drivers: WholeCarDriver[];

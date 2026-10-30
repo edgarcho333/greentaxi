@@ -15,7 +15,7 @@ export async function readTripCapacity(database: Database, date: string, time: s
   const reservations = await database.prepare("SELECT id,assigned_vehicle_key,seats FROM bookings WHERE direction=? AND assigned_date=? AND assigned_time=? AND booking_type='whole_car' AND status='confirmed' AND deleted_at IS NULL").all(DRIVER_DIRECTION, date, time);
   const active = times.includes(time);
   const assigned = [
-    ...schedule.drivers.filter(driver => !driver.declined && driver.assignedTime === time).map(driver => ({ key: `roster:${driver.id}`, driverId: driver.id, kind: 'roster' as const, name: driver.name, capacity: driver.capacity, active })),
+    ...schedule.drivers.filter(driver => !driver.declined && (driver.assignedTimes ?? []).includes(time)).map(driver => ({ key: `roster:${driver.id}`, driverId: driver.id, kind: 'roster' as const, name: driver.name, capacity: driver.capacity, active })),
     ...temporary.map(driver => ({ key: `temporary:${driver.id}`, driverId: null, kind: 'temporary' as const, name: driver.name as string, capacity: driver.capacity as number, active })),
   ];
   // Bookings can arrive while the editor is open. Only the driver/schedule plan

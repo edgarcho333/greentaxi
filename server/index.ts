@@ -6,7 +6,7 @@ import type { Analytics, Booking, CallDevice, CallInquiry, Direction, PassengerP
 import { normalizePhone, legacyPhoneKey } from '../shared/phone.js';
 import { migratePassengerAddresses, migratePhoneStorage, migratePickupMemory, readPassengerProfile, readPassengerProfiles, savePassengerProfile } from './passenger-profiles.js';
 import { comparePassengerTrips, listPassengers, passengerBookings, passengerSummary } from './passengers.js';
-import { readDriverSchedule } from './drivers.js';
+import { addDriverTripAssignment, readDriverSchedule, removeDriverTripAssignment } from './drivers.js';
 import { DRIVER_DIRECTION } from '../shared/driver-rotation.js';
 import { readTripCapacity } from './trip-capacity.js';
 import { readWholeCarOptions } from './whole-car-options.js';
@@ -288,17 +288,15 @@ export async function createApp(options: Options = {}) {
       if (!/^[a-f0-9]{64}$/.test(revision)) reject(400, 'მანქანის ვერსია არასწორია.', 'VALIDATION');
       if (revision !== car.revision) reject(409, 'მძღოლის მონაცემები შეიცვალა. განაახლეთ არჩევანი და სცადეთ ხელახლა.', 'TRIP_CHANGED');
     }
-    const changesAssignment = car.kind === 'roster' && (car.declined || car.assignedTime !== selectedTime);
+    const changesAssignment = car.kind === 'roster' && (car.declined || !(car.assignedTimes ?? []).includes(selectedTime));
     if ((requireActive || changesAssignment) && !effective.includes(selectedTime)) reject(409, 'არჩეული დრო გამორთულია. აირჩიეთ მოქმედი დრო.', 'SLOT_INACTIVE');
     if (requireAssignment && changesAssignment && expectedRevision === undefined) reject(409, 'მძღოლის მისაბმელად განაახლეთ მანქანის არჩევანი.', 'TRIP_CHANGED');
     return { car, date: selectedDay, time: selectedTime, changesAssignment };
   }
   async function assignWholeCar(choice: { car: WholeCarDriver; date: string; time: string; changesAssignment: boolean }, employee?: User) {
     if (!choice.changesAssignment) return;
-    await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,0,'manual',?,?)
-      ON CONFLICT(driver_id,date) DO UPDATE SET declined=0,assignment_mode='manual',manual_time=excluded.manual_time,updated_at=excluded.updated_at`)
-      .run(choice.car.driverId, choice.date, choice.time, now().toISOString());
-    await audit('trip.driver.add', employee, undefined, { direction: DRIVER_DIRECTION, date: choice.date, time: choice.time, addedKey: choice.car.key, fromTime: choice.car.assignedTime, activated: choice.car.declined, source: 'whole-car-booking' });
+    await addDriverTripAssignment(db, choice.car.driverId!, choice.date, choice.time, now().toISOString(), true);
+    await audit('trip.driver.add', employee, undefined, { direction: DRIVER_DIRECTION, date: choice.date, time: choice.time, addedKey: choice.car.key, existingTimes: choice.car.assignedTimes ?? [], activated: choice.car.declined, source: 'whole-car-booking' });
   }
   async function reassignWholeCar(row: Row, day: string, slotTime: string, suppliedKey: unknown, expectedRevision: unknown, employee?: User) {
     if (row.booking_type !== 'whole_car') return;
@@ -359,13 +357,23 @@ export async function createApp(options: Options = {}) {
   async function profile(number: string): Promise<PassengerProfile | null> {
     return readPassengerProfile(db, number, now());
   }
-  async function createBooking(body: Row, employee?: User, source: 'public' | 'employee' | 'android' = employee ? 'employee' : 'public') {
-    const input = (await inputBooking(body, undefined, Boolean(employee)));
+  async function createBooking(body: Row, employee?: User, source: 'public' | 'employee' | 'android' = employee ? 'employee' : 'public', prepared?: Awaited<ReturnType<typeof inputBooking>>) {
+    const input = prepared ?? (await inputBooking(body, undefined, Boolean(employee)));
     const day = date(body.requestedDate, employee ? 'DATE_INVALID' : 'VALIDATION');
     const slotTime = time(body.requestedTime);
     if (employee) staffDateWindow(day, source === 'android');
     (await activeSlot(input.direction, day, slotTime, true));
-    if (input.wholeCarChoice) await assignWholeCar(input.wholeCarChoice, employee);
+    if (input.wholeCarChoice) {
+      // Group choices are validated against one initial snapshot. Siblings may
+      // activate the same driver, but cannot reserve that exact departure twice.
+      if (prepared) {
+        const options = await readWholeCarOptions(db, day, slotTime, (await configuredTimes(input.direction, day)).effective);
+        const current = options.drivers.find(car => car.key === input.assignedVehicleKey);
+        if (!current) reject(409, 'მძღოლი ან მანქანა აღარ არის ხელმისაწვდომი. განაახლეთ სია.', 'VEHICLE_UNAVAILABLE');
+        if (current.reservedBookingId) reject(409, 'მანქანა უკვე მთლიანად დაჯავშნილია.', 'VEHICLE_RESERVED');
+      }
+      await assignWholeCar(input.wholeCarChoice, employee);
+    }
     const stamp = now().toISOString();
     const config = (await settings());
     const result = (await db.prepare(`INSERT INTO bookings(name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,source,created_at,updated_at,caller_phone,luggage,dog,seat_preference,booking_type,assigned_vehicle_key,assigned_vehicle_name)
@@ -724,10 +732,12 @@ export async function createApp(options: Options = {}) {
       const inquiry = await getCall(callId);
       if (inquiry.booking_id !== null) reject(409, 'ამ ზარის ჯავშნები უკვე შექმნილია.', 'CALL_CONVERTED');
       if (inquiry.deleted_at) reject(409, 'ზარი წაშლილია. ჯერ აღადგინეთ.', 'DELETED');
-      const inputs = groupBookingInputs(req.body);
+      const inputs = groupBookingInputs(req.body).map(input => ({ ...input, callerPhone: inquiry.phone }));
+      const prepared = [];
+      for (const input of inputs) prepared.push(await inputBooking(input, undefined, true));
       const created: Booking[] = [];
-      for (const input of inputs) {
-        const child = await createBooking({ ...input, callerPhone: inquiry.phone }, req.employee, 'android');
+      for (const [index, input] of inputs.entries()) {
+        const child = await createBooking(input, req.employee, 'android', prepared[index]);
         await db.prepare('INSERT INTO call_booking_links(call_id,booking_id) VALUES (?,?)').run(inquiry.id, child.id);
         await audit('call.convert', req.employee, child.id, { callId: inquiry.id });
         created.push(child);
@@ -783,8 +793,11 @@ export async function createApp(options: Options = {}) {
   app.post('/api/admin/bookings/group', async (req: ContextRequest, res) => {
     if (!req.get('Idempotency-Key')) reject(400, 'მოთხოვნის იდენტიფიკატორი აუცილებელია.', 'VALIDATION');
     await idempotent(req, res, `employee-booking-group:${req.employee!.id}`, async () => {
+      const inputs = groupBookingInputs(req.body);
+      const prepared = [];
+      for (const input of inputs) prepared.push(await inputBooking(input, undefined, true));
       const created: Booking[] = [];
-      for (const input of groupBookingInputs(req.body)) created.push(await createBooking(input, req.employee));
+      for (const [index, input] of inputs.entries()) created.push(await createBooking(input, req.employee, 'employee', prepared[index]));
       return { bookings: created };
     });
   });
@@ -952,22 +965,15 @@ export async function createApp(options: Options = {}) {
         const existing = (await readDriverSchedule(db, day, effective)).drivers.find(driver => driver.id === selectedId);
         if (!existing) reject(404, 'მძღოლი ვერ მოიძებნა.', 'NOT_FOUND');
         if (existing.declined) reject(409, 'მძღოლმა ამ დღეს უარი თქვა. ჯერ შეცვალეთ მისი დღის სტატუსი.', 'DRIVER_DECLINED');
-        if (existing.assignedTime === slotTime) reject(409, 'მძღოლი ამ რეისზე უკვე დანიშნულია.', 'DRIVER_ALREADY_ASSIGNED');
+        if ((existing.assignedTimes ?? []).includes(slotTime)) reject(409, 'მძღოლი ამ რეისზე უკვე დანიშნულია.', 'DRIVER_ALREADY_ASSIGNED');
       }
       const timestamp = now().toISOString();
-      async function manuallyAssign(id: number, manualTime: string | null) {
-        // Only the trip editor changes assignments. Attendance and queue order
-        // remain independent from this explicit departure choice.
-        await db.prepare(`INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,0,'manual',?,?)
-          ON CONFLICT(driver_id,date) DO UPDATE SET assignment_mode='manual',manual_time=excluded.manual_time,updated_at=excluded.updated_at`)
-          .run(id, day, manualTime, timestamp);
-      }
-      if (removed?.driverId !== null && removed?.driverId !== undefined) await manuallyAssign(removed.driverId, null);
+      if (removed?.driverId !== null && removed?.driverId !== undefined) await removeDriverTripAssignment(db, removed.driverId, day, slotTime, timestamp);
       else if (removed) await db.prepare('UPDATE temporary_trip_drivers SET removed_at=? WHERE id=? AND direction=? AND date=? AND time=? AND removed_at IS NULL')
         .run(timestamp, removed.key.slice('temporary:'.length), d, day, slotTime);
       let addedKey: string | undefined;
       if (addition?.kind === 'roster') {
-        await manuallyAssign(addition.id, slotTime);
+        await addDriverTripAssignment(db, addition.id, day, slotTime, timestamp);
         addedKey = `roster:${addition.id}`;
       } else if (addition?.kind === 'temporary') {
         const id = randomUUID();

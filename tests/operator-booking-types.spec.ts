@@ -33,12 +33,13 @@ test.afterEach(async () => {
   // Release only assignments created here, after deleting the corresponding orders.
   for (const id of changedDrivers) {
     const driver = (await driverDay()).drivers.find(driver => driver.id === id)!;
-    if (!driver.assignedTime) continue;
-    const trip = await capacity(driver.assignedTime);
-    expect((await api.post('/api/admin/trips/drivers', { data: {
-      direction: 'gori-tbilisi', date: tripDate(), time: driver.assignedTime, expectedRevision: trip.revision,
-      action: 'remove', removeKey: `roster:${id}`,
-    } })).ok()).toBeTruthy();
+    for (const time of driver.assignedTimes ?? (driver.assignedTime ? [driver.assignedTime] : [])) {
+      const trip = await capacity(time);
+      expect((await api.post('/api/admin/trips/drivers', { data: {
+        direction: 'gori-tbilisi', date: tripDate(), time, expectedRevision: trip.revision,
+        action: 'remove', removeKey: `roster:${id}`,
+      } })).ok()).toBeTruthy();
+    }
   }
   changedDrivers.clear();
 });
@@ -221,23 +222,22 @@ test('an inactive driver requires confirmation and becomes active only on the bo
   expect((await driverDay(followingDate)).drivers.find(item => item.id === driver.id)).toEqual(followingBefore);
 });
 
-test('choosing a driver from another hour asks for confirmation and transfers only when the booking is saved', async ({ page }) => {
+test('choosing a driver already assigned to another hour adds the new hour only when the booking is saved', async ({ page }) => {
   const driver = await unassignedDriver(); await assign(driver, '10:00');
   const form = await newBooking(page, '599800104', '11:00');
-  const writes = mutationPaths(page); await openPicker(page, form); await choice(page, driver).click();
-  const confirm = picker(page).locator('[data-whole-car-transfer-confirm]');
-  await expect(confirm).toBeVisible();
-  await expect(picker(page)).toContainText('10:00'); await expect(picker(page)).toContainText('11:00');
-  await picker(page).getByRole('button', { name: 'უკან', exact: true }).click();
-  await expect(choice(page, driver)).toBeVisible(); expect(writes).toEqual([]);
-  await choice(page, driver).click(); await confirm.click();
+  const writes = mutationPaths(page); await openPicker(page, form);
+  await expect(choice(page, driver)).toBeEnabled();
+  await expect(choice(page, driver)).toContainText('10:00');
+  await choice(page, driver).click();
   await expect(picker(page)).toHaveCount(0); expect(writes).toEqual([]);
-  expect((await driverDay()).drivers.find(item => item.id === driver.id)?.assignedTime).toBe('10:00');
+  expect((await driverDay()).drivers.find(item => item.id === driver.id)?.assignedTimes).toEqual(['10:00']);
   const booking = await submitNew(page, form);
   expect(writes).toEqual(['/api/admin/bookings']);
   expect(booking).toMatchObject({ assignedTime: '11:00', assignedVehicleKey: `roster:${driver.id}`, seats: driver.capacity });
-  expect((await capacity('10:00')).drivers.some(car => car.driverId === driver.id)).toBe(false);
+  expect((await capacity('10:00')).drivers.find(car => car.driverId === driver.id)).toMatchObject({ capacity: driver.capacity });
+  expect((await capacity('10:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBeUndefined();
   expect((await capacity('11:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBe(booking.id);
+  expect((await driverDay()).drivers.find(item => item.id === driver.id)?.assignedTimes).toEqual(['10:00', '11:00']);
 });
 
 test('a whole-car booking retains its own driver in edit and can move that reservation to another hour', async ({ page }) => {
@@ -256,28 +256,38 @@ test('a whole-car booking retains its own driver in edit and can move that reser
   form = bookingForm(page, 'ჯავშნის გადატანა');
   await form.getByRole('group', { name: 'დრო', exact: true }).getByRole('button', { name: '13:00', exact: true }).click();
   await openPicker(page, form); await expect(choice(page, driver)).toBeEnabled(); await choice(page, driver).click();
-  await picker(page).locator('[data-whole-car-transfer-confirm]').click();
+  await expect(picker(page)).toHaveCount(0);
   const moved = page.waitForResponse(response => isMutation(response, `/api/admin/bookings/${booking.id}/move`));
   await form.getByRole('button', { name: 'გადატანა', exact: true }).click();
   const response = await moved; expect(response.ok()).toBeTruthy();
   expect(await response.json()).toMatchObject({ id: booking.id, assignedTime: '13:00', assignedVehicleKey: `roster:${driver.id}`, seats: driver.capacity });
   await expect(form).toHaveCount(0);
-  expect((await capacity('12:00')).drivers.some(car => car.driverId === driver.id)).toBe(false);
+  expect((await capacity('12:00')).drivers.find(car => car.driverId === driver.id)).toMatchObject({ capacity: driver.capacity });
+  expect((await capacity('12:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBeUndefined();
+  expect((await driverDay()).drivers.find(item => item.id === driver.id)?.assignedTimes).toEqual(['12:00', '13:00']);
   expect((await capacity('13:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBe(booking.id);
 });
 
-test('a reserved driver is disabled for another order even at a different hour', async ({ page }) => {
+test('a whole-car reservation blocks only the same hour and another reservation can use the same driver later', async ({ page }) => {
   const driver = await unassignedDriver();
   let form = await newBooking(page, '599800106', '14:00'); await selectUnassigned(page, form, driver);
-  const booking = await submitNew(page, form);
-  form = await newBooking(page, '599800107', '15:00'); await openPicker(page, form);
+  const first = await submitNew(page, form);
+  form = await newBooking(page, '599800107', '14:00'); await openPicker(page, form);
   await expect(choice(page, driver)).toBeDisabled(); await expect(choice(page, driver)).toContainText('დაჯავშნილია');
   await page.keyboard.press('Escape'); await form.getByRole('button', { name: 'გაუქმება', exact: true }).click();
-  expect((await capacity('14:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBe(booking.id);
-  expect((await capacity('15:00')).drivers.some(car => car.driverId === driver.id)).toBe(false);
+  form = await newBooking(page, '599800108', '15:00'); await openPicker(page, form);
+  await expect(choice(page, driver)).toBeEnabled(); await choice(page, driver).click();
+  await expect(picker(page)).toHaveCount(0);
+  const second = await submitNew(page, form);
+  expect((await capacity('14:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBe(first.id);
+  expect((await capacity('15:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBe(second.id);
+  expect((await driverDay()).drivers.find(item => item.id === driver.id)?.assignedTimes).toEqual(['14:00', '15:00']);
+  expect((await api.post(`/api/admin/bookings/${first.id}/delete`)).ok()).toBeTruthy();
+  expect((await capacity('14:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBeUndefined();
+  expect((await capacity('15:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBe(second.id);
 });
 
-test('restoring a deleted whole-car order offers a fresh driver selection after that driver changed hours', async ({ page }) => {
+test('restoring a deleted whole-car order preserves the driver assignments on its original and additional hours', async ({ page }) => {
   const driver = await unassignedDriver();
   let form = await newBooking(page, '599800109', '18:00'); await selectUnassigned(page, form, driver);
   const booking = await submitNew(page, form);
@@ -289,13 +299,14 @@ test('restoring a deleted whole-car order offers a fresh driver selection after 
   await row.getByRole('button', { name: 'აღდგენა', exact: true }).click();
   form = bookingForm(page, 'ჯავშნის აღდგენა');
   await openPicker(page, form); await expect(choice(page, driver)).toBeEnabled(); await choice(page, driver).click();
-  await picker(page).locator('[data-whole-car-transfer-confirm]').click();
+  await expect(picker(page)).toHaveCount(0);
   const restored = page.waitForResponse(response => isMutation(response, `/api/admin/bookings/${booking.id}/restore`));
   await form.getByRole('button', { name: 'აღდგენა', exact: true }).click();
   const response = await restored; expect(response.ok()).toBeTruthy();
   expect(response.request().postDataJSON().expectedVehicleRevision).toMatch(/^[a-f0-9]{64}$/);
   expect(await response.json()).toMatchObject({ id: booking.id, deletedAt: null, assignedTime: '18:00', assignedVehicleKey: `roster:${driver.id}` });
-  expect((await capacity('19:00')).drivers.some(car => car.driverId === driver.id)).toBe(false);
+  expect((await capacity('19:00')).drivers.find(car => car.driverId === driver.id)).toMatchObject({ capacity: driver.capacity });
+  expect((await driverDay()).drivers.find(item => item.id === driver.id)?.assignedTimes).toEqual(['18:00', '19:00']);
   expect((await capacity('18:00')).drivers.find(car => car.driverId === driver.id)?.reservedBookingId).toBe(booking.id);
 });
 

@@ -248,7 +248,7 @@ test('whole-car options expose the complete daily queue including nonworking dri
     assert.equal(options.drivers.length, 44);
     assert.equal(options.drivers.find(driver => driver.driverId === 5)?.declined, true);
     assert.deepEqual(options.drivers.filter(driver => driver.kind === 'roster').map(driver => driver.driverId), daily.drivers.map((driver: any) => driver.id));
-    assert.deepEqual(options.drivers.at(-1), { key: temporary.key, driverId: null, kind: 'temporary', name: 'სხვა მანქანა', capacity: 6, queuePosition: null, assignedTime: '08:30', declined: false, revision: options.drivers.at(-1)!.revision });
+    assert.deepEqual(options.drivers.at(-1), { key: temporary.key, driverId: null, kind: 'temporary', name: 'სხვა მანქანა', capacity: 6, queuePosition: null, assignedTime: '08:30', assignedTimes: ['08:30'], declined: false, revision: options.drivers.at(-1)!.revision });
     assert.equal((await wholeOptions(f, '09:30')).drivers.some(driver => driver.key === temporary.key), false);
     assert.equal(options.drivers.find(driver => driver.driverId === 3)?.revision, original.drivers.find(driver => driver.driverId === 3)?.revision, 'Other drivers and temporary cars must not invalidate a selected driver');
     assert.notEqual(rosterChoice(await wholeOptions(f, '09:30'), 3).expectedVehicleRevision, rosterChoice(options, 3).expectedVehicleRevision);
@@ -285,26 +285,33 @@ test('saving an unassigned whole-car choice assigns and reserves its actual capa
   });
 });
 
-test('a whole-car choice can transfer an active driver from another hour but cannot steal a foreign whole-car reservation', async () => {
+test('a whole-car choice adds another departure while reservations remain exclusive to their own hour', async () => {
   await isolated(async f => {
     const choice = rosterChoice(await wholeOptions(f), 2);
     const created = await successful(f, '/admin/bookings', 'POST', input(choice));
     assert.equal(created.seats, 7);
-    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 2)?.assignedTime, '08:30');
-    assert.equal((await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=09:30`)).drivers.some((driver: any) => driver.driverId === 2), false);
+    const selected = (await wholeOptions(f)).drivers.find(driver => driver.driverId === 2)!;
+    assert.deepEqual(selected.assignedTimes, ['08:30', '09:30']);
+    assert.equal((await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=09:30`)).drivers.some((driver: any) => driver.driverId === 2), true);
     const otherHour = await wholeOptions(f, '09:30');
-    assert.equal(otherHour.drivers.find(driver => driver.driverId === 2)?.reservedBookingId, created.id);
-    const stolen = await f.request('/admin/bookings', 'POST', input({ ...rosterChoice(otherHour, 2), requestedTime: '09:30' }));
-    assert.equal(stolen.data.code, 'VEHICLE_RESERVED');
-    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 2)?.assignedTime, '08:30');
+    assert.equal(otherHour.drivers.find(driver => driver.driverId === 2)?.reservedBookingId, undefined);
+    const second = await successful(f, '/admin/bookings', 'POST', input({ ...rosterChoice(otherHour, 2), requestedTime: '09:30' }));
+    assert.equal((await f.request('/admin/bookings', 'POST', input(rosterChoice(await wholeOptions(f), 2)))).data.code, 'VEHICLE_RESERVED');
+    await successful(f, `/admin/bookings/${created.id}/delete`, 'POST', {});
+    assert.equal((await wholeOptions(f)).drivers.find(driver => driver.driverId === 2)?.reservedBookingId, undefined);
+    assert.equal((await wholeOptions(f, '09:30')).drivers.find(driver => driver.driverId === 2)?.reservedBookingId, second.id);
+    assert.deepEqual((await wholeOptions(f)).drivers.find(driver => driver.driverId === 2)?.assignedTimes, ['08:30', '09:30']);
   });
 });
 
-test('stale whole-car selections and revisions replayed for another date or hour cannot move a driver', async () => {
+test('whole-car revisions ignore unrelated hours but reject stale selected-hour, date and attendance changes', async () => {
   await isolated(async f => {
     const choice = rosterChoice(await wholeOptions(f), 3);
     const plan = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=10:00`);
     await successful(f, '/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: DAY, time: '10:00', expectedRevision: plan.revision, action: 'add', driver: { kind: 'roster', id: 3 } });
+    assert.equal(rosterChoice(await wholeOptions(f), 3).expectedVehicleRevision, choice.expectedVehicleRevision, 'An unrelated hour must not invalidate this departure choice');
+    const selectedPlan = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${DAY}&time=08:30`);
+    await successful(f, '/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: DAY, time: '08:30', expectedRevision: selectedPlan.revision, action: 'add', driver: { kind: 'roster', id: 3 } });
     assert.equal((await f.request('/admin/bookings', 'POST', input(choice))).data.code, 'TRIP_CHANGED');
     const current = rosterChoice(await wholeOptions(f), 3);
     for (const override of [{ requestedTime: '09:30' }, { requestedDate: '2030-01-01' }]) {
@@ -312,7 +319,8 @@ test('stale whole-car selections and revisions replayed for another date or hour
     }
     await successful(f, '/admin/drivers/3/day', 'PATCH', { direction: 'gori-tbilisi', date: DAY, declined: true });
     assert.equal((await f.request('/admin/bookings', 'POST', input(current))).data.code, 'TRIP_CHANGED');
-    assert.equal((await f.db.prepare('SELECT manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(3, DAY))?.manual_time, '10:00');
+    assert.equal((await f.db.prepare('SELECT manual_time FROM driver_day_overrides WHERE driver_id=? AND date=?').get(3, DAY))?.manual_time, '08:30');
+    assert.deepEqual((await wholeOptions(f)).drivers.find(driver => driver.driverId === 3)?.assignedTimes, ['08:30', '10:00']);
     assert.equal((await f.db.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 0);
   });
 });
@@ -347,14 +355,14 @@ test('moving and restoring a whole-car booking may reassign its own driver acros
     const targetDay = '2030-01-01';
     const nextDate = await successful(f, `/admin/bookings/${created.id}/move`, 'POST', { date: targetDay, time: '10:00', ...rosterChoice(await wholeOptions(f, '10:00', targetDay), 3) });
     assert.equal(nextDate.assignedDate, targetDay);
-    assert.equal((await wholeOptions(f, '09:30')).drivers.find(driver => driver.driverId === 3)?.assignedTime, '09:30', 'Moving dates preserves the old explicit day plan');
+    assert.deepEqual((await wholeOptions(f, '09:30')).drivers.find(driver => driver.driverId === 3)?.assignedTimes, ['08:30', '09:30'], 'Moving dates preserves every explicit hour in the old day plan');
     assert.equal((await wholeOptions(f, '09:30')).drivers.find(driver => driver.driverId === 3)?.reservedBookingId, undefined);
     await successful(f, `/admin/bookings/${created.id}/delete`, 'POST', {});
     const plan = await successful(f, `/admin/trips/capacity?direction=gori-tbilisi&date=${targetDay}&time=12:00`);
     await successful(f, '/admin/trips/drivers', 'POST', { direction: 'gori-tbilisi', date: targetDay, time: '12:00', expectedRevision: plan.revision, action: 'add', driver: { kind: 'roster', id: 3 } });
     f.setNow('2030-01-03T00:00:00Z');
-    assert.equal((await f.request(`/admin/bookings/${created.id}/restore`, 'POST', {})).data.code, 'TRIP_CHANGED');
-    const restored = await successful(f, `/admin/bookings/${created.id}/restore`, 'POST', { ...rosterChoice(await wholeOptions(f, '10:00', targetDay), 3) });
+    const restored = await successful(f, `/admin/bookings/${created.id}/restore`, 'POST', {});
+    assert.deepEqual((await wholeOptions(f, '10:00', targetDay)).drivers.find(driver => driver.driverId === 3)?.assignedTimes, ['10:00', '12:00'], 'Restoring an existing assignment must not remove another departure');
     assert.equal(restored.deletedAt, null); assert.equal(restored.assignedTime, '10:00');
   });
 });

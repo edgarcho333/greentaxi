@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, ArrowRightLeft, CarFront, Check, ChevronDown, ChevronUp, Clock3, LoaderCircle, Plus, RefreshCw, Settings2, Trash2, UserRound, X } from 'lucide-react';
+import { AlertCircle, ArrowRightLeft, CarFront, Check, ChevronDown, ChevronUp, LoaderCircle, Plus, RefreshCw, Settings2, Trash2, UserRound, X } from 'lucide-react';
 import { ApiError, request, type Direction, type DriverDay, type TripCapacity as TripCapacityData, type TripDriver, type TripDriverMutation, type TripDriverSelection } from '../../api';
 import './trip-capacity.css';
 
@@ -9,6 +9,7 @@ type Feedback = { kind: 'success' | 'error'; message: string } | null;
 type Editor = { action: 'add' } | { action: 'replace'; removeKey: string; name: string };
 const dateLabel = (date: string) => date.split('-').reverse().join('/');
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'მონაცემები ვერ განახლდა. სცადეთ ხელახლა.';
+const assignedTimes = (driver: DriverDay) => driver.assignedTimes ?? (driver.assignedTime ? [driver.assignedTime] : []);
 
 function exactTrip(data: TripCapacityData, direction: Direction, date: string, time: string) {
   return data.direction === direction && data.date === date && data.time === time;
@@ -27,7 +28,6 @@ export default function TripCapacity({ direction, date, time, refresh, onChange 
   const [expanded, setExpanded] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [selectionKind, setSelectionKind] = useState<'roster' | 'temporary'>('roster');
-  const [driverId, setDriverId] = useState('');
   const [temporaryName, setTemporaryName] = useState('');
   const [temporaryCapacity, setTemporaryCapacity] = useState(7);
   const [writeReady, setWriteReady] = useState(false);
@@ -47,7 +47,7 @@ export default function TripCapacity({ direction, date, time, refresh, onChange 
   useEffect(() => {
     setRecord(null); setLoading(direction === 'gori-tbilisi' && !!time);
     setReadError(''); setFeedback(null); setWriteReady(false);
-    setExpanded(false); setEditor(null); setDriverId(''); setTemporaryName('');
+    setExpanded(false); setEditor(null); setTemporaryName('');
     setTemporaryCapacity(7); setSelectionKind('roster');
   }, [selectionKey, direction, time]);
 
@@ -93,11 +93,11 @@ export default function TripCapacity({ direction, date, time, refresh, onChange 
     const frame = window.requestAnimationFrame(() => {
       const next = selectionKind === 'temporary'
         ? dialogRef.current?.querySelector<HTMLElement>('input')
-        : dialogRef.current?.querySelector<HTMLElement>(driverId ? '[data-driver-transfer-confirm]' : '[data-driver-choice]:not(:disabled)');
+        : dialogRef.current?.querySelector<HTMLElement>('[data-driver-choice]:not(:disabled)');
       next?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [dialogOpen, driverId, selectionKind]);
+  }, [dialogOpen, selectionKind]);
 
   const load = useCallback(async () => {
     if (direction !== 'gori-tbilisi' || !time || document.visibilityState === 'hidden' || mutation.current || readController.current) return;
@@ -145,7 +145,7 @@ export default function TripCapacity({ direction, date, time, refresh, onChange 
         readSequence.current++;
         setRecord({ key: operationKey, data }); setLoading(false); setWriteReady(true);
         setFeedback({ kind: 'success', message: action === 'remove' ? 'მძღოლი ამ რეისიდან მოხსნილია.' : action === 'replace' ? 'რეისის მძღოლი შეცვლილია.' : 'მძღოლი რეისზე დამატებულია.' });
-        setEditor(null); setDriverId(''); setTemporaryName('');
+        setEditor(null); setTemporaryName('');
       }
       if (mounted.current) onChange();
     } catch (error) {
@@ -165,7 +165,7 @@ export default function TripCapacity({ direction, date, time, refresh, onChange 
   }
 
   function openEditor(next: Editor) {
-    setEditor(next); setDriverId(''); setSelectionKind('roster'); setTemporaryName(''); setTemporaryCapacity(7); setFeedback(null);
+    setEditor(next); setSelectionKind('roster'); setTemporaryName(''); setTemporaryCapacity(7); setFeedback(null);
   }
 
   function candidateAvailable(driver: DriverDay) {
@@ -174,11 +174,6 @@ export default function TripCapacity({ direction, date, time, refresh, onChange 
 
   function chooseDriver(driver: DriverDay) {
     if (!editor || !candidateAvailable(driver)) return;
-    if (driver.assignedTime && driver.assignedTime !== time) {
-      setDriverId(String(driver.id));
-      setFeedback(null);
-      return;
-    }
     void changeTrip(editor.action, { kind: 'roster', id: driver.id }, editor.action === 'replace' ? editor.removeKey : undefined);
   }
 
@@ -193,8 +188,6 @@ export default function TripCapacity({ direction, date, time, refresh, onChange 
 
   const editable = !!visibleTrip?.active && writeReady && !busy;
   const managementId = `trip-driver-management-${date}-${time.replace(':', '-')}`;
-  const selectedCandidate = visibleTrip?.availableDrivers.find(driver => driver.id === Number(driverId));
-  const candidateMoved = selectedCandidate && selectedCandidate.assignedTime && selectedCandidate.assignedTime !== time;
   const canSubmit = editable && !!editor && !!temporaryName.trim();
   const activeDrivers = visibleTrip?.availableDrivers.filter(driver => !driver.declined) ?? [];
   const dialogId = `trip-driver-dialog-${date}-${time.replace(':', '-')}`;
@@ -233,27 +226,23 @@ export default function TripCapacity({ direction, date, time, refresh, onChange 
             <div><h2 id={`${dialogId}-title`}>{editor.action === 'replace' ? `${editor.name} — მძღოლის შეცვლა` : 'მძღოლის არჩევა'}</h2><p><strong>{time}</strong> · {dateLabel(date)} · გორი → თბილისი</p></div>
             <button type="button" className="admin-driver-dialog-close" aria-label="მძღოლის არჩევის დახურვა" onClick={() => setEditor(null)} disabled={busy}><X size={25} /></button>
           </header>
-          <p id={`${dialogId}-description`} className="admin-driver-dialog-description">დააჭირეთ მძღოლის სახელს. სია დალაგებულია დღის რიგით.</p>
+          <p id={`${dialogId}-description`} className="admin-driver-dialog-description">დააჭირეთ მძღოლის სახელს. სია დალაგებულია დღის რიგით. სხვა საათებზე მიბმა შენარჩუნდება.</p>
           {feedback && <div className={`admin-trip-capacity-feedback ${feedback.kind}`} role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.kind === 'error' ? <AlertCircle size={18} /> : <Check size={18} />}<span>{feedback.message}</span></div>}
           {readError && <div className="admin-trip-capacity-feedback error" role="alert"><AlertCircle size={18} /><span>{readError}</span><button type="button" className="admin-trip-capacity-button" onClick={() => setRetry(value => value + 1)} disabled={busy}><RefreshCw size={18} />ხელახლა ცდა</button></div>}
           {replacedMissing && <p className="admin-trip-capacity-warning" role="alert"><AlertCircle size={18} /><span>შესაცვლელი მძღოლი ამ რეისზე აღარ არის. დახურეთ არჩევანი და გადაამოწმეთ რეისი.</span></p>}
           {selectionKind === 'roster' ? <>
-            {candidateMoved && selectedCandidate && candidateAvailable(selectedCandidate) ? <div className="admin-driver-transfer" data-driver-transfer>
-              <h3>{selectedCandidate.name}</h3><p>ეს მძღოლი უკვე მიბმულია <strong>{selectedCandidate.assignedTime}</strong>-ზე. გადაყვანისას იქიდან მოიხსნება.</p>
-              <p className="admin-driver-transfer-times"><Clock3 size={22} /><strong>{selectedCandidate.assignedTime}</strong><ArrowRightLeft size={22} /><strong>{time}</strong></p>
-              <div className="admin-driver-dialog-buttons"><button type="button" className="admin-trip-capacity-button primary" data-driver-transfer-confirm onClick={() => void changeTrip(editor.action, { kind: 'roster', id: selectedCandidate.id }, editor.action === 'replace' ? editor.removeKey : undefined)} disabled={!editable || replacedMissing}>{busy ? <LoaderCircle size={20} className="admin-spin" /> : <ArrowRightLeft size={20} />}გადაყვანა {time}-ზე</button><button type="button" className="admin-trip-capacity-button" onClick={() => setDriverId('')} disabled={busy}>უკან</button></div>
-            </div> : <>
               <div className="admin-driver-choice-grid" role="group" aria-label="ამ დღის აქტიური მძღოლები">
                 {activeDrivers.map(driver => {
                   const assigned = visibleTrip.drivers.some(item => item.driverId === driver.id);
-                  return <button key={driver.id} type="button" className={`admin-driver-choice${assigned ? ' selected' : ''}`} data-driver-choice={driver.id} data-driver-queue={driver.queuePosition} aria-label={`${driver.name} · რიგი ${driver.queuePosition} · ${driver.capacity} ადგილი${assigned ? ' · ამ რეისზეა' : driver.assignedTime ? ` · ${driver.assignedTime}-ზეა` : ''}`} onClick={() => chooseDriver(driver)} disabled={!editable || replacedMissing || assigned}>
-                    <span className="admin-driver-choice-position" aria-hidden="true">{driver.queuePosition}</span><span className="admin-driver-choice-info"><strong>{driver.name}</strong><span>{driver.capacity} ადგილი</span><small>{assigned ? '✓ ამ რეისზეა' : driver.assignedTime ? `${driver.assignedTime}-ზეა · გადაყვანა` : 'მზად არის მისაბმელად'}</small></span>{assigned ? <Check size={24} /> : <Plus size={24} />}
+                  const otherTimes = assignedTimes(driver).filter(assignedTime => assignedTime !== time);
+                  const status = assigned ? '✓ ამ რეისზეა' : otherTimes.length ? `ასევე: ${otherTimes.join(', ')}` : 'მზად არის მისაბმელად';
+                  return <button key={driver.id} type="button" className={`admin-driver-choice${assigned ? ' selected' : ''}`} data-driver-choice={driver.id} data-driver-queue={driver.queuePosition} aria-label={`${driver.name} · რიგი ${driver.queuePosition} · ${driver.capacity} ადგილი · ${status}`} onClick={() => chooseDriver(driver)} disabled={!editable || replacedMissing || assigned}>
+                    <span className="admin-driver-choice-position" aria-hidden="true">{driver.queuePosition}</span><span className="admin-driver-choice-info"><strong>{driver.name}</strong><span>{driver.capacity} ადგილი</span><small>{status}</small></span>{assigned ? <Check size={24} /> : <Plus size={24} />}
                   </button>;
                 })}
               </div>
               {activeDrivers.length === 0 && <p className="admin-driver-dialog-empty">ამ დღეს მონაწილე მძღოლი არ არის. მონაწილეობა მონიშნეთ პარამეტრებში.</p>}
-              <button type="button" className="admin-driver-other-button" onClick={() => { setSelectionKind('temporary'); setDriverId(''); }} disabled={busy}><Plus size={19} />სხვა მძღოლი</button>
-            </>}
+              <button type="button" className="admin-driver-other-button" onClick={() => setSelectionKind('temporary')} disabled={busy}><Plus size={19} />სხვა მძღოლი</button>
           </> : <form className="admin-trip-capacity-editor" onSubmit={saveTemporary}>
             <h3>სხვა მძღოლი — მხოლოდ ამ რეისზე</h3>
             <div className="admin-trip-capacity-editor-fields"><label>მძღოლის სახელი<input aria-label="სხვა მძღოლის სახელი" value={temporaryName} maxLength={100} placeholder="მძღოლი" onChange={event => setTemporaryName(event.target.value)} disabled={!editable} required autoFocus /></label><label className="capacity">ადგილები<select aria-label="სხვა მძღოლის ადგილები" value={temporaryCapacity} onChange={event => setTemporaryCapacity(Number(event.target.value))} disabled={!editable}>{Array.from({ length: 8 }, (_, index) => index + 1).map(capacity => <option value={capacity} key={capacity}>{capacity}</option>)}</select></label></div>

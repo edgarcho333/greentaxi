@@ -17,6 +17,7 @@ export type DriverDayOverride = Readonly<{
   declined: boolean;
   assignmentMode: 'auto' | 'manual';
   manualTime: string | null;
+  manualTimes?: readonly string[];
 }>;
 
 // IDs and order describe the permanent queue, independently of daily attendance.
@@ -120,7 +121,9 @@ export function buildDriverSchedule(
     const declined = preference?.declined ?? false;
     // Legacy `auto` rows are attendance records only. Configured departure times
     // must never implicitly seat drivers, even after a refusal or schedule edit.
-    const assignedTime = declined || preference?.assignmentMode !== 'manual' ? null : preference.manualTime;
+    const assignedTimes = [...new Set(preference?.manualTimes ??
+      (preference?.assignmentMode === 'manual' && preference.manualTime ? [preference.manualTime] : []))].sort();
+    const assignedTime = declined ? null : assignedTimes[0] ?? null;
     return {
       ...driver,
       queuePosition: index + 1,
@@ -128,6 +131,7 @@ export function buildDriverSchedule(
       assignmentMode: 'manual',
       automaticTime: null,
       assignedTime,
+      assignedTimes,
       assignmentActive: assignedTime !== null && effectiveTimes.includes(assignedTime),
     };
   });

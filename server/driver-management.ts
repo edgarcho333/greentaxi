@@ -73,8 +73,9 @@ export async function archiveManagedDriver(database: Database, id: number, input
     }
     if (current.revision !== expected) throw new DriverAccountError(409, 'DRIVER_CHANGED', 'მძღოლის მონაცემები შეიცვალა. განაახლეთ სია და სცადეთ ხელახლა.');
     if (await hasReservation(database, id, context.today)) throw new DriverAccountError(409, 'VEHICLE_RESERVED', 'მანქანა მთლიანად დაჯავშნილია. წაშლამდე ჯერ შეცვალეთ ჯავშანი.');
-    if (await database.prepare(`SELECT driver_id FROM driver_day_overrides WHERE driver_id=? AND date>=? AND declined=0
-      AND assignment_mode='manual' AND manual_time IS NOT NULL`).get(id, context.today)) throw new DriverAccountError(409, 'DRIVER_ASSIGNED', 'მძღოლი რეისზეა დანიშნული. წაშლამდე ჯერ მოხსენით მომავალი რეისებიდან.');
+    if (await database.prepare(`SELECT assignment.driver_id FROM driver_trip_assignments assignment
+      LEFT JOIN driver_day_overrides preference ON preference.driver_id=assignment.driver_id AND preference.date=assignment.date
+      WHERE assignment.driver_id=? AND assignment.date>=? AND COALESCE(preference.declined,0)=0`).get(id, context.today)) throw new DriverAccountError(409, 'DRIVER_ASSIGNED', 'მძღოლი რეისზეა დანიშნული. წაშლამდე ჯერ მოხსენით მომავალი რეისებიდან.');
     const timestamp = context.now().toISOString();
     await database.prepare('UPDATE drivers SET deleted_at=?,revision=revision+1 WHERE id=?').run(timestamp, id);
     await database.prepare('UPDATE driver_accounts SET phone=NULL,active=0,updated_at=? WHERE driver_id=?').run(timestamp, id);
