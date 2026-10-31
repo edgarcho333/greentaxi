@@ -11,6 +11,7 @@ import java.util.List;
 final class CallQueue extends SQLiteOpenHelper {
     static final String ANSWERED = "answered";
     static final String COMPLETED = "completed";
+    private int urgentStreak;
     static final class Event {
         final String id, phone, phase;
         final long occurredAt, duration;
@@ -121,14 +122,52 @@ final class CallQueue extends SQLiteOpenHelper {
         }
         return events;
     }
+    synchronized Event nextDue(long now) {
+        // Re-read between HTTP requests, so a just-answered call need not wait
+        // behind an already-selected batch. At least every fifth selection uses
+        // the oldest eligible event, even under continuous new call arrivals.
+        List<Event> oldest = due(now);
+        if (oldest.isEmpty()) { urgentStreak = 0; return null; }
+        if (DeliveryPolicy.preferUrgent(urgentStreak)) {
+            try(Cursor cursor=getReadableDatabase().rawQuery("SELECT e.event_id,e.phone,e.occurred_at,e.duration_seconds,e.attempts,e.phase,e.legacy_payload FROM call_events e WHERE e.delivered=0 AND e.next_try<=? AND e.phase='answered' AND e.attempts=0 ORDER BY e.occurred_at DESC,e.event_id LIMIT 1",new String[]{Long.toString(now)})) {
+                if (cursor.moveToFirst()) {
+                    urgentStreak = DeliveryPolicy.afterSelection(urgentStreak, true);
+                    return new Event(cursor.getString(0),cursor.isNull(1)?null:cursor.getString(1),cursor.getLong(2),cursor.getLong(3),cursor.getInt(4),cursor.getString(5),cursor.getInt(6)!=0);
+                }
+            }
+        }
+        urgentStreak = DeliveryPolicy.afterSelection(urgentStreak, false);
+        return oldest.get(0);
+    }
+    synchronized long nextRetryAt() {
+        try(Cursor cursor=getReadableDatabase().rawQuery("SELECT MIN(e.next_try) FROM call_events e WHERE e.delivered=0 AND (e.phase='answered' OR NOT EXISTS(SELECT 1 FROM call_events a WHERE a.event_id=e.event_id AND a.phase='answered' AND a.delivered=0))",null)) {
+            return cursor.moveToFirst() && !cursor.isNull(0) ? cursor.getLong(0) : -1;
+        }
+    }
+    synchronized void retryAllNow() {
+        // Recovery changes scheduling only; never replace an immutable phase or
+        // its acknowledgment. A completed phase still waits for its answer ACK.
+        SQLiteDatabase db=getWritableDatabase();
+        db.execSQL("UPDATE call_events SET next_try=0 WHERE delivered=0");
+    }
+    synchronized long oldestPendingAt() {
+        try(Cursor cursor=getReadableDatabase().rawQuery("SELECT MIN(occurred_at) FROM call_events WHERE delivered=0",null)) {
+            return cursor.moveToFirst() && !cursor.isNull(0) ? cursor.getLong(0) : -1;
+        }
+    }
+    synchronized String lastErrorCode() {
+        try(Cursor cursor=getReadableDatabase().rawQuery("SELECT error_code FROM call_events WHERE delivered=0 AND error_code IS NOT NULL ORDER BY next_try DESC,occurred_at DESC LIMIT 1",null)) {
+            return cursor.moveToFirst() ? DeliveryPolicy.safeErrorCode(cursor.getString(0)) : "";
+        }
+    }
     synchronized void delivered(Event event) {
         ContentValues values=new ContentValues(); values.put("delivered",1); values.putNull("phone"); values.putNull("error_code");
         SQLiteDatabase db=getWritableDatabase(); db.update("call_events",values,"event_id=? AND phase=?",new String[]{event.id,event.phase});
         if(COMPLETED.equals(event.phase)) db.execSQL("UPDATE live_sessions SET phone=NULL WHERE event_id=? AND EXISTS(SELECT 1 FROM call_log_links l WHERE l.event_id=live_sessions.event_id)",new Object[]{event.id});
     }
     synchronized void retry(Event event,String errorCode) {
-        int attempt=Math.min(event.attempts+1,30); long delay=Math.min(15*60_000L,30_000L*(1L<<Math.min(attempt-1,5)));
-        ContentValues values=new ContentValues(); values.put("attempts",attempt); values.put("next_try",System.currentTimeMillis()+delay); values.put("error_code",errorCode);
+        int attempt=Math.min(event.attempts+1,30); long delay=DeliveryPolicy.retryDelayMillis(attempt);
+        ContentValues values=new ContentValues(); values.put("attempts",attempt); values.put("next_try",System.currentTimeMillis()+delay); values.put("error_code",DeliveryPolicy.safeErrorCode(errorCode));
         getWritableDatabase().update("call_events",values,"event_id=? AND phase=? AND delivered=0",new String[]{event.id,event.phase});
     }
 }

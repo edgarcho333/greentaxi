@@ -106,13 +106,13 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
       await db.prepare('INSERT INTO users(login,name,password_hash,created_at) VALUES (?,?,?,?)').run('preserved', 'Existing employee', 'existing-private-hash', '2030-01-01T00:00:00Z');
       await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES (?,?,?)').run('existing-private-session', 1, 1893456000000);
       await db.prepare("INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (1,?,1,'manual',?,?)").run(TOMORROW, '09:30', '2030-01-01T00:00:00Z');
-      await db.transaction(async () => { await db.exec('DROP TABLE driver_trip_assignments; DROP TABLE driver_sessions; DROP TABLE driver_accounts;'); await db.prepare('DELETE FROM schema_versions WHERE version>=?').run(14); await db.exec('ALTER TABLE drivers DROP COLUMN deleted_at; ALTER TABLE drivers DROP COLUMN revision;'); });
+      await db.transaction(async () => { await db.exec('DROP TABLE call_device_heartbeats; DROP TABLE driver_trip_assignments; DROP TABLE driver_sessions; DROP TABLE driver_accounts;'); await db.prepare('DELETE FROM schema_versions WHERE version>=?').run(14); await db.exec('ALTER TABLE drivers DROP COLUMN deleted_at; ALTER TABLE drivers DROP COLUMN revision;'); });
       const snapshots = new Map<string, string>();
       for (const table of ['users', 'sessions', 'settings', 'stops', 'drivers', 'driver_day_overrides', 'base_schedule', 'date_schedule', 'bookings', 'audit_log', 'schema_versions']) snapshots.set(table, JSON.stringify(await db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()));
       await db.close();
       for (let reopen = 0; reopen < 2; reopen++) {
         db = await stored.open();
-        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 17);
+        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 18);
         for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await db.prepare(`SELECT ${table === 'drivers' ? 'id,name,capacity,sort_order' : '*'} FROM ${table}${table === 'schema_versions' ? ' WHERE version<14' : ''} ORDER BY 1`).all()), snapshot);
         assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM driver_accounts').get())?.count, 0);
         assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM driver_sessions').get())?.count, 0);
@@ -407,7 +407,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
       const previousName = `014_driver_portal.${dialect}.sql`;
       const previousSql = readFileSync(new URL(`../server/migrations/${previousName}`, import.meta.url), 'utf8');
       await db.transaction(async () => {
-        await db.exec('DROP TABLE driver_trip_assignments; DROP TABLE driver_sessions; DROP TABLE driver_accounts;');
+        await db.exec('DROP TABLE call_device_heartbeats; DROP TABLE driver_trip_assignments; DROP TABLE driver_sessions; DROP TABLE driver_accounts;');
         await db.prepare('DELETE FROM schema_versions WHERE version>=?').run(14);
         await db.exec(previousSql);
         await db.prepare('INSERT INTO schema_versions(version,name,checksum,applied_at) VALUES (?,?,?,?)')
@@ -432,7 +432,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
       await db.close();
       for (let reopen = 0; reopen < 2; reopen++) {
         db = await stored.open();
-        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 17);
+        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 18);
         for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await db.prepare(`SELECT ${columns(table)} FROM ${table}${table === 'schema_versions' ? ' WHERE version<15' : ''} ORDER BY 1`).all()), snapshot, table);
         assert.deepEqual((await db.prepare('SELECT phone FROM driver_accounts ORDER BY driver_id').all()).map(row => row.phone), [null, null]);
         if (!reopen) await db.close();
@@ -718,7 +718,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
       await db.prepare('INSERT INTO users(login,name,password_hash,created_at) VALUES (?,?,?,?)').run('preserved_staff', 'Employee', 'private-hash', '2030');
       await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES (?,?,?)').run('private-staff-session', 1, 1894060800000);
       await db.prepare("INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (1,?,0,'manual','08:30','2030')").run(TOMORROW);
-      await db.exec('DROP TABLE driver_trip_assignments; ALTER TABLE drivers DROP COLUMN deleted_at; ALTER TABLE drivers DROP COLUMN revision;');
+      await db.exec('DROP TABLE call_device_heartbeats; DROP TABLE driver_trip_assignments; ALTER TABLE drivers DROP COLUMN deleted_at; ALTER TABLE drivers DROP COLUMN revision;');
       await db.prepare('DELETE FROM schema_versions WHERE version>=?').run(16);
       const snapshots = new Map<string, string>();
       const tables = ['drivers', 'driver_accounts', 'driver_sessions', 'users', 'sessions', 'settings', 'bookings', 'driver_day_overrides', 'audit_log', 'schema_versions'];
@@ -726,7 +726,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
       await db.close();
       for (let pass = 0; pass < 2; pass++) {
         db = await stored.open();
-        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 17);
+        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 18);
         for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await db.prepare(`SELECT ${table === 'drivers' ? 'id,name,capacity,sort_order' : '*'} FROM ${table}${table === 'schema_versions' ? ' WHERE version<16' : ''} ORDER BY 1`).all()), snapshot, table);
         assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM drivers WHERE deleted_at IS NULL AND revision=1').get())?.count, 43);
         if (!pass) await db.close();

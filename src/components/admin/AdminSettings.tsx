@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { AlertCircle, CalendarDays, Check, CheckCircle2, Clock3, Copy, LoaderCircle, MapPin, Pencil, Plus, RotateCcw, Save, ShieldCheck, Smartphone, UserRoundPlus, X } from 'lucide-react';
 import { directions, request, today, type CallDevice, type Direction, type Schedule, type Stop, type User } from '../../api';
 import DriverRoster from './DriverRoster';
+import { CallDeviceConnectionBadge, CallDeviceTelemetry, callDeviceTime, useCallDevices } from './CallPhoneStatus';
 import './settings.css';
 
 type Feedback = { kind: 'success' | 'error'; message: string } | null;
@@ -58,9 +59,8 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
   const [staffBusy, setStaffBusy] = useState(false);
   const [staffLoading, setStaffLoading] = useState(true);
   const [staffFeedback, setStaffFeedback] = useState<Feedback>(null);
-  const [devices, setDevices] = useState<CallDevice[]>([]);
+  const { devices, updateDevices: setDevices, loading: devicesLoading, error: devicesError, refresh: reloadDevices } = useCallDevices();
   const [deviceName, setDeviceName] = useState('');
-  const [devicesLoading, setDevicesLoading] = useState(true);
   const [deviceBusy, setDeviceBusy] = useState<number | 'create' | null>(null);
   const [deviceFeedback, setDeviceFeedback] = useState<Feedback>(null);
   const [pairing, setPairing] = useState<{ device: CallDevice; token: string } | null>(null);
@@ -100,9 +100,6 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
     request<{ users: User[] }>('/admin/staff').then(result => { if (active) setUsers(result.users); })
       .catch(error => { if (active) setStaffFeedback({ kind: 'error', message: errorMessage(error) }); })
       .finally(() => { if (active) setStaffLoading(false); });
-    request<{ devices: CallDevice[] }>('/admin/devices').then(result => { if (active) setDevices(result.devices); })
-      .catch(error => { if (active) setDeviceFeedback({ kind: 'error', message: errorMessage(error) }); })
-      .finally(() => { if (active) setDevicesLoading(false); });
     return () => { active = false; };
   }, []);
 
@@ -211,14 +208,9 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
     finally { setDeviceBusy(null); }
   }
 
-  async function refreshDevices() {
-    setDevicesLoading(true);
+  function refreshDevices() {
     setDeviceFeedback(null);
-    try {
-      const result = await request<{ devices: CallDevice[] }>('/admin/devices');
-      setDevices(result.devices);
-    } catch (error) { setDeviceFeedback({ kind: 'error', message: errorMessage(error) }); }
-    finally { setDevicesLoading(false); }
+    reloadDevices();
   }
 
   async function copyPairingToken() {
@@ -229,13 +221,6 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
     } catch {
       setDeviceFeedback({ kind: 'error', message: 'კოპირება ვერ მოხერხდა. მონიშნეთ კოდი და დააკოპირეთ ხელით.' });
     }
-  }
-
-  function deviceLastSeen(value: string | null) {
-    if (!value) return 'ჯერ არ დაკავშირებულა';
-    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tbilisi', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value));
-    const part = (type: string) => parts.find(item => item.type === type)?.value || '';
-    return `${part('day')}/${part('month')}/${part('year')} ${part('hour')}:${part('minute')}`;
   }
 
   const disabledWithOrders = schedule?.slots.filter(slot => !slot.active && slot.bookingCount > 0) ?? [];
@@ -274,13 +259,15 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
     <section className="admin-config-card admin-config-devices">
       <div className="admin-config-heading"><div className="admin-config-icon"><Smartphone size={23} /></div><div><h2>ტელეფონის დაკავშირება</h2><p>პასუხგაცემული შემომავალი SIM ზარები ოპერატორის Android ტელეფონიდან.</p></div></div>
       <FeedbackMessage feedback={deviceFeedback} />
+      {devicesError && <div className="admin-config-feedback error" role="status"><AlertCircle size={17} /><span>{devicesError}</span></div>}
       <div className="admin-config-device-columns">
         <div>
           <div className="admin-config-section-label"><span className="admin-config-eyebrow">დაკავშირებული ტელეფონები</span><div className="admin-config-actions"><span className="admin-config-counter">{devices.filter(device => device.active).length} აქტიური</span><button type="button" className="admin-config-icon-button" aria-label="ტელეფონების ბოლო კავშირის განახლება" onClick={refreshDevices} disabled={devicesLoading || deviceBusy !== null}><RotateCcw size={15} /></button></div></div>
           {devicesLoading ? <div className="admin-config-loading">{loadingIcon}მოწყობილობები იტვირთება…</div> : <div className="admin-config-device-list">
-            {devices.map(device => <div className={`admin-config-device ${device.active ? '' : 'revoked'}`} key={device.id}>
-              <div className="admin-config-device-top"><div className="admin-config-device-icon"><Smartphone size={19} /></div><strong>{device.name}</strong><span className={`admin-config-status ${device.active ? '' : 'revoked'}`}>{device.active ? 'აქტიური' : 'წვდომა გაუქმებულია'}</span></div>
-              <p>ბოლო კავშირი: {deviceLastSeen(device.lastSeenAt)}</p>
+            {devices.map(device => <div className={`admin-config-device ${device.active ? '' : 'revoked'}`} key={device.id} data-call-device-settings={device.id}>
+              <div className="admin-config-device-top"><div className="admin-config-device-icon"><Smartphone size={19} /></div><strong>{device.name}</strong><CallDeviceConnectionBadge device={device} available={!devicesError} /></div>
+              <p className="call-phone-last-call">ბოლო მიღებული ზარი: {callDeviceTime(device.lastSeenAt)}</p>
+              <CallDeviceTelemetry device={device} available={!devicesError} />
               {device.active && <button type="button" className="admin-config-button revoke" disabled={deviceBusy !== null} onClick={() => revokeDevice(device)}>{deviceBusy === device.id ? loadingIcon : <X size={15} />}წვდომის გაუქმება</button>}
             </div>)}
             {devices.length === 0 && <div className="admin-config-empty">ტელეფონი ჯერ არ არის დაკავშირებული. შექმენით დაკავშირების კოდი და შეიყვანეთ Android აპში.</div>}
@@ -288,7 +275,7 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
         </div>
         <div className="admin-config-device-setup">
           <h3>Android ტელეფონის დამატება</h3>
-          <p>ოპერატორის Redmi ტელეფონზე Android 15-ით დააყენეთ Green Taxi-ის თანმხლები აპი და მიანიჭეთ ზარების ჟურნალის საჭირო წვდომა.</p>
+          <p>ოპერატორის Android ტელეფონზე დააყენეთ ზარების მიმღები Green Taxi აპი და მიანიჭეთ ზარების ჟურნალის საჭირო წვდომა.</p>
           <div className="admin-config-endpoint"><span>HTTPS მისამართი აპისთვის</span><code>{callEndpoint}</code></div>
           {window.location.protocol !== 'https:' && <div className="admin-config-warning"><AlertCircle size={16} /><span>ტელეფონში შეიყვანეთ გამოქვეყნებული საიტის HTTPS მისამართი. ლოკალური მისამართი სხვა მოწყობილობაზე არ იმუშავებს.</span></div>}
           <form onSubmit={pairDevice} className="admin-config-device-form"><label>ტელეფონის სახელი<input value={deviceName} onChange={event => setDeviceName(event.target.value)} placeholder="მაგ. ოპერატორის Redmi" minLength={2} maxLength={100} required disabled={deviceBusy !== null || pairing !== null} /></label><button type="submit" className="admin-config-button primary" disabled={deviceBusy !== null || pairing !== null || devicesLoading || deviceName.trim().length < 2}>{deviceBusy === 'create' ? loadingIcon : <Plus size={16} />}დაკავშირების კოდის შექმნა</button></form>

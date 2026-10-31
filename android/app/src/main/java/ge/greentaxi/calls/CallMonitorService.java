@@ -14,6 +14,7 @@ import android.database.ContentObserver;
 import android.database.Cursor;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
+import android.net.Network;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -55,7 +56,24 @@ public final class CallMonitorService extends Service {
     private static final long OVERLAP_MS = 24 * 60 * 60_000L;
     private static volatile boolean running;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    // Journal reconciliation must not wait behind a slow HTTP request.
     private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService uploadWorker = Executors.newSingleThreadScheduledExecutor();
+    // Status requests have their own bounded connection and never occupy the call uploader.
+    private final ScheduledExecutorService heartbeatWorker = Executors.newSingleThreadScheduledExecutor();
+    private final Object uploadLock = new Object();
+    private ScheduledFuture<?> pendingUpload;
+    private long uploadGeneration;
+    private long scheduledUploadElapsed = Long.MAX_VALUE;
+    private long requestedUploadElapsed = Long.MAX_VALUE;
+    private long uploadNotBeforeElapsed;
+    private boolean uploading;
+    private volatile boolean stopping;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private Network validatedNetwork;
+    private volatile String journalDiagnostic = "";
+    private volatile String uploadDiagnostic = "მონიტორინგი ჩართულია";
     // Telephony events must be durably handled without waiting for an in-flight HTTP request.
     private final ExecutorService liveWorker = Executors.newSingleThreadExecutor();
     private LiveCallState liveState = new LiveCallState(Collections.emptySet());
@@ -72,6 +90,7 @@ public final class CallMonitorService extends Service {
     private boolean started;
     private ScheduledFuture<?> quickScan;
     private volatile HttpURLConnection connection;
+    private volatile HttpURLConnection heartbeatConnection;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -126,10 +145,17 @@ public final class CallMonitorService extends Service {
                 observer = newObserver;
                 queue.markOpenSessionsGap();
                 startLiveMonitoring();
-                worker.scheduleWithFixedDelay(this::tick, 0, 60, TimeUnit.SECONDS);
                 started = true;
+                // Reset persisted pre-update deadlines off the main looper,
+                // including on firmware that refuses network callbacks.
+                networkRecovered();
+                watchNetwork();
+                worker.scheduleWithFixedDelay(this::tick, 0, 60, TimeUnit.SECONDS);
+                heartbeatWorker.scheduleWithFixedDelay(this::sendHeartbeat, 2, 60, TimeUnit.SECONDS);
+                scheduleUpload(0);
             } else {
                 scheduleScan();
+                scheduleUpload(0);
             }
             running = true;
         } catch (RuntimeException unavailable) {
@@ -277,36 +303,145 @@ public final class CallMonitorService extends Service {
         for (LiveCallState.Action action : actions) {
             if (!settings.enabled() || liveWorker.isShutdown()) return;
             queue.liveAction(action, settings.installationId());
-            if (action.kind == LiveCallState.Kind.ANSWER) scheduleScan(0);
+            if (action.kind == LiveCallState.Kind.ANSWER) scheduleUpload(0);
             else if (action.kind == LiveCallState.Kind.END || action.kind == LiveCallState.Kind.ABANDON) scheduleScan();
         }
     }
 
     private void tick() {
-        if (!settings.enabled() || worker.isShutdown()) return;
+        if (!settings.enabled() || stopping || worker.isShutdown()) return;
         if (!permissionsGranted(this)) {
+            settings.deliveryFailure("permission");
             setStatus("ზარების წვდომა შეწყდა — შეამოწმეთ ნებართვები");
             stopSelf();
             return;
         }
         try {
             int unresolved = 0;
-            String scanDiagnostic = "";
+            String diagnostic = "";
             try { unresolved = scanCalls(); }
             catch (SecurityException unavailable) {
-                scanDiagnostic = "ჟურნალი მიუწვდომელია; მიღებული ზარები გაგზავნას ელოდება. ";
+                diagnostic = "ჟურნალი მიუწვდომელია; მიღებული ზარები გაგზავნას ელოდება. ";
             } catch (Exception unavailable) {
-                scanDiagnostic = "ჟურნალის შემოწმება დროებით ვერ შესრულდა. ";
+                diagnostic = "ჟურნალის შემოწმება დროებით ვერ შესრულდა. ";
             }
-            String syncStatus = uploadPending();
-            if (unresolved > 0) {
-                syncStatus = "ჟურნალთან დაკავშირება მოწმდება (" + unresolved + "). " + syncStatus;
-            }
-            setStatus(liveDiagnostic + scanDiagnostic + syncStatus);
-        } catch (SecurityException unavailable) {
-            setStatus("ზარების წვდომა მიუწვდომელია — შეამოწმეთ ნებართვები");
-        } catch (Exception failure) {
+            if (unresolved > 0) diagnostic += "ჟურნალთან დაკავშირება მოწმდება (" + unresolved + "). ";
+            journalDiagnostic = diagnostic;
+            scheduleUpload(0);
+            refreshDeliveryStatus();
+        } catch (RuntimeException unavailable) {
+            settings.deliveryFailure("storage");
             setStatus("სინქრონიზაცია დროებით ვერ შესრულდა; ხელახლა ვცდით");
+        }
+    }
+
+    private void refreshDeliveryStatus() {
+        setStatus(liveDiagnostic + journalDiagnostic + uploadDiagnostic);
+    }
+
+    private boolean networkAvailable() {
+        try {
+            ConnectivityManager manager = getSystemService(ConnectivityManager.class);
+            NetworkCapabilities capabilities = manager == null ? null : manager.getNetworkCapabilities(manager.getActiveNetwork());
+            return capabilities != null && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        } catch (RuntimeException unavailable) { return false; }
+    }
+
+    private void watchNetwork() {
+        connectivityManager = getSystemService(ConnectivityManager.class);
+        if (connectivityManager == null || networkCallback != null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                boolean recovered = false;
+                synchronized (uploadLock) {
+                    if (stopping) return;
+                    boolean validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                            && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                    if (validated && !network.equals(validatedNetwork)) {
+                        validatedNetwork = network;
+                        recovered = true;
+                    } else if (!validated && network.equals(validatedNetwork)) {
+                        validatedNetwork = null;
+                    }
+                }
+                if (recovered) networkRecovered();
+            }
+            @Override public void onLost(Network network) {
+                synchronized (uploadLock) { if (network.equals(validatedNetwork)) validatedNetwork = null; }
+                scheduleUpload(0);
+            }
+        };
+        try { connectivityManager.registerDefaultNetworkCallback(networkCallback); }
+        catch (RuntimeException unavailable) {
+            // Periodic reconciliation/retry still works if this firmware refuses the callback.
+            networkCallback = null;
+        }
+    }
+
+    private void networkRecovered() {
+        if (stopping || uploadWorker.isShutdown()) return;
+        try {
+            uploadWorker.execute(() -> {
+                if (stopping || !settings.enabled()) return;
+                try {
+                    // Reset old (including pre-update 15-minute) retry deadlines once per
+                    // validated default-network recovery, preserving payloads and attempts.
+                    queue.retryAllNow();
+                    scheduleUpload(0);
+                } catch (RuntimeException unavailable) { settings.deliveryFailure("storage"); }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException stopped) { /* Service is stopping. */ }
+    }
+
+    private void scheduleUpload(long delayMillis) {
+        synchronized (uploadLock) {
+            if (stopping || uploadWorker.isShutdown()) return;
+            long elapsed = SystemClock.elapsedRealtime();
+            long when = Math.max(elapsed + Math.max(0, delayMillis), uploadNotBeforeElapsed);
+            if (uploading) {
+                requestedUploadElapsed = Math.min(requestedUploadElapsed, when);
+                return;
+            }
+            if (pendingUpload != null && !pendingUpload.isDone() && scheduledUploadElapsed <= when) return;
+            if (pendingUpload != null) pendingUpload.cancel(false);
+            scheduledUploadElapsed = when;
+            final long generation = ++uploadGeneration;
+            try { pendingUpload = uploadWorker.schedule(() -> uploadCycle(generation), Math.max(0, when - elapsed), TimeUnit.MILLISECONDS); }
+            catch (java.util.concurrent.RejectedExecutionException stopped) { /* Service is stopping. */ }
+        }
+    }
+
+    private long nextUploadDelay() {
+        long next = queue.nextRetryAt();
+        return next < 0 ? 60_000 : Math.max(0, next - System.currentTimeMillis());
+    }
+
+    private void uploadCycle(long generation) {
+        synchronized (uploadLock) {
+            // A canceled task can already be waiting for this lock. It must
+            // not clear the replacement task's future or requested deadline.
+            if (stopping || generation != uploadGeneration) return;
+            pendingUpload = null;
+            scheduledUploadElapsed = Long.MAX_VALUE;
+            requestedUploadElapsed = Long.MAX_VALUE;
+            uploading = true;
+        }
+        long delay = 60_000;
+        try {
+            if (!settings.enabled() || stopping) return;
+            delay = uploadOne();
+            refreshDeliveryStatus();
+        } catch (RuntimeException unavailable) {
+            settings.deliveryFailure("storage");
+            uploadDiagnostic = "შენახული ზარები გაგზავნას ელოდება; ხელახლა ვცდით";
+            refreshDeliveryStatus();
+        } finally {
+            synchronized (uploadLock) {
+                uploading = false;
+                if (requestedUploadElapsed != Long.MAX_VALUE) delay = Math.min(delay,
+                        Math.max(0, requestedUploadElapsed - SystemClock.elapsedRealtime()));
+            }
+            if (!stopping && settings.enabled()) scheduleUpload(delay);
         }
     }
 
@@ -413,74 +548,165 @@ public final class CallMonitorService extends Service {
         return null;
     }
 
-    private String uploadPending() {
-        if (settings.authPaused()) return "კავშირი შეჩერებულია — ხელახლა დააკავშირეთ ტელეფონი";
-        if (queue.pendingCount() == 0) return "მონიტორინგი ჩართულია · რიგი ცარიელია; ველოდებით ახალ ზარს";
-        ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
-        NetworkCapabilities network = connectivity == null ? null : connectivity.getNetworkCapabilities(connectivity.getActiveNetwork());
-        if (network == null || !network.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-            return "ინტერნეტს ელოდება · ზარები შენახულია ტელეფონში";
+    private long uploadOne() {
+        if (settings.authPaused()) {
+            uploadDiagnostic = "კავშირი შეჩერებულია — ხელახლა დააკავშირეთ ტელეფონი";
+            return 60_000;
+        }
+        if (queue.pendingCount() == 0) {
+            uploadDiagnostic = "მონიტორინგი ჩართულია · რიგი ცარიელია; ველოდებით ახალ ზარს";
+            return 60_000;
+        }
+        if (!networkAvailable()) {
+            settings.deliveryFailure("network");
+            uploadDiagnostic = "ინტერნეტს ელოდება · ზარები შენახულია ტელეფონში";
+            // A due event must not make an offline zero-delay loop.
+            return 60_000;
         }
         AppSettings.Binding binding = settings.binding();
         String token;
+        try { token = binding.token(); }
+        catch (Exception unavailable) {
+            if (settings.pauseAuthenticationIfCurrent(binding)) settings.deliveryFailure("unknown");
+            uploadDiagnostic = "დაკავშირების კოდი მიუწვდომელია — ხელახლა დააკავშირეთ ტელეფონი";
+            return 60_000;
+        }
+        CallQueue.Event event = queue.nextDue(System.currentTimeMillis());
+        if (event == null) return nextUploadDelay();
+        if (!settings.bindingCurrent(binding)) return 0;
         try {
-            token = binding.token();
-        } catch (Exception missingKey) {
-            if (!settings.pauseAuthenticationIfCurrent(binding)) return "კავშირის მონაცემები შეიცვალა; ზარები გაგზავნას ელოდება";
-            return "დაკავშირების კოდი მიუწვდომელია — ხელახლა დააკავშირეთ ტელეფონი";
-        }
-        String status = "შენახული ზარები გაგზავნას ელოდება; ხელახლა ვცდით";
-        for (int pass = 0; pass < 2; pass++) {
-        for (CallQueue.Event event : queue.due(System.currentTimeMillis())) {
-            if (!settings.enabled() || worker.isShutdown()) break;
-            if (!settings.bindingCurrent(binding)) return "კავშირის მონაცემები შეიცვალა; ზარები გაგზავნას ელოდება";
-            try {
-                URL endpoint = new URL(binding.server + "/api/integrations/android/calls");
-                if (!"https".equalsIgnoreCase(endpoint.getProtocol())) throw new IllegalStateException("https_required");
-                connection = (HttpURLConnection) endpoint.openConnection();
-                connection.setInstanceFollowRedirects(false);
-                connection.setConnectTimeout(10_000);
-                connection.setReadTimeout(15_000);
-                connection.setRequestMethod("POST");
-                connection.setRequestProperty("Authorization", "Bearer " + token);
-                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-                connection.setRequestProperty("Accept", "application/json");
-                connection.setDoOutput(true);
-                JSONObject payload = new JSONObject();
-                payload.put("eventId", event.id);
-                payload.put("phone", event.phone == null ? JSONObject.NULL : event.phone);
-                payload.put("occurredAt", Instant.ofEpochMilli(event.occurredAt).toString());
-                payload.put("durationSeconds", event.duration);
-                payload.put("kind", "incoming");
-                if (!event.legacyPayload) payload.put("phase", event.phase);
-                byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
-                connection.setFixedLengthStreamingMode(body.length);
-                try (java.io.OutputStream output = connection.getOutputStream()) { output.write(body); }
-                int responseCode = connection.getResponseCode();
-                if (responseCode == 401) {
-                    if (!settings.pauseAuthenticationIfCurrent(binding)) return "კავშირის მონაცემები შეიცვალა; ზარები გაგზავნას ელოდება";
-                    return "კავშირი გაუქმებულია — ხელახლა დააკავშირეთ ტელეფონი";
-                }
-                if (responseCode >= 200 && responseCode < 300) {
-                    JSONObject response = new JSONObject(readLimited(connection.getInputStream()));
-                    if (response.optString("id", "").isEmpty()) throw new IllegalStateException("response_invalid");
-                    queue.delivered(event);
-                } else {
-                    queue.retry(event, "http_" + responseCode);
-                    status = "სერვერი მიუწვდომელია (" + responseCode + ") · ზარები შენახულია";
-                }
-            } catch (Exception transientFailure) {
-                queue.retry(event, "connection_failed");
-                status = "კავშირი ვერ შესრულდა · ზარები შენახულია; ხელახლა ვცდით";
-            } finally {
-                HttpURLConnection active = connection;
-                connection = null;
-                if (active != null) active.disconnect();
+            URL endpoint = new URL(binding.server + "/api/integrations/android/calls");
+            if (!"https".equalsIgnoreCase(endpoint.getProtocol())) throw new IllegalStateException("https_required");
+            HttpURLConnection active = (HttpURLConnection) endpoint.openConnection();
+            connection = active;
+            active.setInstanceFollowRedirects(false);
+            active.setConnectTimeout(8_000);
+            active.setReadTimeout(10_000);
+            active.setRequestMethod("POST");
+            active.setRequestProperty("Authorization", "Bearer " + token);
+            active.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            active.setRequestProperty("Accept", "application/json");
+            active.setDoOutput(true);
+            JSONObject payload = new JSONObject();
+            payload.put("eventId", event.id);
+            payload.put("phone", event.phone == null ? JSONObject.NULL : event.phone);
+            payload.put("occurredAt", Instant.ofEpochMilli(event.occurredAt).toString());
+            payload.put("durationSeconds", event.duration);
+            payload.put("kind", "incoming");
+            if (!event.legacyPayload) payload.put("phase", event.phase);
+            byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
+            active.setFixedLengthStreamingMode(body.length);
+            try (java.io.OutputStream output = active.getOutputStream()) { output.write(body); }
+            int responseCode = active.getResponseCode();
+            if (responseCode == 401 || responseCode == 403) {
+                if (settings.pauseAuthenticationIfCurrent(binding)) settings.deliveryFailure("http_" + responseCode);
+                uploadDiagnostic = "კავშირი გაუქმებულია — ხელახლა დააკავშირეთ ტელეფონი";
+                return 60_000;
             }
+            if (responseCode >= 200 && responseCode < 300) {
+                JSONObject response = new JSONObject(readLimited(active.getInputStream()));
+                if (response.optString("id", "").isEmpty()) throw new IllegalStateException("response_invalid");
+                if (!settings.bindingCurrent(binding)) return 0;
+                queue.delivered(event);
+                settings.deliverySucceeded();
+                synchronized (uploadLock) {
+                    // Pace a recovered backlog: two working phones together
+                    // stay within the server's normal 120-call-events/minute limit.
+                    uploadNotBeforeElapsed = Math.max(uploadNotBeforeElapsed, SystemClock.elapsedRealtime() + 1_000);
+                }
+                uploadDiagnostic = queue.pendingCount() == 0
+                        ? "მონიტორინგი ჩართულია · რიგი ცარიელია; ველოდებით ახალ ზარს"
+                        : "ზარი მიღებულია · დარჩენილი ზარები იგზავნება";
+                // Re-select after every HTTP request: a newly answered call must
+                // not wait behind a stale twenty-event snapshot.
+                return nextUploadDelay();
+            }
+            queue.retry(event, "http_" + responseCode);
+            settings.deliveryFailure("http_" + responseCode);
+            uploadDiagnostic = "სერვერი მიუწვდომელია (" + responseCode + ") · ზარები შენახულია";
+            long retryDelay = 3_000;
+            if (responseCode == 429) {
+                try { retryDelay = Math.max(3_000, Math.min(300_000,
+                        Long.parseLong(active.getHeaderField("Retry-After")) * 1_000)); }
+                catch (RuntimeException unavailable) { retryDelay = 60_000; }
+                synchronized (uploadLock) { uploadNotBeforeElapsed = SystemClock.elapsedRealtime() + retryDelay; }
+            }
+            return Math.max(retryDelay, nextUploadDelay());
+        } catch (Exception transientFailure) {
+            if (!stopping && settings.enabled() && settings.bindingCurrent(binding)) {
+                queue.retry(event, "connection_failed");
+                settings.deliveryFailure("network");
+            }
+            uploadDiagnostic = "კავშირი ვერ შესრულდა · ზარები შენახულია; ხელახლა ვცდით";
+            return 3_000;
+        } finally {
+            HttpURLConnection active = connection;
+            connection = null;
+            if (active != null) active.disconnect();
         }
+    }
+
+    private String heartbeatError() {
+        String code = settings.deliveryError();
+        if (code.isEmpty()) code = queue.lastErrorCode();
+        if (code.isEmpty()) return null;
+        if (code.equals("connection_failed") || code.equals("network_unavailable")) return "network";
+        return code.matches("^(network|http_[1-5][0-9]{2}|permission|storage|unknown)$") ? code : "unknown";
+    }
+
+    private void sendHeartbeat() {
+        if (stopping || !settings.enabled() || settings.authPaused() || !networkAvailable()) return;
+        AppSettings.Binding binding = settings.binding();
+        try {
+            String token = binding.token();
+            URL endpoint = new URL(binding.server + "/api/integrations/android/heartbeat");
+            if (!"https".equalsIgnoreCase(endpoint.getProtocol())) return;
+            JSONObject payload = new JSONObject();
+            String version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            payload.put("appVersion", version == null ? "0.2.2" : version.substring(0, Math.min(version.length(), 32)));
+            String android = Build.VERSION.RELEASE == null ? Integer.toString(Build.VERSION.SDK_INT) : Build.VERSION.RELEASE;
+            payload.put("androidVersion", android.substring(0, Math.min(android.length(), 32)));
+            payload.put("monitoring", running && permissionsGranted(this));
+            final int pending;
+            final long oldest;
+            final String error;
+            synchronized (queue) {
+                // The uploader/live worker can change the queue concurrently.
+                // Report its count and oldest entry from one consistent snapshot.
+                pending = queue.pendingCount();
+                oldest = queue.oldestPendingAt();
+                error = heartbeatError();
+            }
+            payload.put("pendingCount", Math.min(100_000, pending));
+            payload.put("oldestPendingAt", oldest < 0 ? JSONObject.NULL : Instant.ofEpochMilli(oldest).toString());
+            payload.put("lastError", error == null ? JSONObject.NULL : error);
+            HttpURLConnection active = (HttpURLConnection) endpoint.openConnection();
+            heartbeatConnection = active;
+            active.setInstanceFollowRedirects(false);
+            active.setConnectTimeout(8_000);
+            active.setReadTimeout(10_000);
+            active.setRequestMethod("POST");
+            active.setRequestProperty("Authorization", "Bearer " + token);
+            active.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            active.setRequestProperty("Accept", "application/json");
+            active.setDoOutput(true);
+            byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
+            active.setFixedLengthStreamingMode(body.length);
+            try (java.io.OutputStream output = active.getOutputStream()) { output.write(body); }
+            int responseCode = active.getResponseCode();
+            // Heartbeat is additive. An older server, rejected status request or
+            // unavailable connection must never pause or consume call events.
+            if (responseCode >= 200 && responseCode < 300) {
+                JSONObject response = new JSONObject(readLimited(active.getInputStream()));
+                if (!response.optString("receivedAt", "").isEmpty() && settings.bindingCurrent(binding)) settings.heartbeatSucceeded();
+            }
+        } catch (Exception unavailable) {
+            // Only the call upload result changes its persistent error/status.
+        } finally {
+            HttpURLConnection active = heartbeatConnection;
+            heartbeatConnection = null;
+            if (active != null) active.disconnect();
         }
-        if (queue.pendingCount() == 0) return "მონიტორინგი ჩართულია · რიგი ცარიელია; ველოდებით ახალ ზარს";
-        return status;
     }
 
     private static String readLimited(InputStream source) throws Exception {
@@ -496,7 +722,7 @@ public final class CallMonitorService extends Service {
     }
 
     private void setStatus(String status) {
-        if (!settings.enabled() || worker.isShutdown()) return;
+        if (!settings.enabled() || stopping || worker.isShutdown()) return;
         settings.status(status);
         getSystemService(NotificationManager.class).notify(NOTIFICATION_ID, notification(status));
     }
@@ -512,6 +738,12 @@ public final class CallMonitorService extends Service {
 
     @Override public void onDestroy() {
         running = false;
+        stopping = true;
+        if (connectivityManager != null && networkCallback != null) {
+            try { connectivityManager.unregisterNetworkCallback(networkCallback); }
+            catch (RuntimeException unavailable) { /* Callback already removed by Android. */ }
+            networkCallback = null;
+        }
         if (observer != null) getContentResolver().unregisterContentObserver(observer);
         unregisterPhoneListeners();
         if (subscriptionManager != null && subscriptionListener != null) {
@@ -520,13 +752,18 @@ public final class CallMonitorService extends Service {
         }
         liveWorker.shutdownNow();
         worker.shutdownNow();
+        uploadWorker.shutdownNow();
+        heartbeatWorker.shutdownNow();
         HttpURLConnection active = connection;
         if (active != null) active.disconnect();
+        HttpURLConnection statusConnection = heartbeatConnection;
+        if (statusConnection != null) statusConnection.disconnect();
         stopForeground(STOP_FOREGROUND_REMOVE);
         // Close SQLite after workers leave their transactions, not underneath an active enqueue.
         new Thread(() -> {
             try {
-                if (liveWorker.awaitTermination(5, TimeUnit.SECONDS) && worker.awaitTermination(20, TimeUnit.SECONDS)) {
+                if (liveWorker.awaitTermination(5, TimeUnit.SECONDS) && worker.awaitTermination(20, TimeUnit.SECONDS)
+                        && uploadWorker.awaitTermination(20, TimeUnit.SECONDS) && heartbeatWorker.awaitTermination(20, TimeUnit.SECONDS)) {
                     queue.close();
                 }
             } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }

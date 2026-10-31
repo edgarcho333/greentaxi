@@ -95,12 +95,14 @@
 .admin-settings .admin-config-device { padding: 16px; border: 1px solid #e3ece6; border-radius: 11px; }
 .admin-settings .admin-config-device.revoked { background: #fafbfa; }
 .admin-settings .admin-config-device-top { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; }
-.admin-settings .admin-config-device-top strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; color: var(--ink, #18332b); }
+.admin-settings .admin-config-device-top strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 16px; color: var(--ink, #18332b); }
+.admin-settings .admin-config-device-top { flex-wrap: wrap; }
+.admin-settings .admin-config-device .call-phone-last-call { margin-top: 10px; font-size: 14px; color: #506b5a; }
 .admin-settings .admin-config-device-icon { display: grid; place-items: center; width: 35px; height: 35px; flex: 0 0 35px; background: #edf7f0; color: #32945b; border-radius: 9px; }
 .admin-settings .admin-config-device.revoked .admin-config-device-icon { color: #97a39b; background: #f0f2f0; }
 .admin-settings .admin-config-device .admin-config-status.revoked { background: #f1f2f1; color: #96a097; white-space: normal; text-align: center; }
 .admin-settings .admin-config-device > p { font-size: 11px; }
-.admin-settings .admin-config-device .admin-config-button.revoke { padding: 7px 9px; min-height: 30px; color: #b57070; background: #fff; border-color: #f0dede; font-size: 10px; margin-top: 13px; }
+.admin-settings .admin-config-device .admin-config-button.revoke { padding: 9px 12px; min-height: 44px; color: #a14242; background: #fff; border-color: #e0bcbc; font-size: 15px; margin-top: 13px; }
 .admin-settings .admin-config-device .admin-config-button.revoke:hover { background: #fff3f3; }
 .admin-settings .admin-config-device-setup { padding: 21px; background: #f8faf8; border: 1px solid #e7eee8; border-radius: 12px; align-self: start; }
 .admin-settings .admin-config-device-setup > p { margin-bottom: 16px; }

@@ -86,7 +86,14 @@ export type Analytics = {
   directions: { direction: Direction; orders: number; seats: number }[];
   days: { date: string; orders: number; seats: number }[];
 };
-export type CallDevice = { id: number; name: string; active: boolean; createdAt: string; lastSeenAt: string | null };
+export type CallDeviceHeartbeat = {
+  receivedAt: string; appVersion: string; androidVersion: string; monitoring: boolean;
+  pendingCount: number; oldestPendingAt: string | null; lastError: string | null;
+};
+export type CallDevice = {
+  id: number; name: string; active: boolean; createdAt: string; lastSeenAt: string | null;
+  heartbeat?: CallDeviceHeartbeat | null; connectionState?: 'online' | 'stale' | 'unknown' | 'disabled';
+};
 export type CallInquiry = {
   id: number; phone: string | null; occurredAt: string; durationSeconds: number;
   deviceName: string; createdAt: string; deletedAt: string | null; bookingId: number | null;

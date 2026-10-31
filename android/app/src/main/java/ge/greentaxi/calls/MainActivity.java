@@ -113,7 +113,7 @@ public final class MainActivity extends Activity {
         queueView = text("", 14);
         add(content, queueView, 8);
         add(content, text("ჩართვისას ძველი ზარები არ შემოდის. ინტერნეტის გარეშე ახალი ზარები ტელეფონში ინახება და კავშირის დაბრუნებისას იგზავნება.", 14), 12);
-        add(content, text("Redmi-ზე შეამოწმეთ ფონური მუშაობა და ავტომატური გაშვება. ტელეფონის შეზღუდვებმა შეიძლება გაგზავნა შეაფერხოს.", 14), 16);
+        add(content, text("Samsung-ზე და Redmi-ზე დაუშვით შეუზღუდავი ფონური მუშაობა და გამორიცხეთ აპი მძინარე აპებიდან. ტელეფონის შეზღუდვებმა შეიძლება გაგზავნა შეაფერხოს.", 14), 16);
         add(content, button("აპის პარამეტრების გახსნა", () -> openSettings(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 Uri.parse("package:" + getPackageName())))), 8);
         add(content, button("ბატარეის პარამეტრები", () -> openSettings(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))), 8);
@@ -372,7 +372,22 @@ public final class MainActivity extends Activity {
                 ? "მონიტორინგი ამჟამად არ მუშაობს; შეამოწმეთ ნებართვები და ხელახლა ჩართეთ"
                 : settings.status());
         queueView.setText("გასაგზავნი ზარები: " + queue.pendingCount()
-                + "\nსერვერის მიერ მიღებული ზარები: " + queue.deliveredCount());
+                + "\nსერვერის მიერ მიღებული ზარები: " + queue.deliveredCount()
+                + "\nბოლო გაგზავნა: " + statusTime(settings.lastDeliveryAt())
+                + "\nსაიტთან კავშირი: " + statusTime(settings.lastHeartbeatAt())
+                + (settings.deliveryError().isEmpty() ? "" : "\nგაგზავნის პრობლემა: " + deliveryErrorLabel(settings.deliveryError())));
+    }
+
+    private String statusTime(long timestamp) {
+        return timestamp <= 0 ? "ჯერ არ არის" : android.text.format.DateFormat.getTimeFormat(this).format(new java.util.Date(timestamp));
+    }
+
+    private String deliveryErrorLabel(String code) {
+        if ("network".equals(code)) return "ინტერნეტს ელოდება";
+        if ("http_401".equals(code) || "http_403".equals(code)) return "ტელეფონი ხელახლა დააკავშირეთ";
+        if ("permission".equals(code)) return "შეამოწმეთ ნებართვები";
+        if ("storage".equals(code)) return "ტელეფონში შენახვა ვერ შესრულდა";
+        return "სერვერთან გაგზავნა შეფერხებულია";
     }
 
     private void openSettings(Intent intent) {

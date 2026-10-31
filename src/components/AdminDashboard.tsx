@@ -8,6 +8,7 @@ import BookingPrint from './admin/BookingPrint';
 import Passengers from './admin/Passengers';
 import TripCapacity from './admin/TripCapacity';
 import WebsiteBookings from './admin/WebsiteBookings';
+import CallPhoneStatus from './admin/CallPhoneStatus';
 import usePassengerProfile, { canonicalPassengerPhone } from './admin/usePassengerProfile';
 import SavedAddressPicker, { savedGoriAddresses } from './admin/SavedAddressPicker';
 import { BookingOptions, BookingOptionsSummary, type BookingOptionsValue } from './admin/BookingOptions';
@@ -218,6 +219,7 @@ export default function AdminDashboard({ user, onLogout }: { user: User; onLogou
           {selectedSchedule?.slots.some(slot => !slot.active && slot.bookingCount > 0) && <div className="admin-notice">გამორთულ დროზე ჯავშნები შენარჩუნებულია. გადაიტანეთ ისინი მოქმედ დროზე.</div>}
           <TripCapacity direction={direction} date={date} time={time} refresh={refresh} onChange={reload} />
         </>}
+        {(view === 'incoming' || view === 'scheduled') && <CallPhoneStatus />}
         {view === 'incoming' && <div className="admin-section-note"><Inbox size={18} />აირჩიეთ თარიღი და დრო — სლოტში დამატება ჯავშანს ავტომატურად დაადასტურებს.</div>}
         {view === 'history' && <div className="admin-section-note"><History size={18} />წაშლილი ჯავშნები ინახება ისტორიაში. აღდგენისას შეგიძლიათ აირჩიოთ მოქმედი დრო.</div>}
         {(view === 'incoming' || view === 'history') && <CallQueue scope={view === 'incoming' ? 'incoming' : 'deleted'} search={searchQuery} refresh={refresh} config={config} onChange={reload} />}

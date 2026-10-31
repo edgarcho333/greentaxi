@@ -71,6 +71,17 @@ final class AppSettings {
     }
     String status() { return preferences.getString("status", "მონიტორინგი შეჩერებულია"); }
     void status(String value) { preferences.edit().putString("status", value).apply(); }
+    long lastDeliveryAt() { return preferences.getLong("last_delivery_at", 0); }
+    long lastHeartbeatAt() { return preferences.getLong("last_heartbeat_at", 0); }
+    String deliveryError() { return preferences.getString("delivery_error", ""); }
+    void deliverySucceeded() {
+        preferences.edit().putLong("last_delivery_at", System.currentTimeMillis()).remove("delivery_error").apply();
+    }
+    void deliveryFailure(String code) {
+        String safe = code != null && code.matches("^(network|http_[1-5][0-9]{2}|permission|storage|unknown)$") ? code : "unknown";
+        preferences.edit().putString("delivery_error", safe).apply();
+    }
+    void heartbeatSucceeded() { preferences.edit().putLong("last_heartbeat_at", System.currentTimeMillis()).apply(); }
     long baseline() { return preferences.getLong("baseline_ms", Long.MAX_VALUE); }
     long lastDate() { return preferences.getLong("last_date", baseline()); }
     long lastRow() { return preferences.getLong("last_row", 0); }

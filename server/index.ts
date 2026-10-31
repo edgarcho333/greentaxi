@@ -113,8 +113,17 @@ function sameSecret(a: string, b: string): boolean {
 }
 function user(row: Row): User { return { id: row.id, login: row.login, name: row.name }; }
 function stop(row: Row) { return { id: row.id, name: row.name, address: row.address, active: Boolean(row.active) }; }
-function callDevice(row: Row): CallDevice {
-  return { id: row.id, name: row.name, active: Boolean(row.active), createdAt: row.created_at, lastSeenAt: row.last_seen_at };
+function callDevice(row: Row, at = Date.now()): CallDevice {
+  const heartbeat = row.heartbeat_received_at == null ? null : {
+    receivedAt: row.heartbeat_received_at, appVersion: row.app_version, androidVersion: row.android_version,
+    monitoring: Boolean(row.monitoring), pendingCount: Number(row.pending_count),
+    oldestPendingAt: row.oldest_pending_at ?? null, lastError: row.last_error ?? null,
+  };
+  const age = heartbeat === null ? NaN : at - new Date(heartbeat.receivedAt).getTime();
+  const connectionState = !row.active ? 'disabled' : heartbeat === null ? 'unknown'
+    : heartbeat.monitoring && age >= 0 && age <= 150_000 ? 'online' : 'stale';
+  return { id: row.id, name: row.name, active: Boolean(row.active), createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at, heartbeat, connectionState };
 }
 function callInquiry(row: Row, passengerProfile: PassengerProfile | null = null, bookingPhone: string | null = null): CallInquiry {
   return { id: row.id, phone: row.phone === null ? null : normalizePhone(row.phone) ?? row.phone, bookingPhone, occurredAt: row.occurred_at, durationSeconds: row.duration_seconds, phase: row.phase ?? 'completed', passengerProfile, deviceName: row.device_name, createdAt: row.created_at, deletedAt: row.deleted_at, bookingId: row.booking_id };
@@ -483,6 +492,36 @@ export async function createApp(options: Options = {}) {
     const device = await authenticatedDevice(req);
     res.json({ connected: true, device: { id: device.id, name: device.name } });
   });
+  app.post('/api/integrations/android/heartbeat', rateLimit('android-heartbeat', 60, 60 * 1000), async (req, res) => {
+    const device = await authenticatedDevice(req);
+    const version = (value: unknown) => {
+      if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._ +()-]{0,31}$/.test(value)) reject(400,
+        'მიუთითეთ აპისა და Android-ის სწორი ვერსია.', 'VALIDATION');
+      return value;
+    };
+    const appVersion = version(req.body.appVersion);
+    const androidVersion = version(req.body.androidVersion);
+    if (typeof req.body.monitoring !== 'boolean' || !Number.isSafeInteger(req.body.pendingCount)
+      || req.body.pendingCount < 0 || req.body.pendingCount > 100_000) reject(400,
+      'მოწყობილობის სტატუსი არასწორია.', 'VALIDATION');
+    const oldestPendingAt = req.body.oldestPendingAt === null ? null : occurredAt(req.body.oldestPendingAt);
+    const lastError = req.body.lastError;
+    // Only technical codes are stored. Arbitrary messages can contain phone
+    // numbers, URLs or authentication material and are never accepted here.
+    if (lastError !== null && (typeof lastError !== 'string' || !/^(network|http_[1-5][0-9]{2}|permission|storage|unknown)$/.test(lastError))) reject(400,
+      'მოწყობილობის შეცდომის კოდი არასწორია.', 'VALIDATION');
+    const receivedAt = now().toISOString();
+    const result = await db.prepare(`INSERT INTO call_device_heartbeats(device_id,received_at,app_version,android_version,monitoring,pending_count,oldest_pending_at,last_error)
+      SELECT id,?,?,?,?,?,?,? FROM call_devices WHERE id=? AND active=1
+      ON CONFLICT(device_id) DO UPDATE SET received_at=excluded.received_at,app_version=excluded.app_version,
+        android_version=excluded.android_version,monitoring=excluded.monitoring,pending_count=excluded.pending_count,
+        oldest_pending_at=excluded.oldest_pending_at,last_error=excluded.last_error`)
+      .run(receivedAt, appVersion, androidVersion, Number(req.body.monitoring), req.body.pendingCount, oldestPendingAt, lastError, device.id);
+    if (result.changes !== 1) reject(401, 'მოწყობილობის წვდომა გაუქმებულია ან კოდი არასწორია.', 'DEVICE_UNAUTHORIZED');
+    // A heartbeat proves connectivity, not a new call. Preserve last_seen_at,
+    // call identities, the operator queue and the business audit history.
+    res.json({ receivedAt });
+  });
   app.post('/api/integrations/android/calls', rateLimit('android-calls', 120, 60 * 1000), async (req, res) => {
     const device = await authenticatedDevice(req);
     const kind = req.body.kind;
@@ -572,8 +611,12 @@ export async function createApp(options: Options = {}) {
       : (await readPreferredBookingPhones(db, [caller])).get(caller) ?? caller : phone(explicitContact);
     return { caller, contact };
   }
-  app.get('/api/admin/devices', async (_req, res) => {
-    res.json({ devices: ((await db.prepare('SELECT id,name,active,created_at,last_seen_at FROM call_devices ORDER BY id DESC').all()) as Row[]).map(callDevice) });
+  app.get(['/api/admin/devices', '/api/admin/devices/status'], async (_req, res) => {
+    const rows = await db.prepare(`SELECT d.id,d.name,d.active,d.created_at,d.last_seen_at,
+      h.received_at AS heartbeat_received_at,h.app_version,h.android_version,h.monitoring,h.pending_count,h.oldest_pending_at,h.last_error
+      FROM call_devices d LEFT JOIN call_device_heartbeats h ON h.device_id=d.id ORDER BY d.id DESC`).all();
+    const stamp = now().getTime();
+    res.json({ devices: rows.map(row => callDevice(row, stamp)) });
   });
   app.post('/api/admin/devices', async (req: ContextRequest, res) => {
     const name = text(req.body.name, 'მოწყობილობის სახელი', 2, 100);

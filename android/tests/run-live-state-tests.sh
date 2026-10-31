@@ -18,10 +18,13 @@ fi
   "$android_dir/app/src/main/java/ge/greentaxi/calls/LiveCallState.java" \
   "$android_dir/app/src/main/java/ge/greentaxi/calls/CallReconciler.java" \
   "$android_dir/app/src/main/java/ge/greentaxi/calls/CallerPhone.java" \
+  "$android_dir/app/src/main/java/ge/greentaxi/calls/DeliveryPolicy.java" \
   "$test_dir/LiveCallStateTest.java" \
   "$test_dir/CallReconcilerTest.java" \
-  "$test_dir/CallerPhoneTest.java"
+  "$test_dir/CallerPhoneTest.java" \
+  "$test_dir/DeliveryPolicyTest.java"
 "$java_bin" -cp "$classes_dir" ge.greentaxi.calls.LiveCallStateTest
 "$java_bin" -cp "$classes_dir" ge.greentaxi.calls.CallReconcilerTest
 "$java_bin" -cp "$classes_dir" ge.greentaxi.calls.CallerPhoneTest
+"$java_bin" -cp "$classes_dir" ge.greentaxi.calls.DeliveryPolicyTest
 python3 "$test_dir/queue_schema_test.py"

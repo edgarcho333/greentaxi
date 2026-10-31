@@ -10,6 +10,7 @@ CERTIFICATE_SHA256 = '44e8dc7c71ac84523091169d571231b1f5a9a84bf568e63c37c9c6d92a
 
 
 def main():
+    os.umask(0o077)
     root = Path(os.environ.get('GREENTAXI_TOOL_ROOT', '/workspace/.greentaxi-tools'))
     metadata = root / 'android-signing/samsung.json'
     if not metadata.is_file():
@@ -36,10 +37,24 @@ def main():
     if certificate.returncode or hashlib.sha256(certificate.stdout).hexdigest() != CERTIFICATE_SHA256:
         raise SystemExit('Samsung signing identity verification failed. No update was built.')
     project = Path(__file__).resolve().parent.parent / 'android'
-    subprocess.run([
+    build = subprocess.run([
         str(root / 'gradle-8.9/bin/gradle'), '--no-daemon', '-p', str(project),
         '-PgreenTaxiSamsung=true', ':app:assembleRelease', ':app:lintRelease',
-    ], env=environ, check=True)
+    ], env=environ, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # Configuration errors can echo signing DSL arguments. Redact before any
+    # output reaches a log, just as the driver release helper does.
+    log = Path('/tmp/greentaxi-samsung-gradle.log')
+    log.write_text(build.stdout.decode(errors='replace').replace(config['password'], '[REDACTED]'))
+    log.chmod(0o600)
+    if build.returncode:
+        raise SystemExit(f'Samsung build/lint failed. Inspect the redacted log: {log}')
+    apk = project / 'app/build/outputs/apk/release/app-release.apk'
+    verified = subprocess.run([
+        str(root / 'android-sdk/build-tools/35.0.0/apksigner'), 'verify', '--print-certs', str(apk),
+    ], env=environ, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if verified.returncode or f'Signer #1 certificate SHA-256 digest: {CERTIFICATE_SHA256}' not in verified.stdout.decode(errors='replace'):
+        raise SystemExit('The built APK does not have the original Samsung signature. No release was published.')
+    print(json.dumps({'built': True, 'apk': str(apk), 'certificateSha256': CERTIFICATE_SHA256}))
 
 
 if __name__ == '__main__':

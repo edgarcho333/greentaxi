@@ -3,6 +3,9 @@ plugins { id 'com.android.application' }
 // A separate, explicitly selected Samsung application keeps the installed 0.2.0
 // bridge and its encrypted pairing/queue intact when its original key is unavailable.
 def samsungBridge = providers.gradleProperty('greenTaxiSamsung').orElse('false').get() == 'true'
+// Explicit compile/lint-only path when the original release key is unavailable.
+// Its unsigned artifact is never an installable update or a published release.
+def unsignedCheck = providers.gradleProperty('greenTaxiUnsignedCheck').orElse('false').get() == 'true'
 
 android {
     namespace 'ge.greentaxi.calls'
@@ -13,12 +16,13 @@ android {
         applicationId samsungBridge ? 'ge.greentaxi.calls.samsung' : 'ge.greentaxi.calls'
         minSdk 26
         targetSdk 35
-        versionCode 4
-        versionName '0.2.1'
+        versionCode 5
+        versionName '0.2.2'
         manifestPlaceholders = [appLabel: samsungBridge ? 'Green Taxi Samsung' : 'Green Taxi']
     }
 
     if (samsungBridge) {
+      if (!unsignedCheck) {
         signingConfigs {
             samsung {
                 def keyPath = providers.environmentVariable('GREENTAXI_SAMSUNG_KEYSTORE').orNull
@@ -32,9 +36,10 @@ android {
                 keyPassword samsungPassword
             }
         }
+      }
         buildTypes {
             debug { applicationIdSuffix '.debug' }
-            release { signingConfig signingConfigs.samsung }
+            release { if (!unsignedCheck) signingConfig signingConfigs.samsung }
         }
     }
 

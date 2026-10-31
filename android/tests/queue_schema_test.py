@@ -33,6 +33,10 @@ def query(prefix):
             return sql
     raise AssertionError('query not found')
 
+def raw_queries():
+    return [json.loads('"' + match.group(1) + '"')
+            for match in re.finditer(r'rawQuery\("((?:[^"\\]|\\.)*)"', SOURCE)]
+
 def fresh_db():
     db = sqlite3.connect(':memory:')
     run_method(db, 'onCreate')
@@ -43,6 +47,52 @@ def stage(db, event_id, phase, phone='599123456', date=100, duration=0):
                (event_id, phase, phone, date, duration))
 
 class QueueSqlTests(unittest.TestCase):
+    def test_fast_path_prioritizes_only_new_answers_and_recovers_backlog_fairly(self):
+        db = fresh_db()
+        stage(db, 'old-log', 'completed', date=1, duration=10)
+        stage(db, 'retry-answer', 'answered', date=2)
+        db.execute("UPDATE call_events SET attempts=3 WHERE event_id='retry-answer'")
+        stage(db, 'already-acked', 'answered', date=999)
+        db.execute("UPDATE call_events SET delivered=1 WHERE event_id='already-acked'")
+        for index in range(8):
+            stage(db, f'new-{index}', 'answered', date=100 + index)
+            stage(db, f'new-{index}', 'completed', date=100 + index, duration=5)
+        oldest = query('SELECT e.event_id')
+        urgent = next(sql for sql in raw_queries() if "e.attempts=0" in sql)
+        self.assertEqual(db.execute(urgent, (1000,)).fetchone()[0], 'new-7')
+        # Exercise production SQL with the four-priority / one-oldest budget.
+        chosen = []
+        for index in range(5):
+            sql = urgent if index < 4 else oldest
+            event = db.execute(sql, (1000,)).fetchone()
+            chosen.append((event[0], event[5]))
+            db.execute('UPDATE call_events SET delivered=1 WHERE event_id=? AND phase=?', (event[0], event[5]))
+        self.assertEqual(chosen, [('new-7', 'answered'), ('new-6', 'answered'),
+                                  ('new-5', 'answered'), ('new-4', 'answered'), ('old-log', 'completed')])
+        # A scheduled retry is not an urgent fresh call, but remains eligible.
+        self.assertEqual(db.execute(oldest, (1000,)).fetchone()[0], 'retry-answer')
+
+    def test_retry_deadline_ignores_blocked_completions_and_recovery_keeps_acknowledgments(self):
+        db = fresh_db()
+        stage(db, 'pending', 'answered', date=111)
+        stage(db, 'pending', 'completed', date=111, duration=20)
+        stage(db, 'acked', 'completed', date=10, duration=30)
+        db.execute("UPDATE call_events SET attempts=4,next_try=900000,error_code='connection_failed' WHERE event_id='pending' AND phase='answered'")
+        db.execute("UPDATE call_events SET delivered=1,next_try=999999,error_code='retained' WHERE event_id='acked'")
+        next_retry = query('SELECT MIN(e.next_try)')
+        self.assertEqual(db.execute(next_retry).fetchone()[0], 900000)
+        self.assertEqual(db.execute(query('SELECT MIN(occurred_at)')).fetchone()[0], 111)
+        before = db.execute('SELECT event_id,phase,phone,occurred_at,duration_seconds,attempts,delivered FROM call_events ORDER BY event_id,phase').fetchall()
+        # Execute the actual production recovery UPDATE, not a copied statement.
+        run_method(db, 'retryAllNow')
+        self.assertEqual(db.execute(next_retry).fetchone()[0], 0)
+        self.assertEqual(db.execute("SELECT next_try,error_code FROM call_events WHERE event_id='acked'").fetchone(), (999999, 'retained'))
+        after = db.execute('SELECT event_id,phase,phone,occurred_at,duration_seconds,attempts,delivered FROM call_events ORDER BY event_id,phase').fetchall()
+        self.assertEqual(after, before)
+        self.assertEqual([(row[0], row[5]) for row in db.execute(query('SELECT e.event_id'), (1000,))], [('pending', 'answered')])
+        db.execute("UPDATE call_events SET delivered=1 WHERE event_id='pending'")
+        self.assertIsNone(db.execute(next_retry).fetchone()[0])
+
     def test_v1_migration_preserves_pending_delivered_and_retries(self):
         db = sqlite3.connect(':memory:')
         db.execute(V1_SCHEMA)
