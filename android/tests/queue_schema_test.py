@@ -8,6 +8,8 @@ import unittest
 
 SOURCE = (pathlib.Path(__file__).resolve().parents[1] / 'app/src/main/java/ge/greentaxi/calls/CallQueue.java').read_text()
 V1_SCHEMA = "CREATE TABLE call_events (event_id TEXT PRIMARY KEY, phone TEXT, occurred_at INTEGER NOT NULL, duration_seconds INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER NOT NULL DEFAULT 0, error_code TEXT)"
+V2_SCHEMA = "CREATE TABLE call_events (event_id TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('answered','completed')), phone TEXT, occurred_at INTEGER NOT NULL, duration_seconds INTEGER NOT NULL, delivered INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER NOT NULL DEFAULT 0, error_code TEXT, legacy_payload INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(event_id,phase))"
+V2_SESSIONS = "CREATE TABLE live_sessions (session_id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, sub_id INTEGER NOT NULL, phone TEXT, ring_at INTEGER NOT NULL, ring_elapsed INTEGER NOT NULL, answer_at INTEGER NOT NULL DEFAULT -1, answer_elapsed INTEGER NOT NULL DEFAULT -1, end_at INTEGER NOT NULL DEFAULT -1, end_elapsed INTEGER NOT NULL DEFAULT -1, status TEXT NOT NULL, gap INTEGER NOT NULL DEFAULT 0)"
 
 def body(name):
     match = re.search(r'(?:private static void|public void|synchronized void)\s+' + name + r'\([^)]*\)\s*\{', SOURCE)
@@ -42,9 +44,9 @@ def fresh_db():
     run_method(db, 'onCreate')
     return db
 
-def stage(db, event_id, phase, phone='599123456', date=100, duration=0):
-    db.execute('INSERT OR IGNORE INTO call_events(event_id,phase,phone,occurred_at,duration_seconds) VALUES (?,?,?,?,?)',
-               (event_id, phase, phone, date, duration))
+def stage(db, event_id, phase, phone='599123456', date=100, duration=0, kind='incoming'):
+    db.execute('INSERT OR IGNORE INTO call_events(event_id,phase,phone,occurred_at,duration_seconds,kind) VALUES (?,?,?,?,?,?)',
+               (event_id, phase, phone, date, duration, kind))
 
 class QueueSqlTests(unittest.TestCase):
     def test_fast_path_prioritizes_only_new_answers_and_recovers_backlog_fairly(self):
@@ -100,7 +102,7 @@ class QueueSqlTests(unittest.TestCase):
         old = [('old-pending', '+995599123456', 123, 15, 0, 4, 555, 'connection_failed'),
                ('old-delivered', None, 234, 0, 1, 0, 0, None)]
         db.executemany('INSERT INTO call_events VALUES (?,?,?,?,?,?,?,?)', old)
-        run_method(db, 'onUpgrade')
+        run_method(db, 'migrateV1ToV3')
         rows = db.execute('SELECT event_id,phone,occurred_at,duration_seconds,delivered,attempts,next_try,error_code FROM call_events ORDER BY event_id').fetchall()
         self.assertEqual(rows, sorted(old))
         self.assertEqual(db.execute('SELECT phase,legacy_payload FROM call_events').fetchall(), [('completed', 1), ('completed', 1)])
@@ -114,11 +116,50 @@ class QueueSqlTests(unittest.TestCase):
         db.execute("INSERT INTO call_events(event_id,occurred_at,duration_seconds) VALUES ('retained',123,0)")
         db.commit()
         db.execute('BEGIN')
-        run_method(db, 'onUpgrade')
+        run_method(db, 'migrateV1ToV3')
         db.rollback()
         self.assertEqual(db.execute('SELECT event_id FROM call_events').fetchall(), [('retained',)])
         self.assertNotIn('phase', [row[1] for row in db.execute('PRAGMA table_info(call_events)')])
         self.assertEqual(db.execute("SELECT count(*) FROM sqlite_master WHERE name='live_sessions'").fetchone()[0], 0)
+
+    def test_v2_migration_preserves_every_stage_and_live_reservation(self):
+        db = sqlite3.connect(':memory:')
+        db.execute(V2_SCHEMA)
+        db.execute('CREATE INDEX pending_calls ON call_events(delivered,next_try)')
+        db.execute(V2_SESSIONS)
+        db.execute('CREATE TABLE call_log_links (log_id INTEGER NOT NULL, log_date INTEGER NOT NULL, event_id TEXT NOT NULL UNIQUE, PRIMARY KEY(log_id,log_date))')
+        old = [('legacy', 'completed', '+995599111111', 10, 0, 0, 7, 900000, 'connection_failed', 1),
+               ('normal', 'answered', None, 20, 0, 1, 1, 333, None, 0),
+               ('normal', 'completed', '599222222', 20, 25, 0, 3, 444, 'http_500', 0)]
+        db.executemany('INSERT INTO call_events VALUES (?,?,?,?,?,?,?,?,?,?)', old)
+        key = 'telecom:' + 'b' * 64
+        db.execute("INSERT INTO live_sessions(session_id,event_id,sub_id,phone,ring_at,ring_elapsed,answer_at,answer_elapsed,status) VALUES (?,?,1,'599222222',20,5,30,15,'answered')", (key, 'normal'))
+        db.execute("INSERT INTO call_log_links VALUES (8,20,'normal')")
+        before_session = db.execute('SELECT * FROM live_sessions').fetchone()
+        run_method(db, 'migrateV2ToV3')
+        rows = db.execute('SELECT event_id,phase,phone,occurred_at,duration_seconds,delivered,attempts,next_try,error_code,legacy_payload FROM call_events ORDER BY event_id,phase').fetchall()
+        self.assertEqual(rows, sorted(old))
+        self.assertEqual(db.execute('SELECT DISTINCT kind FROM call_events').fetchall(), [('incoming',)])
+        migrated_session = db.execute('SELECT * FROM live_sessions').fetchone()
+        self.assertEqual(migrated_session[:-1], before_session)
+        self.assertEqual(migrated_session[-1], 0)
+        self.assertEqual(db.execute('SELECT * FROM call_log_links').fetchall(), [(8, 20, 'normal')])
+        stage(db, 'new-ring', 'ringing', phone=None)
+        self.assertEqual(db.execute("SELECT phase FROM call_events WHERE event_id='new-ring'").fetchone()[0], 'ringing')
+
+    def test_v2_migration_can_rollback_without_erasing_pending_calls(self):
+        db = sqlite3.connect(':memory:')
+        db.execute(V2_SCHEMA)
+        db.execute('CREATE INDEX pending_calls ON call_events(delivered,next_try)')
+        db.execute(V2_SESSIONS)
+        db.execute("INSERT INTO call_events(event_id,phase,occurred_at,duration_seconds) VALUES ('retained','answered',123,0)")
+        db.commit()
+        db.execute('BEGIN')
+        run_method(db, 'migrateV2ToV3')
+        db.rollback()
+        self.assertEqual(db.execute('SELECT event_id,phase FROM call_events').fetchall(), [('retained', 'answered')])
+        self.assertNotIn('kind', [row[1] for row in db.execute('PRAGMA table_info(call_events)')])
+        self.assertNotIn('all_incoming', [row[1] for row in db.execute('PRAGMA table_info(live_sessions)')])
 
     def test_completion_waits_for_answer_ack_even_during_backoff(self):
         db = fresh_db()
@@ -130,6 +171,34 @@ class QueueSqlTests(unittest.TestCase):
         self.assertEqual(db.execute(due, (1000,)).fetchall(), [])
         db.execute("UPDATE call_events SET delivered=1 WHERE phase='answered'")
         self.assertEqual([(row[0], row[5]) for row in db.execute(due, (1000,))], [('live', 'completed')])
+
+    def test_authoritative_missed_and_rejected_completion_bypass_pending_answer(self):
+        for kind in ('missed', 'rejected'):
+            with self.subTest(kind=kind):
+                db = fresh_db()
+                stage(db, 'live', 'ringing', phone=None, date=111)
+                stage(db, 'live', 'answered', date=111)
+                stage(db, 'live', 'completed', date=111, kind=kind)
+                db.execute("UPDATE call_events SET next_try=99999,attempts=2 WHERE phase IN ('ringing','answered')")
+                rows = db.execute(query('SELECT e.event_id'), (1000,)).fetchall()
+                self.assertEqual([(row[0], row[5], row[7]) for row in rows], [('live', 'completed', kind)])
+                self.assertEqual(db.execute(query('SELECT MIN(e.next_try)')).fetchone()[0], 0)
+                # Completion ACK does not erase the late immutable earlier stages.
+                db.execute("UPDATE call_events SET delivered=1,phone=NULL WHERE phase='completed'")
+                self.assertEqual(db.execute('SELECT count(*) FROM call_events WHERE delivered=0').fetchone()[0], 2)
+
+    def test_new_ringing_is_urgent_and_duplicate_payload_remains_immutable(self):
+        db = fresh_db()
+        stage(db, 'backlog', 'completed', date=1, duration=20)
+        stage(db, 'live', 'ringing', phone=None, date=100)
+        stage(db, 'live', 'ringing', phone='599555555', date=999)
+        stage(db, 'live', 'answered', phone='599555555', date=100)
+        urgent = next(sql for sql in raw_queries() if 'e.attempts=0' in sql)
+        selected = db.execute(urgent, (1000,)).fetchone()
+        self.assertEqual((selected[0], selected[1], selected[5], selected[7]), ('live', None, 'ringing', 'incoming'))
+        db.execute("UPDATE call_events SET delivered=1 WHERE phase='ringing'")
+        selected = db.execute(urgent, (1000,)).fetchone()
+        self.assertEqual((selected[0], selected[1], selected[5]), ('live', '599555555', 'answered'))
 
     def test_duplicate_stage_cannot_replace_immutable_payload(self):
         db = fresh_db()
@@ -207,6 +276,17 @@ class QueueSqlTests(unittest.TestCase):
         sql = re.search(r'getWritableDatabase\(\)\.execSQL\("([^"\n]+)"\)', body('markOpenSessionsGap'))
         db.execute(sql.group(1))
         self.assertEqual(db.execute(sessions).fetchall(), [])
+
+    def test_all_incoming_provisional_reservation_survives_monitor_restart(self):
+        db = fresh_db()
+        stage(db, 'live', 'ringing', phone=None, date=100)
+        db.execute("UPDATE call_events SET delivered=1 WHERE phase='ringing'")
+        db.execute("INSERT INTO live_sessions(session_id,event_id,sub_id,ring_at,ring_elapsed,status,all_incoming) VALUES ('new-policy','live',1,100,50,'ringing',1)")
+        sql = re.search(r'getWritableDatabase\(\)\.execSQL\("([^"\n]+)"\)', body('markOpenSessionsGap'))
+        db.execute(sql.group(1))
+        row = db.execute(query('SELECT session_id,event_id,sub_id')).fetchone()
+        self.assertEqual((row[0], row[1], row[6], row[10], row[11]), ('new-policy', 'live', -1, 1, 1))
+        self.assertEqual(db.execute("SELECT delivered,phone FROM call_events WHERE event_id='live'").fetchone(), (1, None))
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

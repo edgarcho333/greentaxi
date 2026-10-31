@@ -85,7 +85,8 @@ public final class CallMonitorService extends Service {
     private volatile String uploadDiagnostic = "მონიტორინგი ჩართულია";
     // Telephony events must be durably handled without waiting for an in-flight HTTP request.
     private final ExecutorService liveWorker = Executors.newSingleThreadExecutor();
-    private LiveCallState liveState = new LiveCallState(Collections.emptySet());
+    private LiveCallState liveState = new LiveCallState(Collections.emptySet(), true);
+    private volatile long allIncomingBaseline = Long.MAX_VALUE;
     private final Map<Integer, PhoneStateListener> phoneListeners = new HashMap<>();
     private final Map<Integer, TelephonyManager> phoneManagers = new HashMap<>();
     private Set<Integer> activeSubscriptions = Collections.emptySet();
@@ -165,6 +166,8 @@ public final class CallMonitorService extends Service {
             }
             running = true;
             if (!started) {
+                // Enabling the expanded policy must not import previously ignored missed calls.
+                allIncomingBaseline = settings.allIncomingBaseline();
                 ContentObserver newObserver = new ContentObserver(mainHandler) {
                     @Override public void onChange(boolean selfChange) { scheduleScan(); }
                 };
@@ -287,7 +290,7 @@ public final class CallMonitorService extends Service {
             final long elapsed = SystemClock.elapsedRealtime();
             submitLive(() -> {
                 applyLiveActions(liveState.setSubscriptions(Collections.emptySet(), wall, elapsed));
-                liveState = new LiveCallState(next);
+                liveState = new LiveCallState(next, true);
             });
             if (next.isEmpty()) {
                 liveDiagnostic = "აქტიური SIM არ ჩანს; ვამოწმებთ ზარების ჟურნალს. ";
@@ -369,7 +372,7 @@ public final class CallMonitorService extends Service {
         for (LiveCallState.Action action : actions) {
             if (!settings.enabled() || liveWorker.isShutdown()) return;
             queue.liveAction(action, settings.installationId());
-            if (action.kind == LiveCallState.Kind.ANSWER) {
+            if (action.kind == LiveCallState.Kind.ANSWER || action.kind == LiveCallState.Kind.RING) {
                 scheduleUpload(0);
                 requestHeartbeat(0);
             }
@@ -549,7 +552,15 @@ public final class CallMonitorService extends Service {
                 long row = calls.getLong(0), date = calls.getLong(3);
                 maxRow = Math.max(maxRow, row);
                 maxDate = Math.max(maxDate, date);
-                if (calls.getInt(2) != CallLog.Calls.INCOMING_TYPE || date < baseline) continue;
+                if (date < baseline) continue;
+                final String kind;
+                switch (calls.getInt(2)) {
+                    case CallLog.Calls.INCOMING_TYPE: kind = CallReconciler.INCOMING; break;
+                    case CallLog.Calls.MISSED_TYPE: kind = CallReconciler.MISSED; break;
+                    case CallLog.Calls.REJECTED_TYPE: kind = CallReconciler.REJECTED; break;
+                    default: continue; // Outgoing, voicemail and spam-blocked rows are not inquiries.
+                }
+                if (!CallReconciler.INCOMING.equals(kind) && date < allIncomingBaseline) continue;
                 String oldId = "android:" + installationId + ":" + row + ":" + date;
                 // Existing v1/v2 fallback rows and linked live rows cannot create new graph edges.
                 if (queue.linked(row, date) || queue.containsEvent(oldId)) continue;
@@ -563,22 +574,33 @@ public final class CallMonitorService extends Service {
                 if (!account.sim) continue;
                 String phone = calls.getInt(5) == CallLog.Calls.PRESENTATION_ALLOWED
                         ? CallerPhone.normalize(calls.getString(1)) : null;
-                rows.add(new CallReconciler.Log(row, date, Math.max(0, calls.getLong(4)), account.subId, phone));
+                long duration = CallReconciler.INCOMING.equals(kind) ? Math.max(0, calls.getLong(4)) : 0;
+                rows.add(new CallReconciler.Log(row, date, duration, account.subId, phone, kind,
+                        date >= allIncomingBaseline));
             }
         }
-        for (CallReconciler.Result result : CallReconciler.reconcile(queue.unlinkedSessions(), rows)) {
-            boolean deferred = result.decision == CallReconciler.Decision.DEFER;
-            if (result.decision == CallReconciler.Decision.MATCH) {
-                deferred = !queue.linkAndComplete(result.row, result.session);
-            } else if (result.decision == CallReconciler.Decision.NEW) {
-                String id = "android:" + installationId + ":" + result.row.rowId + ":" + result.row.dateWall;
-                queue.enqueue(id, result.row.phoneGE9, result.row.dateWall, result.row.durationSeconds);
+        // Settle unambiguous anchors before re-evaluating their weak neighbours.
+        // Never turn a deferred row into a new card until the earlier link commits.
+        List<CallReconciler.Log> pendingRows = rows;
+        for (int pass = 0; pass < 3 && !pendingRows.isEmpty(); pass++) {
+            boolean progress = false;
+            List<CallReconciler.Log> deferredRows = new ArrayList<>();
+            for (CallReconciler.Result result : CallReconciler.reconcile(queue.unlinkedSessions(), pendingRows)) {
+                if (result.decision == CallReconciler.Decision.MATCH && queue.linkAndComplete(result.row, result.session)) {
+                    progress = true;
+                } else if (result.decision == CallReconciler.Decision.NEW) {
+                    String id = "android:" + installationId + ":" + result.row.rowId + ":" + result.row.dateWall;
+                    queue.enqueue(id, result.row.phoneGE9, result.row.dateWall, result.row.durationSeconds, result.row.kind);
+                    progress = true;
+                } else deferredRows.add(result.row);
             }
-            if (deferred) {
-                unresolved++;
-                unresolvedRow = Math.min(unresolvedRow, result.row.rowId);
-                unresolvedDate = Math.min(unresolvedDate, result.row.dateWall);
-            }
+            pendingRows = deferredRows;
+            if (!progress) break;
+        }
+        for (CallReconciler.Log row : pendingRows) {
+            unresolved++;
+            unresolvedRow = Math.min(unresolvedRow, row.rowId);
+            unresolvedDate = Math.min(unresolvedDate, row.dateWall);
         }
         if (unresolved > 0) {
             maxRow = Math.min(maxRow, Math.max(0, unresolvedRow - 1));
@@ -672,7 +694,7 @@ public final class CallMonitorService extends Service {
             payload.put("phone", event.phone == null ? JSONObject.NULL : event.phone);
             payload.put("occurredAt", Instant.ofEpochMilli(event.occurredAt).toString());
             payload.put("durationSeconds", event.duration);
-            payload.put("kind", "incoming");
+            payload.put("kind", event.kind);
             if (!event.legacyPayload) payload.put("phase", event.phase);
             byte[] body = payload.toString().getBytes(StandardCharsets.UTF_8);
             active.setFixedLengthStreamingMode(body.length);

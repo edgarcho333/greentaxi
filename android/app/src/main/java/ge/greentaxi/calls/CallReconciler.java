@@ -7,8 +7,11 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-/** Conservatively associates finalized call-log rows with already answered live sessions. */
+/** Conservatively associates finalized incoming call-log rows with durable live reservations. */
 public final class CallReconciler {
+    public static final String INCOMING = "incoming";
+    public static final String MISSED = "missed";
+    public static final String REJECTED = "rejected";
     private static final long START_EARLY_MS = 10_000;
     private static final long START_LATE_MS = 2_000;
     private static final long DURATION_TOLERANCE_MS = 3_000;
@@ -31,10 +34,19 @@ public final class CallReconciler {
         public final long endWall;
         public final long endElapsed;
         public final boolean gap;
+        /** New reservations already visible to operators before an answer is established. */
+        public final boolean allIncoming;
 
         public Session(String id, String eventId, int subId, String phoneGE9,
                        long ringWall, long ringElapsed, long answerWall, long answerElapsed,
                        long endWall, long endElapsed, boolean gap) {
+            this(id, eventId, subId, phoneGE9, ringWall, ringElapsed, answerWall, answerElapsed,
+                    endWall, endElapsed, gap, false);
+        }
+
+        public Session(String id, String eventId, int subId, String phoneGE9,
+                       long ringWall, long ringElapsed, long answerWall, long answerElapsed,
+                       long endWall, long endElapsed, boolean gap, boolean allIncoming) {
             this.id = Objects.requireNonNull(id, "id");
             this.eventId = Objects.requireNonNull(eventId, "eventId");
             this.subId = subId;
@@ -46,6 +58,7 @@ public final class CallReconciler {
             this.endWall = endWall;
             this.endElapsed = endElapsed;
             this.gap = gap;
+            this.allIncoming = allIncoming;
         }
     }
 
@@ -56,13 +69,27 @@ public final class CallReconciler {
         /** A verified subscription id, or -1 when the SIM cannot be established. */
         public final int subId;
         public final String phoneGE9;
+        public final String kind;
+        /** A call started after this installation enabled the all-incoming policy. */
+        public final boolean allIncomingEligible;
 
         public Log(long rowId, long dateWall, long durationSeconds, int subId, String phoneGE9) {
+            this(rowId, dateWall, durationSeconds, subId, phoneGE9, INCOMING);
+        }
+
+        public Log(long rowId, long dateWall, long durationSeconds, int subId, String phoneGE9, String kind) {
+            this(rowId, dateWall, durationSeconds, subId, phoneGE9, kind, true);
+        }
+
+        public Log(long rowId, long dateWall, long durationSeconds, int subId, String phoneGE9,
+                   String kind, boolean allIncomingEligible) {
             this.rowId = rowId;
             this.dateWall = dateWall;
             this.durationSeconds = durationSeconds;
             this.subId = subId;
             this.phoneGE9 = phoneGE9;
+            this.kind = kind;
+            this.allIncomingEligible = allIncomingEligible;
         }
     }
 
@@ -82,7 +109,7 @@ public final class CallReconciler {
     }
 
     /**
-     * Inputs must contain all unlinked answered sessions and all unlinked final rows for a scan.
+     * Inputs contain every unlinked reservation and eligible incoming final row for a scan.
      * Phones are normalized Georgian nine-digit numbers, preserved valid foreign numbers, or null.
      * The returned order follows rows.
      * NEW means no live association is plausible; the caller still validates SIM/category eligibility.
@@ -131,6 +158,8 @@ public final class CallReconciler {
                 if (!unique && !duplicateSessions.contains(session.id) && exactTelecomAnchor(session, row)
                         && safeTelecomAnchor(session, rowIndex, rows, duplicateRows)
                         && safeTelecomRow(row, sessions, duplicateSessions)) unique = true;
+                if (!unique && rowDegree[rowIndex] == 1 && !duplicateSessions.contains(session.id)
+                        && safeLegacyAnchor(session, rowIndex, rows, duplicateRows)) unique = true;
                 results.add(unique && strictCandidate(session, row)
                         ? new Result(row, Decision.MATCH, session)
                         : new Result(row, Decision.DEFER, null));
@@ -140,9 +169,13 @@ public final class CallReconciler {
     }
 
     private static boolean possibleAssociation(Session session, Log row) {
+        // A late old journal row must not consume a fresh provisional card from
+        // the same caller just after the policy was enabled on this installation.
+        if (session.allIncoming && !row.allIncomingEligible) return false;
         if (session.subId >= 0 && row.subId >= 0 && session.subId != row.subId) return false;
         // Clean, verified evidence of different callers cannot refer to the same answered session.
-        if ((!session.gap || TelecomSnapshot.isTelecomSession(session.id)) && session.subId >= 0 && row.subId == session.subId
+        if ((!session.gap || session.allIncoming || TelecomSnapshot.isTelecomSession(session.id))
+                && session.subId >= 0 && row.subId == session.subId
                 && session.phoneGE9 != null && row.phoneGE9 != null
                 && !session.phoneGE9.equals(row.phoneGE9)) return false;
         if (session.ringWall < 0 || row.dateWall < 0) return false;
@@ -152,14 +185,23 @@ public final class CallReconciler {
     }
 
     private static boolean strictCandidate(Session session, Log row) {
+        if (session.allIncoming && !row.allIncomingEligible) return false;
         if (!validLog(row) || session.subId < 0 || row.subId != session.subId) return false;
+        boolean answered = session.answerWall >= 0 || session.answerElapsed >= 0;
+        // Legacy and Telecom answers retain their earlier conservative contract.
+        // New aggregate reservations may have mistaken a rapid RINGING -> outgoing
+        // OFFHOOK transition for an answer; their finalized journal outcome wins.
+        if (!INCOMING.equals(row.kind) && answered
+                && (!session.allIncoming || TelecomSnapshot.isTelecomSession(session.id))) return false;
         if (TelecomSnapshot.isTelecomSession(session.id)) {
-            // Only finalized INCOMING rows reach this method. An exact creation timestamp,
-            // verified SIM and unique graph edge also recover an answer lost at process death.
+            // An exact creation timestamp, verified SIM and unique graph edge can recover
+            // the final outcome when a callback was lost at process death.
             // Holding and service rebinds do not change that timestamp or require guessed duration.
             return session.ringWall == row.dateWall && (session.phoneGE9 == null || row.phoneGE9 == null
                     || session.phoneGE9.equals(row.phoneGE9));
         }
+        if (session.allIncoming && (!answered || !INCOMING.equals(row.kind))) return strictReservation(session, row);
+        if (!INCOMING.equals(row.kind)) return false;
         if (session.ringElapsed < 0 || session.answerElapsed < session.ringElapsed
                 || session.answerWall < 0) return false;
         if (session.phoneGE9 != null && row.phoneGE9 != null
@@ -180,9 +222,45 @@ public final class CallReconciler {
                 && logMillis <= addSaturated(talkMillis, DURATION_TOLERANCE_MS);
     }
 
+    private static boolean strictReservation(Session session, Log row) {
+        if (session.ringElapsed < 0 || row.dateWall < addSaturated(session.ringWall, -START_EARLY_MS)
+                || row.dateWall > addSaturated(session.ringWall, START_LATE_MS)) return false;
+        if (session.phoneGE9 != null && row.phoneGE9 != null
+                && !session.phoneGE9.equals(row.phoneGE9)) return false;
+        boolean exactKnownPhone = session.phoneGE9 != null && session.phoneGE9.equals(row.phoneGE9);
+        // Final INCOMING itself proves acceptance; MISSED/REJECTED prove their own
+        // outcome. An interrupted observation needs an exact, known caller instead
+        // of an inferred OFFHOOK transition or guessed duration.
+        if (session.gap) return exactKnownPhone;
+        if (session.endWall < 0 || session.endElapsed < session.ringElapsed) return false;
+        long observedMillis = session.endElapsed - session.ringElapsed;
+        long logMillis = row.durationSeconds * 1_000;
+        // Talk time cannot exceed the complete observed ringing/conversation interval.
+        return logMillis <= addSaturated(observedMillis, DURATION_TOLERANCE_MS);
+    }
+
     private static boolean exactTelecomAnchor(Session session, Log row) {
         return TelecomSnapshot.isTelecomSession(session.id) && strictCandidate(session, row)
                 && session.phoneGE9 != null && session.phoneGE9.equals(row.phoneGE9);
+    }
+
+    private static boolean safeLegacyAnchor(Session session, int anchorIndex, List<Log> rows,
+                                              Set<String> duplicateRows) {
+        Log anchor = rows.get(anchorIndex);
+        if (session.allIncoming || TelecomSnapshot.isTelecomSession(session.id) || !session.gap
+                || session.phoneGE9 == null || !session.phoneGE9.equals(anchor.phoneGE9)
+                || !strictCandidate(session, anchor)) return false;
+        for (int index = 0; index < rows.size(); index++) {
+            Log candidate = rows.get(index);
+            if (!possibleAssociation(session, candidate) || index == anchorIndex) continue;
+            // A unique old accepted caller can settle before nearby known, different
+            // callers. Unknown/same-caller/duplicate evidence still blocks the anchor.
+            if (!validLog(candidate) || duplicateRows.contains(rowKey(candidate))
+                    || candidate.subId != session.subId || candidate.phoneGE9 == null
+                    || candidate.phoneGE9.equals(session.phoneGE9)
+                    || candidate.dateWall == anchor.dateWall) return false;
+        }
+        return true;
     }
 
     private static boolean safeTelecomAnchor(Session session, int anchorIndex, List<Log> rows,
@@ -217,7 +295,9 @@ public final class CallReconciler {
 
     private static boolean validLog(Log row) {
         return row.dateWall >= 0 && row.durationSeconds >= 0
-                && row.durationSeconds <= Long.MAX_VALUE / 1_000;
+                && row.durationSeconds <= Long.MAX_VALUE / 1_000
+                && (INCOMING.equals(row.kind)
+                    || (MISSED.equals(row.kind) || REJECTED.equals(row.kind)) && row.durationSeconds == 0);
     }
 
     private static Set<String> duplicatesOfSessions(List<Session> sessions) {

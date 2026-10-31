@@ -98,6 +98,7 @@ export type CallInquiry = {
   id: number; phone: string | null; occurredAt: string; durationSeconds: number;
   deviceName: string; createdAt: string; deletedAt: string | null; bookingId: number | null;
   phase: 'answered' | 'completed'; passengerProfile: PassengerProfile | null;
+  callStatus?: 'ringing' | 'answered' | 'completed' | 'missed' | 'rejected';
   bookingPhone?: string | null;
 };
 export class ApiError extends Error {

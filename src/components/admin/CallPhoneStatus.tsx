@@ -5,7 +5,7 @@ import './call-phone-status.css';
 
 const POLL_MS = 15_000;
 const TIMEOUT_MS = 8_000;
-const CALL_RECEIVER_VERSION = '0.3.1';
+const CALL_RECEIVER_VERSION = '0.3.2';
 type ConnectionState = 'online' | 'stale' | 'unknown' | 'disabled';
 
 export function callDeviceTime(value: string | null | undefined) {

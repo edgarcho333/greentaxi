@@ -15,8 +15,8 @@ TOOLS = Path(os.environ.get('GREENTAXI_TOOL_ROOT', '/workspace/.greentaxi-tools'
 APPLICATION_ID = 'ge.greentaxi.calls.samsung.v2'
 LABEL = 'Green Taxi Samsung 2'
 ALIAS = 'greentaxi-samsung-v2'
-VERSION_NAME = '0.3.1'
-VERSION_CODE = 8
+VERSION_NAME = '0.3.2'
+VERSION_CODE = 9
 DOWNLOADS = REPO / 'public/downloads'
 PUBLIC_METADATA = DOWNLOADS / 'samsung-v2-release.json'
 EXPECTED_PERMISSIONS = {
@@ -160,7 +160,9 @@ def main():
         'certificateSha256': fingerprint,
     }
     metadata.update({'releaseChannel': 'stable', 'defaultPhoneRoleSupported': False, 'defaultPhoneRoleRequiresUserSelection': False,
-                     'updatesApplicationId': APPLICATION_ID, 'supersedesVersionCodes': [5, 6, 7]})
+                     'updatesApplicationId': APPLICATION_ID, 'supersedesVersionCodes': [5, 6, 7, 8],
+                     'incomingCallStages': ['ringing', 'answered', 'completed', 'missed', 'rejected'],
+                     'outgoingCallsIncluded': False, 'requiredServerSchema': 19})
     PUBLIC_METADATA.write_text(json.dumps(metadata, indent=2) + '\n')
     PUBLIC_METADATA.chmod(0o644)
     print(json.dumps({**metadata, 'apkPath': str(destination), 'releaseSigned': True, 'debuggable': False,

@@ -63,6 +63,12 @@
 .admin-call-details small { font-size: 13px; font-variant-numeric: tabular-nums; }
 .admin-call-details.is-live > span { color: #078643; }
 .admin-call-details.is-live i { background: #12aa5c; box-shadow: 0 0 0 3px #12aa5c12; }
+.admin-call-details > .admin-call-status { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; border-radius: 5px; padding: 2px 6px; font-size: 14px; font-weight: 600; line-height: 1.4; }
+.admin-call-status > svg { flex-shrink: 0; }
+.admin-call-details.status-ringing > .admin-call-status { color: #805000; background: #fff3d8; }
+.admin-call-details.status-answered > .admin-call-status { color: #08723b; background: #e9f7ee; }
+.admin-call-details.status-missed > .admin-call-status { color: #a32b32; background: #fff0f1; }
+.admin-call-details.status-rejected > .admin-call-status { color: #744329; background: #f9eee6; }
 .admin-calls-card .admin-call-device { color: #718578; font-size: 14px; overflow-wrap: anywhere; }
 .admin-call-row-error { font-size: 14px; line-height: 1.6; color: #bd4a47; overflow-wrap: anywhere; }
 .admin-call-history-address { overflow-wrap: anywhere; }

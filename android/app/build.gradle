@@ -7,7 +7,7 @@ def samsungBridge = providers.gradleProperty('greenTaxiSamsung').orElse('false')
 // older Samsung key. It never replaces that application's private queue.
 def samsungV2Bridge = providers.gradleProperty('greenTaxiSamsungV2').orElse('false').get() == 'true'
 // The default-phone pilot was withdrawn after handset failures. Ship only the
-// ordinary receiver; code 8 updates both stable code 6 and the code 7 pilot in place.
+// ordinary receiver; increasing codes also update the withdrawn code 7 pilot in place.
 if (providers.gradleProperty('greenTaxiPhonePilot').orElse('false').get() == 'true') {
     throw new GradleException('The default-phone pilot is withdrawn. Build the ordinary Samsung 2 receiver instead.')
 }
@@ -30,8 +30,8 @@ android {
         applicationId samsungV2Bridge ? 'ge.greentaxi.calls.samsung.v2' : samsungBridge ? 'ge.greentaxi.calls.samsung' : 'ge.greentaxi.calls'
         minSdk 26
         targetSdk 35
-        versionCode samsungV2Bridge ? 8 : 6
-        versionName samsungV2Bridge ? '0.3.1' : '0.2.3'
+        versionCode samsungV2Bridge ? 9 : 6
+        versionName samsungV2Bridge ? '0.3.2' : '0.2.3'
         buildConfigField 'boolean', 'PHONE_PILOT', 'false'
         manifestPlaceholders = [appLabel: samsungV2Bridge ? 'Green Taxi Samsung 2' : samsungBridge ? 'Green Taxi Samsung' : 'Green Taxi']
     }

@@ -83,6 +83,17 @@ final class AppSettings {
     }
     void heartbeatSucceeded() { preferences.edit().putLong("last_heartbeat_at", System.currentTimeMillis()).apply(); }
     long baseline() { return preferences.getLong("baseline_ms", Long.MAX_VALUE); }
+    /** Start the expanded capture policy once, without importing previously ignored history. */
+    long allIncomingBaseline() {
+        long value = preferences.getLong("all_incoming_baseline_ms", 0);
+        if (value <= 0) {
+            value = System.currentTimeMillis();
+            if (!preferences.edit().putLong("all_incoming_baseline_ms", value).commit()) {
+                throw new IllegalStateException("capture_baseline_unavailable");
+            }
+        }
+        return Math.max(baseline(), value);
+    }
     long lastDate() { return preferences.getLong("last_date", baseline()); }
     long lastRow() { return preferences.getLong("last_row", 0); }
 

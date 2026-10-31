@@ -1,15 +1,15 @@
 {
   "applicationId": "ge.greentaxi.calls.samsung.v2",
   "label": "Green Taxi Samsung 2",
-  "versionCode": 8,
-  "versionName": "0.3.1",
+  "versionCode": 9,
+  "versionName": "0.3.2",
   "minSdk": 26,
   "targetSdk": 35,
   "liveMonitoringMinSdk": 30,
   "downloadPath": "/downloads/GreenTaxi-Samsung-2.apk",
   "websiteUrl": "https://green-taxi.ge",
-  "bytes": 73352,
-  "sha256": "dacdd29c23b8a5e4db9d369f118982cd6043fcb278eae4abcac65c607cd100c8",
+  "bytes": 75780,
+  "sha256": "3e685e7937ed09253aa029e55edee71f3bafcfa6ed2412a1a73f425f101b2eb9",
   "certificateSha256": "04cbef7ddf1d83405dfc32b964ff8ca4f090420e19cfc87501df6471673bb0df",
   "releaseChannel": "stable",
   "defaultPhoneRoleSupported": false,
@@ -18,6 +18,16 @@
   "supersedesVersionCodes": [
     5,
     6,
-    7
-  ]
+    7,
+    8
+  ],
+  "incomingCallStages": [
+    "ringing",
+    "answered",
+    "completed",
+    "missed",
+    "rejected"
+  ],
+  "outgoingCallsIncluded": false,
+  "requiredServerSchema": 19
 }

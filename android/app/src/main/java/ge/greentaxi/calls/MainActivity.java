@@ -97,8 +97,8 @@ public final class MainActivity extends Activity {
             add(content, text("ვერსია " + getPackageManager().getPackageInfo(getPackageName(), 0).versionName, 14), 4);
         } catch (PackageManager.NameNotFoundException unavailable) { /* Installed package is normally always available. */ }
         add(content, text("ზარებიდან განაცხადების დამატება", 20), 8);
-        add(content, text("მხოლოდ მიღებული შემომავალი SIM-ზარები დაემატება ოპერატორის შემოსულ განაცხადებს. საუბარი არ იწერება. მგზავრობის დეტალებს ოპერატორი შეავსებს.", 15), 12);
-        add(content, text("Android 11-დან ჩვეულებრივი შემომავალი ზარის განაცხადი ემატება პასუხისას. გაურკვეველ შემთხვევებში ვამოწმებთ ჟურნალს საუბრის დასრულების შემდეგ.", 14), 8);
+        add(content, text("ყველა შემომავალი SIM-ზარი დაემატება ოპერატორის სიას: მიღებული, გამოტოვებული და უარყოფილი. საუბარი არ იწერება. ჯავშანს ოპერატორი ცალკე აფორმებს.", 15), 12);
+        add(content, text("როცა Android ზარს გვატყობინებს, ბარათი პასუხამდე ჩნდება. სტატუსს ზარების ჟურნალით ვაზუსტებთ. Samsung რჩება ტელეფონის აპად.", 14), 8);
 
         if (BuildConfig.PHONE_PILOT) {
             add(content, text("ტელეფონის საცდელი რეჟიმი", 20), 24);

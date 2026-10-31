@@ -968,17 +968,23 @@ test('Android device tokens are hashed, expose no staff access, update lastSeen,
   } finally { await fresh.close(); }
 });
 
-test('only answered incoming calls become inquiries, including subsecond calls; repeats deduplicate by device and event', async () => {
+test('all incoming outcomes become inquiries while outgoing calls stay excluded; repeats deduplicate by device and event', async () => {
   const fresh = await fixture();
   try {
     const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'სატესტო ტელეფონი' });
     const bearer = { Authorization: `Bearer ${paired.token}` };
-    for (const kind of ['missed', 'rejected', 'outgoing']) {
-      const ignored = await fresh.request('/integrations/android/calls', 'POST', callEvent({ kind }), bearer, false);
-      assert.equal(ignored.status, 200);
-      assert.equal(ignored.data.ignored, true);
-    }
+    const ignored = await fresh.request('/integrations/android/calls', 'POST', callEvent({ kind: 'outgoing' }), bearer, false);
+    assert.equal(ignored.status, 200);
+    assert.equal(ignored.data.ignored, true);
     assert.equal((await successful(fresh, '/admin/calls')).calls.length, 0);
+    for (const kind of ['missed', 'rejected']) {
+      const payload = callEvent({ eventId: `unanswered-${kind}`, kind, phase: 'completed', durationSeconds: 0 });
+      const created = await fresh.request('/integrations/android/calls', 'POST', payload, bearer, false);
+      assert.equal(created.status, 201);
+      const repeated = await fresh.request('/integrations/android/calls', 'POST', payload, bearer, false);
+      assert.equal(repeated.status, 200);
+      assert.equal(repeated.data.id, created.data.id);
+    }
     const payload = callEvent({ durationSeconds: 0, phone: '599 12 34 56' });
     const created = await fresh.request('/integrations/android/calls', 'POST', payload, bearer, false);
     assert.equal(created.status, 201);
@@ -997,7 +1003,8 @@ test('only answered incoming calls become inquiries, including subsecond calls; 
     const other = await fresh.request('/integrations/android/calls', 'POST', payload, { Authorization: `Bearer ${anotherDevice.token}` }, false);
     assert.equal(other.status, 201);
     const calls = (await successful(fresh, '/admin/calls')).calls;
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 5);
+    for (const status of ['missed', 'rejected']) assert.equal(calls.filter((row: any) => row.callStatus === status).length, 1);
     assert.equal(calls.find((row: any) => row.id === created.data.id).phone, '599123456');
     assert.equal(calls.find((row: any) => row.id === created.data.id).durationSeconds, 0);
     assert.equal(calls.find((row: any) => row.id === created.data.id).occurredAt, '2030-01-01T06:20:30.000Z');
@@ -1260,7 +1267,7 @@ test('call phases handle hidden-number enrichment and out-of-order retries while
   try {
     const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'ზარის ეტაპების ტესტი' });
     const bearer = { Authorization: `Bearer ${paired.token}` };
-    for (const phase of [null, 'ringing', 1]) {
+    for (const phase of [null, 'invalid', 1]) {
       assert.equal((await fresh.request('/integrations/android/calls', 'POST', callEvent({ phase }), bearer, false)).status, 400);
     }
     assert.equal((await fresh.request('/integrations/android/calls', 'POST', callEvent({ phase: 'answered', durationSeconds: 1 }), bearer, false)).status, 400);
@@ -1296,6 +1303,131 @@ test('call phases handle hidden-number enrichment and out-of-order retries while
     await fresh.request('/integrations/android/calls', 'POST', raceAnswer, bearer, false);
     const raced = await Promise.all([12, 13].map(durationSeconds => fresh.request('/integrations/android/calls', 'POST', { ...raceAnswer, phase: 'completed', durationSeconds }, bearer, false)));
     assert.deepEqual(raced.map(result => result.status).sort(), [200, 409]);
+  } finally { await fresh.close(); }
+});
+
+test('a ringing inquiry advances in place through answer and completion without resetting bookings, deletion or trusted identity', async () => {
+  const fresh = await fixture();
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'ყველა შემომავალი ზარის ტესტი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const ringing = callEvent({ eventId: 'ringing-full-lifecycle', phone: null, phase: 'ringing', durationSeconds: 0 });
+    const created = await fresh.request('/integrations/android/calls', 'POST', ringing, bearer, false);
+    assert.equal(created.status, 201);
+    const id = created.data.id;
+    const read = async (scope = 'incoming') => (await successful(fresh, `/admin/calls?scope=${scope}&page=1&pageSize=15`)).calls.find((row: any) => row.id === id);
+    assert.equal((await read()).callStatus, 'ringing');
+    assert.equal((await read()).phase, 'answered'); // Legacy projection, not the authoritative call status.
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 0);
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM passenger_profiles').get())?.count, 0);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', ringing, bearer, false)).data.id, id);
+    const answered = { ...ringing, phase: 'answered', phone: '599123456' };
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', answered, bearer, false)).status, 200);
+    assert.equal((await read()).callStatus, 'answered');
+    assert.equal((await read()).phone, '599123456');
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', ringing, bearer, false)).status, 200);
+    assert.equal((await read()).phone, '599123456');
+    const converted = await successful(fresh, `/admin/calls/${id}/convert`, 'POST', input());
+    const deleted = await successful(fresh, `/admin/calls/${id}/delete`, 'POST', {});
+    const orderBefore = (await successful(fresh, '/admin/bookings?scope=scheduled')).bookings[0];
+    const profileBefore = await successful(fresh, '/admin/passengers/profile?phone=599123456');
+    const completed = { ...answered, phase: 'completed', durationSeconds: 27 };
+    const replies = await Promise.all(Array.from({ length: 4 }, () => fresh.request('/integrations/android/calls', 'POST', completed, bearer, false)));
+    assert.ok(replies.every(reply => reply.status === 200 && reply.data.id === id && reply.data.duplicate === true));
+    for (const earlier of [ringing, answered]) assert.equal((await fresh.request('/integrations/android/calls', 'POST', earlier, bearer, false)).status, 200);
+    const final = await read('deleted');
+    assert.equal(final.callStatus, 'completed');
+    assert.equal(final.phase, 'completed');
+    assert.equal(final.durationSeconds, 27);
+    assert.equal(final.phone, '599123456');
+    assert.equal(final.bookingId, converted.id);
+    assert.equal(final.deletedAt, deleted.deletedAt);
+    assert.equal((await successful(fresh, '/admin/calls')).calls.length, 0);
+    assert.deepEqual((await successful(fresh, '/admin/bookings?scope=scheduled')).bookings[0], orderBefore);
+    assert.deepEqual(await successful(fresh, '/admin/passengers/profile?phone=599123456'), profileBefore);
+    assert.equal((await fresh.db.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action='call.complete'").get())?.count, 1);
+    for (const body of [
+      { ...ringing, phone: '599123457' }, { ...answered, phone: '599123457' },
+      { ...completed, durationSeconds: 28 }, { ...completed, kind: 'missed', durationSeconds: 0 },
+      { ...completed, phone: null }, { ...completed, occurredAt: '2030-01-01T06:20:31Z' },
+    ]) assert.equal((await fresh.request('/integrations/android/calls', 'POST', body, bearer, false)).status, 409);
+  } finally { await fresh.close(); }
+});
+
+test('missed and rejected journal outcomes settle ringing and provisional answers without losing the original inquiry or explicit booking', async () => {
+  const fresh = await fixture();
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'გამოტოვებული და უარყოფილი ზარები' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    for (const kind of ['missed', 'rejected']) {
+      const ring = callEvent({ eventId: `all-${kind}`, phase: 'ringing', durationSeconds: 0 });
+      const created = await fresh.request('/integrations/android/calls', 'POST', ring, bearer, false);
+      assert.equal(created.status, 201);
+      const provisional = { ...ring, phase: 'answered' };
+      assert.equal((await fresh.request('/integrations/android/calls', 'POST', provisional, bearer, false)).status, 200);
+      const converted = kind === 'missed' ? await successful(fresh, `/admin/calls/${created.data.id}/convert`, 'POST', input()) : null;
+      const profile = converted ? await successful(fresh, '/admin/passengers/profile?phone=599123456') : null;
+      const terminal = { ...ring, phase: 'completed', kind };
+      assert.equal((await fresh.request('/integrations/android/calls', 'POST', terminal, bearer, false)).status, 200);
+      for (const replay of [ring, provisional, terminal]) {
+        const result = await fresh.request('/integrations/android/calls', 'POST', replay, bearer, false);
+        assert.equal(result.status, 200);
+        assert.equal(result.data.id, created.data.id);
+      }
+      const stored = (await successful(fresh, `/admin/calls?scope=${converted ? 'converted' : 'incoming'}`)).calls.find((row: any) => row.id === created.data.id);
+      assert.equal(stored.callStatus, kind);
+      assert.equal(stored.durationSeconds, 0);
+      assert.equal(stored.bookingId, converted?.id ?? null);
+      if (converted) assert.deepEqual(await successful(fresh, '/admin/passengers/profile?phone=599123456'), profile);
+      for (const contradictory of ['incoming', kind === 'missed' ? 'rejected' : 'missed']) {
+        assert.equal((await fresh.request('/integrations/android/calls', 'POST', { ...terminal, kind: contradictory }, bearer, false)).status, 409);
+      }
+    }
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 1);
+  } finally { await fresh.close(); }
+});
+
+test('final unanswered calls tolerate delayed immutable earlier stages without changing the terminal status or creating orders', async () => {
+  const fresh = await fixture();
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'გადანაცვლებული ეტაპების ტესტი' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    const ended = callEvent({ eventId: 'missed-first', kind: 'missed', phase: 'completed', durationSeconds: 0 });
+    const first = await fresh.request('/integrations/android/calls', 'POST', ended, bearer, false);
+    assert.equal(first.status, 201);
+    const ring = { ...ended, kind: 'incoming', phase: 'ringing', phone: null };
+    const answer = { ...ring, phase: 'answered' };
+    for (const earlier of [answer, ring, answer, ring, ended]) {
+      const result = await fresh.request('/integrations/android/calls', 'POST', earlier, bearer, false);
+      assert.equal(result.status, 200);
+      assert.equal(result.data.id, first.data.id);
+    }
+    const list = (await successful(fresh, '/admin/calls?page=1&pageSize=15')).calls;
+    assert.equal(list.length, 1);
+    assert.equal(list[0].callStatus, 'missed');
+    assert.equal(list[0].phone, '599123456');
+    assert.equal(list[0].phase, 'completed');
+    for (const body of [{ ...ring, phone: '599123456' }, { ...answer, phone: '599123456' }]) {
+      assert.equal((await fresh.request('/integrations/android/calls', 'POST', body, bearer, false)).status, 409);
+    }
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM bookings').get())?.count, 0);
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM passenger_profiles').get())?.count, 0);
+  } finally { await fresh.close(); }
+});
+
+test('incoming stage validation excludes malformed outcomes and leaves outgoing events ignored', async () => {
+  const fresh = await fixture();
+  try {
+    const paired = await successful(fresh, '/admin/devices', 'POST', { name: 'ეტაპების ვალიდაცია' });
+    const bearer = { Authorization: `Bearer ${paired.token}` };
+    for (const overrides of [
+      { phase: 'ringing', durationSeconds: 1 }, { phase: 'ringing', kind: 'missed', durationSeconds: 0 },
+      { phase: 'answered', kind: 'rejected', durationSeconds: 0 }, { phase: 'completed', kind: 'missed', durationSeconds: 1 },
+      { phase: 'completed', kind: 'rejected', durationSeconds: 1 }, { phase: 'missed', durationSeconds: 0 },
+    ]) assert.equal((await fresh.request('/integrations/android/calls', 'POST', callEvent(overrides), bearer, false)).status, 400);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', callEvent({ kind: 'outgoing', phase: 'ringing' }), bearer, false)).data.ignored, true);
+    assert.equal((await successful(fresh, '/admin/calls')).calls.length, 0);
+    assert.equal((await fresh.request('/integrations/android/calls', 'POST', callEvent({ phase: 'ringing', durationSeconds: 0 }), {}, false)).status, 401);
   } finally { await fresh.close(); }
 });
 

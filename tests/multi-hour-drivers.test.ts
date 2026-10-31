@@ -171,7 +171,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
   test(`${dialect} multi-hour migration preserves all version-sixteen rows and backfills declined and working assignments exactly once`, { skip: dialect === 'postgres' && !process.env.TEST_DATABASE_URL }, async () => {
     const stored = await storage(dialect === 'postgres'); let db = await stored.open();
     try {
-      await db.exec('DROP TABLE call_device_heartbeats; DROP TABLE driver_trip_assignments;');
+      await db.exec('ALTER TABLE call_inquiries DROP COLUMN call_status; ALTER TABLE call_inquiries DROP COLUMN ringing_hash; DROP TABLE call_device_heartbeats; DROP TABLE driver_trip_assignments;');
       await db.prepare('DELETE FROM schema_versions WHERE version>=?').run(17);
       for (const [id, declined, time] of [[1, 0, '09:30'], [2, 1, '14:00']] as const) {
         await db.prepare("INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,?,'manual',?,'2030-01-01T00:00:00Z')").run(id, DAY, declined, time);
@@ -184,7 +184,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
       await db.close();
       for (let pass = 0; pass < 2; pass++) {
         db = await stored.open();
-        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 18);
+        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 19);
         for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await db.prepare(`SELECT * FROM ${table}${table === 'schema_versions' ? ' WHERE version<17' : ''} ORDER BY 1`).all()), snapshot, table);
         const assignments = await db.prepare('SELECT driver_id,date,time FROM driver_trip_assignments ORDER BY driver_id').all();
         assert.deepEqual(assignments.map(row => ({ ...row })), [{ driver_id: 1, date: DAY, time: '09:30' }, { driver_id: 2, date: DAY, time: '14:00' }]);

@@ -32,6 +32,8 @@ public final class LiveCallState {
         public final String sessionKey;
         public final String phone;
         public final boolean answered;
+        public final boolean allIncoming;
+        public final boolean gap;
         public final long ringAt;
         public final long ringElapsed;
         public final long answerAt;
@@ -47,6 +49,8 @@ public final class LiveCallState {
             sessionKey = session.key;
             phone = session.phone;
             answered = session.answerElapsed >= 0;
+            allIncoming = session.allIncoming;
+            gap = session.ambiguous || kind == Kind.ABANDON;
             ringAt = session.ringAt;
             ringElapsed = session.ringElapsed;
             answerAt = session.answerAt;
@@ -66,13 +70,22 @@ public final class LiveCallState {
         String phone;
         long answerAt = -1;
         long answerElapsed = -1;
+        final boolean allIncoming;
+        boolean ambiguous;
 
         Session(int subId, String key, String phone, long wall, long elapsed) {
+            this(subId, key, phone, wall, elapsed, false, false);
+        }
+
+        Session(int subId, String key, String phone, long wall, long elapsed,
+                boolean allIncoming, boolean ambiguous) {
             this.subId = subId;
             this.key = key;
             this.phone = phone;
             ringAt = wall;
             ringElapsed = elapsed;
+            this.allIncoming = allIncoming;
+            this.ambiguous = ambiguous;
         }
 
         boolean answered() { return answerElapsed >= 0; }
@@ -81,19 +94,30 @@ public final class LiveCallState {
     private static final class Line {
         int state = UNKNOWN;
         Session session;
+        String conversationPhone;
     }
 
     private final Map<Integer, Line> lines = new TreeMap<>();
     private final Supplier<String> sessionKeys;
+    private final boolean allIncoming;
     private long lastElapsed = -1;
 
     public LiveCallState(Collection<Integer> activeSubIds) {
-        this(activeSubIds, () -> UUID.randomUUID().toString());
+        this(activeSubIds, () -> UUID.randomUUID().toString(), false);
+    }
+
+    public LiveCallState(Collection<Integer> activeSubIds, boolean allIncoming) {
+        this(activeSubIds, () -> UUID.randomUUID().toString(), allIncoming);
     }
 
     /** The supplier permits deterministic tests; production uses random UUIDs. */
     public LiveCallState(Collection<Integer> activeSubIds, Supplier<String> sessionKeys) {
+        this(activeSubIds, sessionKeys, false);
+    }
+
+    public LiveCallState(Collection<Integer> activeSubIds, Supplier<String> sessionKeys, boolean allIncoming) {
         this.sessionKeys = Objects.requireNonNull(sessionKeys, "sessionKeys");
+        this.allIncoming = allIncoming;
         for (int subId : subscriptions(activeSubIds)) lines.put(subId, new Line());
     }
 
@@ -133,6 +157,17 @@ public final class LiveCallState {
 
         boolean cleanBefore = allIdle();
         int previous = line.state;
+        if (allIncoming) {
+            if (state != IDLE) {
+                for (Map.Entry<Integer, Line> other : lines.entrySet()) {
+                    if (other.getKey() != subId && other.getValue().session != null
+                            && !other.getValue().session.answered()) other.getValue().session.ambiguous = true;
+                }
+            }
+            observeIncoming(line, subId, state, previous, knownPhone(phone), cleanBefore, wall, elapsed, actions);
+            line.state = state;
+            return immutable(actions);
+        }
         if (state != IDLE) {
             for (Map.Entry<Integer, Line> entry : lines.entrySet()) {
                 if (entry.getKey() != subId && entry.getValue().session != null
@@ -177,6 +212,52 @@ public final class LiveCallState {
         }
         line.state = state;
         return immutable(actions);
+    }
+
+    /** Ringing is useful evidence even when acceptance on the same SIM is ambiguous. */
+    private void observeIncoming(Line line, int subId, int state, int previous, String phone,
+            boolean cleanBefore, long wall, long elapsed, List<Action> actions) {
+        Session session = line.session;
+        if (session != null && state == RINGING && previous == OFFHOOK) {
+            if (session.answered() && session.phone != null) line.conversationPhone = session.phone;
+            abandon(line, actions, wall, elapsed);
+            session = null;
+        }
+        // Samsung can repeat the active caller's number for a waiting-call callback.
+        // Do not assign that stale number to a separate incoming card.
+        if (state == RINGING && !cleanBefore && phone != null && phone.equals(line.conversationPhone)) phone = null;
+        if (session == null) {
+            // Remember a supplied active/outgoing number only as a stale-number filter.
+            // OFFHOOK by itself never creates an incoming event or proves an answer.
+            if (state == OFFHOOK && phone != null) line.conversationPhone = phone;
+            // UNKNOWN is a registration snapshot, not proof of a new incoming call.
+            // The journal can recover eligible post-baseline calls after they finish.
+            if (state == RINGING && previous != UNKNOWN && previous != RINGING) {
+                String key = Objects.requireNonNull(sessionKeys.get(), "session key");
+                if (key.isEmpty()) throw new IllegalStateException("Empty session key");
+                line.session = new Session(subId, key, phone, wall, elapsed, true, !cleanBefore);
+                actions.add(new Action(Kind.RING, line.session, wall, elapsed));
+            }
+        } else if (state == IDLE) {
+            actions.add(new Action(Kind.END, session, wall, elapsed));
+            line.session = null;
+        } else {
+            boolean eligiblePhone = state == RINGING || !session.ambiguous;
+            if (eligiblePhone && session.phone != null && phone != null && !session.phone.equals(phone)) {
+                abandon(line, actions, wall, elapsed);
+            } else {
+                boolean enriched = eligiblePhone && session.phone == null && phone != null;
+                if (enriched) session.phone = phone;
+                if (!session.answered() && previous == RINGING && state == OFFHOOK
+                        && !session.ambiguous && othersIdle(subId)) {
+                    session.answerAt = wall;
+                    session.answerElapsed = elapsed;
+                    line.conversationPhone = session.phone;
+                    actions.add(new Action(Kind.ANSWER, session, wall, elapsed));
+                } else if (enriched) actions.add(new Action(Kind.UPDATE, session, wall, elapsed));
+            }
+        }
+        if (state == IDLE) line.conversationPhone = null;
     }
 
     private boolean allIdle() {

@@ -1,6 +1,6 @@
 import { BookingTypeFields, BookingTypeSummary, type BookingTypeValue } from './BookingTypeFields';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { CalendarDays, Check, ChevronLeft, ChevronRight, History, Loader2, Phone, Plus, Smartphone, X } from 'lucide-react';
+import { CalendarDays, Check, ChevronLeft, ChevronRight, History, Loader2, Phone, PhoneCall, PhoneIncoming, PhoneMissed, PhoneOff, Plus, Smartphone, X } from 'lucide-react';
 import { ApiError, addDays, directions, request, today, type Booking, type CallInquiry, type Direction, type PassengerProfile, type PublicConfig, type Schedule } from '../../api';
 import { formatPhone, normalizePhone, phoneDialNumber } from '../../../shared/phone';
 import SavedAddressPicker, { savedGoriAddresses } from './SavedAddressPicker';
@@ -440,7 +440,10 @@ function validDraft(draft: Draft, entry: ScheduleEntry | undefined, config: Publ
 }
 
 function CallDetails({ call }: { call: CallInquiry }) {
-  return <div className={`admin-call-details ${call.phase === 'answered' ? 'is-live' : ''}`}><time dateTime={call.occurredAt}>{callDate(call.occurredAt)}</time><span><i />{call.phase === 'answered' ? 'მიმდინარეობს' : 'დასრულებულია'}{call.phase === 'completed' && <small>{duration(call.durationSeconds)}</small>}</span></div>;
+  const status = call.callStatus ?? call.phase;
+  const label = { ringing: 'რეკავს', answered: 'მიმდინარეობს', completed: 'დასრულებულია', missed: 'გამოტოვებული', rejected: 'უარყოფილი' }[status];
+  const Icon = { ringing: PhoneIncoming, answered: PhoneCall, completed: Phone, missed: PhoneMissed, rejected: PhoneOff }[status];
+  return <div className={`admin-call-details status-${status} ${status === 'answered' ? 'is-live' : ''}`}><time dateTime={call.occurredAt}>{callDate(call.occurredAt)}</time><span className="admin-call-status" data-call-status={status}><Icon size={15} aria-hidden="true" />{label}{status === 'completed' && <small>{duration(call.durationSeconds)}</small>}</span></div>;
 }
 function CallMetadata({ call }: { call: CallInquiry }) {
   return <div className="admin-call-metadata"><CallDetails call={call} /><span className="admin-call-device"><Smartphone size={12} aria-hidden="true" />{call.deviceName}</span></div>;

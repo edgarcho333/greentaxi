@@ -126,7 +126,7 @@ function callDevice(row: Row, at = Date.now()): CallDevice {
     lastSeenAt: row.last_seen_at, heartbeat, connectionState };
 }
 function callInquiry(row: Row, passengerProfile: PassengerProfile | null = null, bookingPhone: string | null = null): CallInquiry {
-  return { id: row.id, phone: row.phone === null ? null : normalizePhone(row.phone) ?? row.phone, bookingPhone, occurredAt: row.occurred_at, durationSeconds: row.duration_seconds, phase: row.phase ?? 'completed', passengerProfile, deviceName: row.device_name, createdAt: row.created_at, deletedAt: row.deleted_at, bookingId: row.booking_id };
+  return { id: row.id, phone: row.phone === null ? null : normalizePhone(row.phone) ?? row.phone, bookingPhone, occurredAt: row.occurred_at, durationSeconds: row.duration_seconds, phase: row.phase ?? 'completed', callStatus: row.call_status ?? row.phase ?? 'completed', passengerProfile, deviceName: row.device_name, createdAt: row.created_at, deletedAt: row.deleted_at, bookingId: row.booking_id };
 }
 function occurredAt(value: unknown): string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value)) reject(400, 'მიუთითეთ ზარის სწორი დრო საათობრივი სარტყლით.', 'VALIDATION');
@@ -526,7 +526,7 @@ export async function createApp(options: Options = {}) {
     const device = await authenticatedDevice(req);
     const kind = req.body.kind;
     if (!['incoming', 'missed', 'rejected', 'outgoing'].includes(kind)) reject(400, 'ზარის ტიპი არასწორია.', 'VALIDATION');
-    if (kind !== 'incoming') {
+    if (kind === 'outgoing') {
       (await db.prepare('UPDATE call_devices SET last_seen_at=? WHERE id=?').run(now().toISOString(), device.id));
       res.json({ ignored: true });
       return;
@@ -538,7 +538,10 @@ export async function createApp(options: Options = {}) {
     if (typeof duration !== 'number' || !Number.isSafeInteger(duration) || duration < 0) reject(400, 'ზარის ხანგრძლივობა არასწორია.', 'VALIDATION');
     const explicitPhase = req.body.phase !== undefined;
     const phase = explicitPhase ? req.body.phase : 'completed';
-    if (!['answered', 'completed'].includes(phase) || (phase === 'answered' && duration !== 0)) reject(400, 'ზარის ეტაპი არასწორია.', 'VALIDATION');
+    if (!['ringing', 'answered', 'completed'].includes(phase)
+      || (phase !== 'completed' && (kind !== 'incoming' || duration !== 0))
+      || (kind !== 'incoming' && duration !== 0)) reject(400, 'ზარის ეტაპი არასწორია.', 'VALIDATION');
+    const status = kind === 'incoming' ? phase : kind;
     // The legacy E164 identity keeps retries from existing Android installations valid after national-number migration.
     const hash = digest(JSON.stringify({ phone: caller === null ? null : legacyPhoneKey(caller), occurredAt: timestamp, durationSeconds: duration, kind }));
     const result = await transaction(async () => {
@@ -547,8 +550,9 @@ export async function createApp(options: Options = {}) {
       if (existing) {
         const conflict = () => reject(409, 'ზარის იდენტიფიკატორი უკვე გამოყენებულია სხვა მონაცემებით.', 'IDEMPOTENCY_CONFLICT');
         const previousPhone = existing.phone === null ? null : normalizePhone(existing.phone) ?? existing.phone;
-        const sameIdentity = previousPhone === caller && existing.occurred_at === timestamp;
-        if (!explicitPhase) {
+        const previousStatus = existing.call_status ?? existing.phase;
+        const terminal = ['completed', 'missed', 'rejected'].includes(previousStatus);
+        if (!explicitPhase && kind === 'incoming' && previousStatus !== 'ringing') {
           // Payloads from old applications retain strict idempotency, without permitting a phase transition.
           if (existing.request_hash !== hash) {
             const originalCaller = existing.phase === 'completed' && existing.legacy_hash === 1 ? originalPhoneForRetry(req.body.phone) : undefined;
@@ -556,28 +560,45 @@ export async function createApp(options: Options = {}) {
               : digest(JSON.stringify({ phone: originalCaller, occurredAt: timestamp, durationSeconds: duration, kind }));
             if (existing.request_hash !== originalHash) conflict();
           }
-        } else if (phase === 'answered') {
-          if (existing.phase === 'answered') {
-            if (existing.request_hash !== hash || !sameIdentity) conflict();
-          } else if (existing.answered_hash ? existing.answered_hash !== hash : !sameIdentity) conflict();
-          // A delayed answered event never downgrades a completed call or its duration/number.
-        } else if (existing.phase === 'completed') {
-          if (existing.request_hash !== hash) conflict();
-        } else {
-          if (existing.occurred_at !== timestamp || (previousPhone !== null && previousPhone !== caller)) conflict();
-          await db.prepare("UPDATE call_inquiries SET phone=?,duration_seconds=?,phase='completed',request_hash=? WHERE id=?")
-            .run(caller, duration, hash, existing.id);
-          // Android can reveal a previously private number at completion. Preserve
-          // the already-entered contact while filling only the trusted missing caller.
-          if (caller !== null && existing.booking_id !== null) await db.prepare(`UPDATE bookings SET caller_phone=?
-            WHERE (id IN (SELECT booking_id FROM call_booking_links WHERE call_id=?) OR id=?)
-              AND source='android' AND caller_phone IS NULL`)
-            .run(caller, existing.id, existing.booking_id);
-          await audit('call.complete', undefined, undefined, { callId: existing.id, deviceId: device.id });
+          return { id: existing.id as number, duplicate: true };
         }
+        if (existing.occurred_at !== timestamp
+          || (previousPhone !== null && caller !== null && previousPhone !== caller)) conflict();
+        if (phase === 'ringing') {
+          if (existing.ringing_hash && existing.ringing_hash !== hash) conflict();
+          if (!existing.ringing_hash) await db.prepare('UPDATE call_inquiries SET ringing_hash=? WHERE id=?').run(hash, existing.id);
+          // A delayed ring cannot erase an answer, terminal outcome, enriched phone or booking.
+          return { id: existing.id as number, duplicate: true };
+        }
+        if (phase === 'answered') {
+          const previousHash = existing.answered_hash ?? (previousStatus === 'answered' ? existing.request_hash : null);
+          if (previousHash && previousHash !== hash) conflict();
+          if (terminal) {
+            if (!previousHash) await db.prepare('UPDATE call_inquiries SET answered_hash=? WHERE id=?').run(hash, existing.id);
+            return { id: existing.id as number, duplicate: true };
+          }
+          if (previousStatus === 'answered') return { id: existing.id as number, duplicate: true };
+        } else if (terminal) {
+          if (previousStatus !== status || existing.request_hash !== hash) conflict();
+          return { id: existing.id as number, duplicate: true };
+        }
+        // The advancing stage may reveal a hidden number, but never remove a known one.
+        // Completed incoming retries retain their older strict identity contract.
+        if (phase === 'completed' && kind === 'incoming' && previousPhone !== null && caller === null) conflict();
+        const nextPhone = previousPhone ?? caller;
+        const legacyPhase = phase === 'completed' ? 'completed' : 'answered';
+        await db.prepare('UPDATE call_inquiries SET phone=?,duration_seconds=?,phase=?,call_status=?,request_hash=?,answered_hash=COALESCE(answered_hash,?) WHERE id=?')
+          .run(nextPhone, duration, legacyPhase, status, hash, phase === 'answered' ? hash : null, existing.id);
+        if (nextPhone !== null && previousPhone === null && existing.booking_id !== null) await db.prepare(`UPDATE bookings SET caller_phone=?
+          WHERE (id IN (SELECT booking_id FROM call_booking_links WHERE call_id=?) OR id=?)
+            AND source='android' AND caller_phone IS NULL`)
+          .run(nextPhone, existing.id, existing.booking_id);
+        await audit(phase === 'completed' ? 'call.complete' : 'call.answer', undefined, undefined,
+          { callId: existing.id, deviceId: device.id, callStatus: status });
         return { id: existing.id as number, duplicate: true };
       }
-      const created = (await db.prepare('INSERT INTO call_inquiries(device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at,phase,answered_hash,legacy_hash) VALUES (?,?,?,?,?,?,?,?,?,?)').run(device.id, eventId, hash, caller, timestamp, duration, now().toISOString(), phase, phase === 'answered' ? hash : null, 0));
+      const legacyPhase = phase === 'completed' ? 'completed' : 'answered';
+      const created = (await db.prepare('INSERT INTO call_inquiries(device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at,phase,answered_hash,legacy_hash,call_status,ringing_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(device.id, eventId, hash, caller, timestamp, duration, now().toISOString(), legacyPhase, phase === 'answered' ? hash : null, 0, status, phase === 'ringing' ? hash : null));
       const id = Number(created.lastInsertRowid);
       (await audit('call.receive', undefined, undefined, { callId: id, deviceId: device.id }));
       return { id, duplicate: false };
@@ -679,10 +700,10 @@ export async function createApp(options: Options = {}) {
           ELSE NULL END`;
       };
       const aliasesSql = (field: string) => `${field},'+995'||${field},'995'||${field},'00995'||${field}`;
-      const columns = 'id,phone,occurred_at,duration_seconds,phase,created_at,deleted_at,booking_id,device_name';
+      const columns = 'id,phone,occurred_at,duration_seconds,phase,call_status,created_at,deleted_at,booking_id,device_name';
       const query = `WITH queue_calls AS (
         SELECT call_inquiries.id,call_inquiries.phone,call_inquiries.occurred_at,call_inquiries.duration_seconds,
-          call_inquiries.phase,call_inquiries.created_at,call_inquiries.deleted_at,call_inquiries.booking_id,
+          call_inquiries.phase,call_inquiries.call_status,call_inquiries.created_at,call_inquiries.deleted_at,call_inquiries.booking_id,
           call_devices.name AS device_name,${canonicalPhoneSql('call_inquiries.phone')} AS caller_key
         FROM call_inquiries JOIN call_devices ON call_devices.id=call_inquiries.device_id
         WHERE ${conditions.join(' AND ')}
