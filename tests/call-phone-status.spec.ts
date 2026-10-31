@@ -99,17 +99,25 @@ test('a stale phone report is clearly historical instead of claiming its last qu
   await summary(page).screenshot({ path: '/tmp/greentaxi-call-status-stale.png' });
 });
 
-test('a compatible receiver update keeps pairing instructions separate and is hidden for the current version', async ({ page }) => {
-  const previous = await device('Samsung A55 0.2.2 განახლების ტესტი');
-  const current = await device('Samsung A14 0.2.3 განახლების ტესტი');
-  await heartbeat(previous.token, 0, null, '0.2.2');
-  await heartbeat(current.token, 0, null, '0.2.3');
+test('the restoration update preserves pairing for the pilot and older receiver and is hidden for the current version', async ({ page }) => {
+  const previous = await device('Samsung A14 0.2.3 განახლების ტესტი');
+  const pilot = await device('Samsung A55 0.3.0-pilot აღდგენის ტესტი');
+  const current = await device('Samsung A14 0.3.1 განახლების ტესტი');
+  await heartbeat(previous.token, 0, null, '0.2.3');
+  await heartbeat(pilot.token, 2, 'network', '0.3.0-pilot');
+  await heartbeat(current.token, 0, null, '0.3.1');
   await open(page);
   const previousCard = phone(page, previous.device.id);
   await expect(previousCard.locator('[data-call-phone-update]')).toContainText('დაკავშირება შენარჩუნდება');
-  await expect(previousCard.getByRole('link', { name: 'აპის განახლება 0.2.3: Green Taxi Samsung 2', exact: true })).toHaveAttribute('href', '/downloads/GreenTaxi-Samsung-2.apk');
+  await expect(previousCard.getByRole('link', { name: 'აპის განახლება 0.3.1: Green Taxi Samsung 2', exact: true })).toHaveAttribute('href', '/downloads/GreenTaxi-Samsung-2.apk');
   await expect(previousCard).not.toContainText('ხელახლა დააკავშირეთ ტელეფონი');
   await expect(previousCard.locator('[data-call-phone-stale-help]')).toHaveCount(0);
+  const pilotCard = phone(page, pilot.device.id);
+  await expect(pilotCard.getByRole('link', { name: 'აპის განახლება 0.3.1: Green Taxi Samsung 2', exact: true })).toHaveAttribute('href', '/downloads/GreenTaxi-Samsung-2.apk');
+  await expect(pilotCard.locator('[data-call-phone-update]')).toContainText('ტელეფონის აპად აირჩიეთ Samsung');
+  await expect(pilotCard.locator('[data-call-phone-update]')).toContainText('გაუგზავნელი ზარები შენარჩუნდება');
+  await expect(pilotCard).not.toContainText('ხელახლა დააკავშირეთ ტელეფონი');
+  await expect(pilotCard.locator('[data-call-phone-pending]')).toHaveText('გასაგზავნია: 2');
   await expect(phone(page, current.device.id).locator('[data-call-phone-update]')).toHaveCount(0);
   await expect(phone(page, current.device.id).getByRole('link')).toHaveCount(0);
   await expect(phone(page, current.device.id).locator('[data-call-phone-connection]')).toHaveAttribute('data-connection-state', 'online');

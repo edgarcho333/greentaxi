@@ -1,14 +1,23 @@
 {
   "applicationId": "ge.greentaxi.calls.samsung.v2",
   "label": "Green Taxi Samsung 2",
-  "versionCode": 6,
-  "versionName": "0.2.3",
+  "versionCode": 8,
+  "versionName": "0.3.1",
   "minSdk": 26,
   "targetSdk": 35,
   "liveMonitoringMinSdk": 30,
   "downloadPath": "/downloads/GreenTaxi-Samsung-2.apk",
   "websiteUrl": "https://green-taxi.ge",
-  "bytes": 49360,
-  "sha256": "a28ae4883e24a52300752e98761a0268a3d24eb288a9cc9515ef78f6e42c5348",
-  "certificateSha256": "04cbef7ddf1d83405dfc32b964ff8ca4f090420e19cfc87501df6471673bb0df"
+  "bytes": 73352,
+  "sha256": "dacdd29c23b8a5e4db9d369f118982cd6043fcb278eae4abcac65c607cd100c8",
+  "certificateSha256": "04cbef7ddf1d83405dfc32b964ff8ca4f090420e19cfc87501df6471673bb0df",
+  "releaseChannel": "stable",
+  "defaultPhoneRoleSupported": false,
+  "defaultPhoneRoleRequiresUserSelection": false,
+  "updatesApplicationId": "ge.greentaxi.calls.samsung.v2",
+  "supersedesVersionCodes": [
+    5,
+    6,
+    7
+  ]
 }

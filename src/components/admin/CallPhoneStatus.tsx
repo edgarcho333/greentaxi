@@ -5,7 +5,7 @@ import './call-phone-status.css';
 
 const POLL_MS = 15_000;
 const TIMEOUT_MS = 8_000;
-const CALL_RECEIVER_VERSION = '0.2.3';
+const CALL_RECEIVER_VERSION = '0.3.1';
 type ConnectionState = 'online' | 'stale' | 'unknown' | 'disabled';
 
 export function callDeviceTime(value: string | null | undefined) {
@@ -105,8 +105,9 @@ function needsCallReceiverUpdate(version: string) {
 
 function CallReceiverUpdate({ device }: { device: CallDevice }) {
   if (!device.active || !device.heartbeat || !needsCallReceiverUpdate(device.heartbeat.appVersion)) return null;
+  const phonePilot = device.heartbeat.appVersion === '0.3.0-pilot';
   return <div className="call-phone-update" data-call-phone-update>
-    <span>ხელმისაწვდომია ვერსია {CALL_RECEIVER_VERSION}. აპის განახლებისას დაკავშირება შენარჩუნდება.</span>
+    <span>ხელმისაწვდომია ვერსია {CALL_RECEIVER_VERSION}. აპის განახლებისას დაკავშირება შენარჩუნდება.{phonePilot && ' ჯერ დაასრულეთ საუბრები და Android-ის პარამეტრებში ტელეფონის აპად აირჩიეთ Samsung. შემდეგ განაახლეთ Green Taxi Samsung 2 — გაუგზავნელი ზარები შენარჩუნდება.'}</span>
     <a className="call-phone-download-link" href="/downloads/GreenTaxi-Samsung-2.apk" download="GreenTaxi-Samsung-2.apk" aria-label={`აპის განახლება ${CALL_RECEIVER_VERSION}: Green Taxi Samsung 2`} data-call-phone-apk><Download size={18} />განახლება {CALL_RECEIVER_VERSION}</a>
   </div>;
 }

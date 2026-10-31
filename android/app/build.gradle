@@ -6,11 +6,10 @@ def samsungBridge = providers.gradleProperty('greenTaxiSamsung').orElse('false')
 // A newly paired, side-by-side receiver explicitly authorized after loss of the
 // older Samsung key. It never replaces that application's private queue.
 def samsungV2Bridge = providers.gradleProperty('greenTaxiSamsungV2').orElse('false').get() == 'true'
-// A reversible, explicit default-phone pilot for one Android 15+ handset.
-// It updates Samsung 2 in place, but is distributed separately from the stable APK.
-def phonePilot = providers.gradleProperty('greenTaxiPhonePilot').orElse('false').get() == 'true'
-if (phonePilot && !samsungV2Bridge) {
-    throw new GradleException('The phone pilot must use the retained Samsung 2 signing identity.')
+// The default-phone pilot was withdrawn after handset failures. Ship only the
+// ordinary receiver; code 8 updates both stable code 6 and the code 7 pilot in place.
+if (providers.gradleProperty('greenTaxiPhonePilot').orElse('false').get() == 'true') {
+    throw new GradleException('The default-phone pilot is withdrawn. Build the ordinary Samsung 2 receiver instead.')
 }
 // Explicit compile/lint-only path when the original release key is unavailable.
 // Its unsigned artifact is never an installable update or a published release.
@@ -29,21 +28,15 @@ android {
 
     defaultConfig {
         applicationId samsungV2Bridge ? 'ge.greentaxi.calls.samsung.v2' : samsungBridge ? 'ge.greentaxi.calls.samsung' : 'ge.greentaxi.calls'
-        minSdk phonePilot ? 35 : 26
+        minSdk 26
         targetSdk 35
-        versionCode phonePilot ? 7 : 6
-        versionName phonePilot ? '0.3.0-pilot' : '0.2.3'
-        buildConfigField 'boolean', 'PHONE_PILOT', phonePilot ? 'true' : 'false'
+        versionCode samsungV2Bridge ? 8 : 6
+        versionName samsungV2Bridge ? '0.3.1' : '0.2.3'
+        buildConfigField 'boolean', 'PHONE_PILOT', 'false'
         manifestPlaceholders = [appLabel: samsungV2Bridge ? 'Green Taxi Samsung 2' : samsungBridge ? 'Green Taxi Samsung' : 'Green Taxi']
     }
 
     buildFeatures { buildConfig true }
-    if (phonePilot) {
-        sourceSets {
-            release { manifest.srcFile 'src/phonePilot/AndroidManifest.xml' }
-            debug { manifest.srcFile 'src/phonePilot/AndroidManifest.xml' }
-        }
-    }
 
     if (samsungV2Bridge) {
         signingConfigs {
