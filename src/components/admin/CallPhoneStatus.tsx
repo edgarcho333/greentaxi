@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertCircle, CheckCircle2, Clock3, RefreshCw, Smartphone } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock3, Download, RefreshCw, Smartphone } from 'lucide-react';
 import { request, type CallDevice } from '../../api';
 import './call-phone-status.css';
 
@@ -87,9 +87,13 @@ export function CallDeviceConnectionBadge({ device, available = true }: { device
   return <span className={`call-phone-connection ${state}`} data-call-phone-connection data-connection-state={state}><Icon size={18} />{label}</span>;
 }
 
+function CallReceiverDownload() {
+  return <span className="call-phone-summary-help call-phone-download-help"><span>დააყენეთ Green Taxi Samsung 2 და ხელახლა დააკავშირეთ ტელეფონი. ახალი მონიტორინგი ჯერ გამორთული დატოვეთ. ზარებს შორის დაელოდეთ ძველში „გასაგზავნი ზარები: 0“-ს, გამორთეთ ძველი და მაშინვე ჩართეთ ახალი მონიტორინგი.</span><a className="call-phone-download-link" href="/downloads/GreenTaxi-Samsung-2.apk" download="GreenTaxi-Samsung-2.apk" aria-label="ახალი აპის ჩამოტვირთვა: Green Taxi Samsung 2" data-call-phone-apk><Download size={18} />ახალი აპის ჩამოტვირთვა</a></span>;
+}
+
 export function CallDeviceTelemetry({ device, available = true }: { device: CallDevice; available?: boolean }) {
   const heartbeat = device.heartbeat;
-  if (!heartbeat) return <p className="call-phone-unknown-help">კავშირის სტატუსისთვის განაახლეთ და გახსენით აპი.</p>;
+  if (!heartbeat) return <div className="call-phone-unknown-help">{device.active && device.connectionState !== 'disabled' ? <CallReceiverDownload /> : 'მოწყობილობის წვდომა გაუქმებულია.'}</div>;
   const current = available && device.active && device.connectionState === 'online';
   return <div className="call-phone-diagnostics" data-call-phone-diagnostics>
     <p className={heartbeat.pendingCount > 0 ? 'call-phone-pending waiting' : 'call-phone-pending'} data-call-phone-pending>{current ? 'გასაგზავნია' : 'ბოლო ანგარიშში გასაგზავნი'}: <strong>{heartbeat.pendingCount}</strong></p>
@@ -114,7 +118,7 @@ export default function CallPhoneStatus() {
     {error && <p className="call-phone-status-error" role="status"><AlertCircle size={18} />{error}</p>}
     {activeDevices.length > 0 && <div className="call-phone-status-devices">{activeDevices.map(device => <article className="call-phone-status-device" key={device.id} data-call-phone-device={device.id}>
       <strong>{device.name}</strong><CallDeviceConnectionBadge device={device} available={!error} />
-      {device.heartbeat ? <span className={device.heartbeat.pendingCount > 0 ? 'call-phone-pending waiting' : 'call-phone-pending'} data-call-phone-pending>{!error && device.connectionState === 'online' ? 'გასაგზავნია' : 'ბოლო ანგარიშში გასაგზავნი'}: <b>{device.heartbeat.pendingCount}</b></span> : <span className="call-phone-summary-help">სტატუსისთვის განაახლეთ და გახსენით აპი</span>}
+      {device.heartbeat ? <span className={device.heartbeat.pendingCount > 0 ? 'call-phone-pending waiting' : 'call-phone-pending'} data-call-phone-pending>{!error && device.connectionState === 'online' ? 'გასაგზავნია' : 'ბოლო ანგარიშში გასაგზავნი'}: <b>{device.heartbeat.pendingCount}</b></span> : <CallReceiverDownload />}
       {device.heartbeat && !device.heartbeat.monitoring && <small>ბოლო ანგარიშში მონიტორინგი გამორთულია</small>}
       {device.heartbeat && (error || device.connectionState !== 'online' || device.heartbeat.pendingCount > 0) && <small>ბოლო სტატუსი: {callDeviceTime(device.heartbeat.receivedAt)}</small>}
     </article>)}</div>}

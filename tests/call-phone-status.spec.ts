@@ -62,7 +62,8 @@ test('phone status separates live queue reports from legacy apps without inventi
   await expect(phone(page, a02.device.id).locator('[data-call-phone-pending]')).toHaveText('გასაგზავნია: 3');
   await expect(phone(page, legacy.device.id).locator('[data-call-phone-connection]')).toHaveAttribute('data-connection-state', 'unknown');
   await expect(phone(page, legacy.device.id)).toContainText('სტატუსი უცნობია');
-  await expect(phone(page, legacy.device.id)).toContainText('განაახლეთ და გახსენით აპი');
+  await expect(phone(page, legacy.device.id)).toContainText('დააყენეთ Green Taxi Samsung 2');
+  await expect(phone(page, legacy.device.id).getByRole('link', { name: 'ახალი აპის ჩამოტვირთვა: Green Taxi Samsung 2', exact: true })).toHaveAttribute('href', '/downloads/GreenTaxi-Samsung-2.apk');
   await expect(phone(page, legacy.device.id).locator('[data-call-phone-pending]')).toHaveCount(0);
   const text = await summary(page).innerText();
   expect(text).not.toContain(a02.token); expect(text).not.toContain(legacy.token);

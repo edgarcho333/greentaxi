@@ -3,9 +3,18 @@ plugins { id 'com.android.application' }
 // A separate, explicitly selected Samsung application keeps the installed 0.2.0
 // bridge and its encrypted pairing/queue intact when its original key is unavailable.
 def samsungBridge = providers.gradleProperty('greenTaxiSamsung').orElse('false').get() == 'true'
+// A newly paired, side-by-side receiver explicitly authorized after loss of the
+// older Samsung key. It never replaces that application's private queue.
+def samsungV2Bridge = providers.gradleProperty('greenTaxiSamsungV2').orElse('false').get() == 'true'
 // Explicit compile/lint-only path when the original release key is unavailable.
 // Its unsigned artifact is never an installable update or a published release.
 def unsignedCheck = providers.gradleProperty('greenTaxiUnsignedCheck').orElse('false').get() == 'true'
+if (samsungBridge && samsungV2Bridge) {
+    throw new GradleException('Select only one Samsung signing identity.')
+}
+if (samsungV2Bridge && unsignedCheck) {
+    throw new GradleException('Samsung 2 release builds require their retained signing identity.')
+}
 
 android {
     namespace 'ge.greentaxi.calls'
@@ -13,12 +22,32 @@ android {
     buildToolsVersion '35.0.0'
 
     defaultConfig {
-        applicationId samsungBridge ? 'ge.greentaxi.calls.samsung' : 'ge.greentaxi.calls'
+        applicationId samsungV2Bridge ? 'ge.greentaxi.calls.samsung.v2' : samsungBridge ? 'ge.greentaxi.calls.samsung' : 'ge.greentaxi.calls'
         minSdk 26
         targetSdk 35
         versionCode 5
         versionName '0.2.2'
-        manifestPlaceholders = [appLabel: samsungBridge ? 'Green Taxi Samsung' : 'Green Taxi']
+        manifestPlaceholders = [appLabel: samsungV2Bridge ? 'Green Taxi Samsung 2' : samsungBridge ? 'Green Taxi Samsung' : 'Green Taxi']
+    }
+
+    if (samsungV2Bridge) {
+        signingConfigs {
+            samsungV2 {
+                def keyPath = providers.environmentVariable('GREENTAXI_SAMSUNG_V2_KEYSTORE').orNull
+                def samsungPassword = providers.environmentVariable('GREENTAXI_SAMSUNG_V2_KEY_PASSWORD').orNull
+                if (!keyPath || !samsungPassword) {
+                    throw new GradleException('Samsung 2 signing identity is missing. Restore its retained private key before building an update.')
+                }
+                storeFile file(keyPath)
+                storePassword samsungPassword
+                keyAlias 'greentaxi-samsung-v2'
+                keyPassword samsungPassword
+            }
+        }
+        buildTypes {
+            debug { applicationIdSuffix '.debug' }
+            release { signingConfig signingConfigs.samsungV2 }
+        }
     }
 
     if (samsungBridge) {
