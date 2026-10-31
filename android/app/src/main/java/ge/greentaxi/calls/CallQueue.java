@@ -55,7 +55,7 @@ final class CallQueue extends SQLiteOpenHelper {
         enqueuePhase(getWritableDatabase(),id,COMPLETED,phone,date,duration);
     }
     synchronized void markOpenSessionsGap() {
-        getWritableDatabase().execSQL("UPDATE live_sessions SET gap=1,status=CASE WHEN answer_at>=0 THEN 'answered' ELSE 'abandoned' END WHERE status IN ('ringing','answered')");
+        getWritableDatabase().execSQL("UPDATE live_sessions SET gap=1,status=CASE WHEN answer_at>=0 THEN 'answered' ELSE 'abandoned' END WHERE status IN ('ringing','answered') AND session_id NOT LIKE 'telecom:%'");
     }
     synchronized void liveAction(LiveCallState.Action action,String installationId) {
         SQLiteDatabase db=getWritableDatabase(); db.beginTransaction();
@@ -82,6 +82,70 @@ final class CallQueue extends SQLiteOpenHelper {
             db.setTransactionSuccessful();
         } finally { db.endTransaction(); }
     }
+    /** A Telecom reservation and answer are committed together before the uploader is nudged. */
+    synchronized boolean telecomObservation(TelecomSnapshot snapshot, String installationId, long baseline) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            String eventId = "android:" + installationId + ":" + snapshot.sessionKey;
+            long originalDate = snapshot.createdAt;
+            String eventPhone = snapshot.phone;
+            long previousAnswer = -1, previousEnd = -1;
+            boolean existing = false;
+            try (Cursor row = db.rawQuery("SELECT event_id,ring_at,answer_at,end_at,EXISTS(SELECT 1 FROM call_log_links l WHERE l.event_id=s.event_id),phone FROM live_sessions s WHERE session_id=?", new String[]{snapshot.sessionKey})) {
+                if (row.moveToFirst()) {
+                    existing = true;
+                    eventId = row.getString(0);
+                    originalDate = row.getLong(1);
+                    previousAnswer = row.getLong(2);
+                    previousEnd = row.getLong(3);
+                    if (!row.isNull(5)) eventPhone = row.getString(5);
+                    if (row.getInt(4) != 0) { db.setTransactionSuccessful(); return false; }
+                }
+            }
+            // Rebinding does not import an older active conversation or any pre-monitoring history.
+            if (!existing && (snapshot.createdAt < baseline || conflictingLegacyEvidence(db, snapshot))) {
+                db.setTransactionSuccessful(); return false;
+            }
+            if (!existing) {
+                ContentValues values = new ContentValues();
+                values.put("session_id", snapshot.sessionKey); values.put("event_id", eventId);
+                values.put("sub_id", snapshot.subId); values.put("phone", snapshot.phone);
+                values.put("ring_at", snapshot.createdAt); values.put("ring_elapsed", snapshot.elapsedAt(snapshot.createdAt));
+                values.put("status", "ringing");
+                db.insertOrThrow("live_sessions", null, values);
+            }
+            if (snapshot.phone != null) db.execSQL("UPDATE live_sessions SET phone=COALESCE(phone,?) WHERE session_id=?", new Object[]{snapshot.phone, snapshot.sessionKey});
+            boolean accepted = snapshot.accepted() || previousAnswer >= 0;
+            if (snapshot.accepted()) {
+                db.execSQL("UPDATE live_sessions SET answer_at=?,answer_elapsed=? WHERE session_id=? AND answer_at<0", new Object[]{snapshot.answerAt(), snapshot.elapsedAt(snapshot.answerAt()), snapshot.sessionKey});
+                enqueuePhase(db, eventId, ANSWERED, eventPhone, originalDate, 0);
+            }
+            if (snapshot.state == TelecomSnapshot.State.ENDED || snapshot.state == TelecomSnapshot.State.UNANSWERED) {
+                // Keep even an unanswered reservation eligible for final INCOMING journal proof.
+                // Rejected/missed rows are never passed to the reconciler and emit no event.
+                db.execSQL("UPDATE live_sessions SET status=?,end_at=?,end_elapsed=? WHERE session_id=? AND end_at<0", new Object[]{snapshot.state == TelecomSnapshot.State.UNANSWERED && !accepted ? "abandoned" : "ended", snapshot.observedAt, snapshot.observedElapsed, snapshot.sessionKey});
+            } else if (accepted) {
+                db.execSQL("UPDATE live_sessions SET status='answered' WHERE session_id=? AND end_at<0", new Object[]{snapshot.sessionKey});
+            }
+            db.setTransactionSuccessful();
+            return !existing || snapshot.accepted() && previousAnswer < 0
+                    || (snapshot.state == TelecomSnapshot.State.ENDED || snapshot.state == TelecomSnapshot.State.UNANSWERED) && previousEnd < 0;
+        } finally { db.endTransaction(); }
+    }
+
+    private static boolean conflictingLegacyEvidence(SQLiteDatabase db, TelecomSnapshot snapshot) {
+        // A role change during an existing conversation must not create a second early card.
+        // The retained legacy reservation/journal path finishes that conversation instead.
+        try (Cursor rows = db.rawQuery("SELECT 1 FROM live_sessions s WHERE session_id NOT LIKE 'telecom:%' AND status IN ('ringing','answered','ended') AND sub_id=? AND ring_at BETWEEN ? AND ? AND (phone IS NULL OR ?='' OR phone=?) AND NOT EXISTS(SELECT 1 FROM call_log_links l WHERE l.event_id=s.event_id) LIMIT 1", new String[]{Integer.toString(snapshot.subId), Long.toString(snapshot.createdAt - 30_000), Long.toString(snapshot.createdAt + 30_000), snapshot.phone == null ? "" : snapshot.phone, snapshot.phone == null ? "" : snapshot.phone})) {
+            if (rows.moveToFirst()) return true;
+        }
+        // A late service rebind after journal fallback has already queued this call stays quiet.
+        try (Cursor rows = db.rawQuery("SELECT 1 FROM call_events WHERE phase='completed' AND event_id NOT LIKE '%:telecom:%' AND occurred_at BETWEEN ? AND ? AND (phone IS NULL OR ?='' OR phone=?) LIMIT 1", new String[]{Long.toString(snapshot.createdAt - 2_000), Long.toString(snapshot.createdAt + 2_000), snapshot.phone == null ? "" : snapshot.phone, snapshot.phone == null ? "" : snapshot.phone})) {
+            return rows.moveToFirst();
+        }
+    }
+
     synchronized boolean linked(long logId,long date) {
         try(Cursor cursor=getReadableDatabase().rawQuery("SELECT 1 FROM call_log_links WHERE log_id=? AND log_date=?",new String[]{Long.toString(logId),Long.toString(date)})) {
             return cursor.moveToFirst();

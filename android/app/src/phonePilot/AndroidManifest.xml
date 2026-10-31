@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <application>
+        <activity android:name=".PhoneActivity" android:exported="true" android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.DIAL" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="tel" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="tel" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".CallActivity" android:exported="false"
+            android:launchMode="singleTask" android:excludeFromRecents="true"
+            android:showWhenLocked="true" android:turnScreenOn="true" />
+        <service android:name=".TaxiInCallService" android:exported="true"
+            android:permission="android.permission.BIND_INCALL_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.InCallService" />
+            </intent-filter>
+            <meta-data android:name="android.telecom.IN_CALL_SERVICE_UI" android:value="true" />
+        </service>
+        <!-- Repeat the base declaration for lint's overlay manifest lookup. -->
+        <service android:name=".CallMonitorService" android:exported="false"
+            android:foregroundServiceType="specialUse" />
+    </application>
+</manifest>

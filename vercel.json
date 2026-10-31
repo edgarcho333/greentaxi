@@ -12,6 +12,20 @@
   },
   "headers": [
     {
+      "source": "/downloads/GreenTaxi-Phone-Pilot.apk",
+      "headers": [
+        { "key": "Content-Type", "value": "application/vnd.android.package-archive" },
+        { "key": "Content-Disposition", "value": "attachment; filename=\"GreenTaxi-Phone-Pilot.apk\"" },
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/downloads/phone-pilot-release.json",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    },
+    {
       "source": "/downloads/GreenTaxi-Samsung-2.apk",
       "headers": [
         { "key": "Content-Type", "value": "application/vnd.android.package-archive" },

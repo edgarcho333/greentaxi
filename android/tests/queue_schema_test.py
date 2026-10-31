@@ -157,6 +157,47 @@ class QueueSqlTests(unittest.TestCase):
         db.execute("INSERT OR IGNORE INTO call_log_links VALUES (10,100,'third')")
         self.assertEqual(db.execute('SELECT * FROM call_log_links ORDER BY log_date').fetchall(), [(10, 100, 'first'), (10, 200, 'second')])
 
+    def test_telecom_handoff_guard_only_defers_plausible_unlinked_legacy_calls(self):
+        db = fresh_db()
+        sql = query("SELECT 1 FROM live_sessions s WHERE session_id NOT LIKE")
+        params = ('1', '70000', '130000', '599123456', '599123456')
+        db.execute("INSERT INTO live_sessions(session_id,event_id,sub_id,phone,ring_at,ring_elapsed,status) VALUES ('legacy','old-event',1,'599123456',100000,50,'answered')")
+        self.assertIsNotNone(db.execute(sql, params).fetchone())
+        self.assertIsNone(db.execute(sql, ('2', *params[1:])).fetchone())
+        self.assertIsNone(db.execute(sql, (*params[:3], '599654321', '599654321')).fetchone())
+        db.execute("INSERT INTO call_log_links VALUES (100,100000,'old-event')")
+        self.assertIsNone(db.execute(sql, params).fetchone())
+        # A Telecom-owned reservation is never mistaken for a legacy handoff.
+        db.execute("UPDATE live_sessions SET session_id=?", ('telecom:' + 'a' * 64,))
+        db.execute('DELETE FROM call_log_links')
+        self.assertIsNone(db.execute(sql, params).fetchone())
+
+    def test_late_telecom_rebind_does_not_replay_an_already_queued_journal_call(self):
+        db = fresh_db()
+        sql = query("SELECT 1 FROM call_events WHERE phase='completed' AND event_id NOT LIKE")
+        params = ('98000', '102000', '599123456', '599123456')
+        stage(db, 'android:installation:321:100000', 'completed', phone='599123456', date=100000, duration=15)
+        self.assertIsNotNone(db.execute(sql, params).fetchone())
+        self.assertIsNone(db.execute(sql, (*params[:2], '599654321', '599654321')).fetchone())
+        db.execute('UPDATE call_events SET delivered=1,phone=NULL')
+        self.assertIsNotNone(db.execute(sql, params).fetchone())
+        # An acknowledgment scrubs the number but must still suppress a late duplicate.
+        db.execute("UPDATE call_events SET event_id='android:installation:telecom:abc'")
+        self.assertIsNone(db.execute(sql, params).fetchone())
+
+    def test_monitor_restart_preserves_telecom_reservations_and_pending_answers(self):
+        db = fresh_db()
+        key = 'telecom:' + 'a' * 64
+        db.execute("INSERT INTO live_sessions(session_id,event_id,sub_id,ring_at,ring_elapsed,status) VALUES (?,?,1,100,50,'ringing')", (key, 'telecom-event'))
+        db.execute("INSERT INTO live_sessions(session_id,event_id,sub_id,ring_at,ring_elapsed,answer_at,status) VALUES ('legacy','legacy-event',1,100,50,120,'answered')")
+        sql = re.search(r'getWritableDatabase\(\)\.execSQL\(\"([^\"\n]+)\"\)', body('markOpenSessionsGap'))
+        db.execute(sql.group(1))
+        rows = db.execute('SELECT session_id,status,gap FROM live_sessions ORDER BY session_id').fetchall()
+        self.assertEqual(rows, [('legacy', 'answered', 1), (key, 'ringing', 0)])
+        sessions = db.execute(query('SELECT session_id,event_id,sub_id')).fetchall()
+        self.assertEqual(len(sessions), 2)
+        self.assertEqual(next(row for row in sessions if row[0] == key)[6], -1)
+
     def test_ring_reservation_defers_log_until_answer_state_is_known(self):
         db = fresh_db()
         db.execute("INSERT INTO live_sessions(session_id,event_id,sub_id,ring_at,ring_elapsed,status) VALUES ('reserved','live',1,100,50,'ringing')")

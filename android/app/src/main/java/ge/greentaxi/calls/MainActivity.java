@@ -2,6 +2,7 @@ package ge.greentaxi.calls;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -13,6 +14,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.telecom.TelecomManager;
 import android.text.InputType;
 import android.view.View;
 import android.view.WindowInsets;
@@ -38,6 +40,7 @@ import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private static final int PERMISSION_REQUEST = 40;
+    private static final int DIALER_ROLE_REQUEST = 41;
     private static final int GREEN = Color.rgb(0, 153, 82);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService connectionWorker = Executors.newSingleThreadExecutor();
@@ -49,6 +52,10 @@ public final class MainActivity extends Activity {
     private TextView permissionsView;
     private TextView queueView;
     private TextView connectionView;
+    private TextView dialerStatusView;
+    private Button dialerRoleButton;
+    private Button fullscreenButton;
+    private boolean pendingMonitoringStart;
     private Button connectionButton;
     private volatile HttpURLConnection checkingConnection;
     private volatile boolean destroyed;
@@ -92,6 +99,28 @@ public final class MainActivity extends Activity {
         add(content, text("ზარებიდან განაცხადების დამატება", 20), 8);
         add(content, text("მხოლოდ მიღებული შემომავალი SIM-ზარები დაემატება ოპერატორის შემოსულ განაცხადებს. საუბარი არ იწერება. მგზავრობის დეტალებს ოპერატორი შეავსებს.", 15), 12);
         add(content, text("Android 11-დან ჩვეულებრივი შემომავალი ზარის განაცხადი ემატება პასუხისას. გაურკვეველ შემთხვევებში ვამოწმებთ ჟურნალს საუბრის დასრულების შემდეგ.", 14), 8);
+
+        if (BuildConfig.PHONE_PILOT) {
+            add(content, text("ტელეფონის საცდელი რეჟიმი", 20), 24);
+            add(content, text("ჩართეთ მხოლოდ ერთ A55-ზე, როცა საუბარი დასრულებულია. Green Taxi გახდება ტელეფონის აპი: ნომრის აკრეფა, პასუხი და მეორე ხაზის მართვა აქ იქნება. ადმინისტრატორს მხოლოდ მიღებული SIM-ზარები ეგზავნება.", 14), 8);
+            dialerStatusView = text("", 16);
+            dialerStatusView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            add(content, dialerStatusView, 12);
+            dialerRoleButton = button("Green Taxi — ტელეფონის აპად არჩევა", this::requestDialerRole);
+            add(content, dialerRoleButton, 8);
+            add(content, button("ნომრის აკრეფა", () -> startActivity(new Intent(this, PhoneActivity.class))), 8);
+            fullscreenButton = button("შემომავალი ზარის სრული ეკრანის დაშვება", () -> {
+                if (Build.VERSION.SDK_INT >= 34) openSettings(new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                        Uri.parse("package:" + getPackageName())));
+            });
+            add(content, fullscreenButton, 8);
+            add(content, button("Samsung-ზე დაბრუნება — ნაგულისხმევი აპები", () -> {
+                if (!canChoosePhoneApp()) return;
+                try { DialerRole.openDefaultSettings(this); }
+                catch (RuntimeException unavailable) { message("პარამეტრებში გახსენით აპები → ნაგულისხმევი აპები → ტელეფონი და აირჩიეთ Samsung"); }
+            }), 8);
+            add(content, text("უკან დასაბრუნებლად Android-ის პარამეტრებში აირჩიეთ Samsung ტელეფონის აპად. დაკავშირება და გაუგზავნელი ზარები შენახული დარჩება. მონიტორინგი ქვემოთ ცალკე ირთვება.", 14), 8);
+        }
 
         add(content, text("ტელეფონის დაკავშირება", 18), 28);
         serverInput = input("საიტის მისამართი — https://…", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
@@ -319,6 +348,38 @@ public final class MainActivity extends Activity {
             }
             refreshStatus();
         }
+        if (requestCode == PERMISSION_REQUEST && pendingMonitoringStart) {
+            pendingMonitoringStart = false;
+            if (CallMonitorService.permissionsGranted(this) && CallMonitorService.notificationsEnabled(this)) startMonitoring();
+        }
+    }
+
+    private void requestDialerRole() {
+        if (!canChoosePhoneApp()) return;
+        try { DialerRole.request(this, DIALER_ROLE_REQUEST); }
+        catch (RuntimeException unavailable) {
+            message("ტელეფონის აპის არჩევა ვერ გაიხსნა. პარამეტრებში აირჩიეთ ნაგულისხმევი ტელეფონის აპი");
+        }
+    }
+
+    private boolean canChoosePhoneApp() {
+        try {
+            if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+                throw new SecurityException("phone_state_permission_required");
+            }
+            TelecomManager telecom = getSystemService(TelecomManager.class);
+            if (telecom == null) throw new IllegalStateException("telecom_unavailable");
+            if (telecom.isInCall()) {
+                message("ტელეფონის აპის შეცვლამდე დაასრულეთ ყველა საუბარი და შემომავალი ზარი");
+                return false;
+            }
+            return true;
+        } catch (RuntimeException unavailable) {
+            // Do not hand an ongoing call to a different dialer when its state
+            // cannot be checked (for example before READ_PHONE_STATE is granted).
+            message("ზარის მდგომარეობა ვერ შემოწმდა. ქვემოთ ჩართეთ ტელეფონის ნებართვები და დაასრულეთ ყველა საუბარი");
+            return false;
+        }
     }
 
     private void startMonitoring() {
@@ -327,11 +388,13 @@ public final class MainActivity extends Activity {
             return;
         }
         if (!CallMonitorService.permissionsGranted(this)) {
+            pendingMonitoringStart = true;
             requestPermissions();
             message("მონიტორინგისთვის საჭიროა ზარებისა და SIM-ის წვდომა");
             return;
         }
         if (!CallMonitorService.notificationsEnabled(this)) {
+            pendingMonitoringStart = true;
             requestPermissions();
             message("მონიტორინგის შეტყობინებისთვის ჩართეთ შეტყობინებების ნებართვა");
             return;
@@ -360,6 +423,7 @@ public final class MainActivity extends Activity {
     }
 
     private void stopMonitoring() {
+        pendingMonitoringStart = false;
         settings.disable();
         stopService(new Intent(this, CallMonitorService.class));
         settings.status("მონიტორინგი შეჩერებულია; გაუგზავნელი ზარები შენახულია");
@@ -368,6 +432,16 @@ public final class MainActivity extends Activity {
 
     private void refreshStatus() {
         if (statusView == null) return;
+        if (dialerStatusView != null) {
+            boolean selected = DialerRole.isDefault(this);
+            NotificationManager notifications = getSystemService(NotificationManager.class);
+            boolean fullscreen = Build.VERSION.SDK_INT < 34 || (notifications != null && notifications.canUseFullScreenIntent());
+            String roleStatus = selected ? "ტელეფონის აპია Green Taxi — ხაზები ცალ-ცალკე მუშავდება"
+                    : "ტელეფონის აპი ჯერ Green Taxi არ არის — ჩვეულებრივი მონიტორინგი";
+            dialerStatusView.setText(roleStatus + (fullscreen ? "" : "\nჩაკეტილ ტელეფონზე ზარის ეკრანისთვის დაუშვით სრული ეკრანი"));
+            dialerRoleButton.setEnabled(!selected);
+            fullscreenButton.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+        }
         String access = "ზარების ჟურნალი: " + (checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED ? "ჩართულია" : "მიუწვდომელია");
         access += "\nSIM-ის წვდომა: " + (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED ? "ჩართულია" : "მიუწვდომელია");
         access += "\nSIM-ანგარიშის წვდომა: " + (checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED ? "ჩართულია" : "მიუწვდომელია");

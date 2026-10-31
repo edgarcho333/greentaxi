@@ -93,7 +93,6 @@ public final class CallReconciler {
         int[] sessionDegree = new int[sessions.size()];
         int[] rowDegree = new int[rows.size()];
         int[] onlySession = new int[rows.size()];
-        boolean[] onlyEdgeStrict = new boolean[rows.size()];
         Set<String> duplicateSessions = duplicatesOfSessions(sessions);
         Set<String> duplicateRows = duplicatesOfRows(rows);
 
@@ -106,7 +105,6 @@ public final class CallReconciler {
                 sessionDegree[sessionIndex]++;
                 rowDegree[rowIndex]++;
                 onlySession[rowIndex] = sessionIndex;
-                onlyEdgeStrict[rowIndex] = strictCandidate(session, row);
             }
         }
 
@@ -120,9 +118,20 @@ public final class CallReconciler {
             } else {
                 int sessionIndex = onlySession[rowIndex];
                 Session session = sessions.get(sessionIndex);
+                if (rowDegree[rowIndex] > 1) {
+                    for (Session candidate : sessions) {
+                        if (exactTelecomAnchor(candidate, row)) { session = candidate; break; }
+                    }
+                }
                 boolean unique = rowDegree[rowIndex] == 1 && sessionDegree[sessionIndex] == 1
                         && !duplicateSessions.contains(session.id);
-                results.add(unique && onlyEdgeStrict[rowIndex]
+                // Per-Call creation time is authoritative, unlike a delayed SIM-wide callback.
+                // A unique exact known-caller anchor can settle first; its nearby weak neighbours
+                // remain DEFER until persistence removes this session on the next scan.
+                if (!unique && !duplicateSessions.contains(session.id) && exactTelecomAnchor(session, row)
+                        && safeTelecomAnchor(session, rowIndex, rows, duplicateRows)
+                        && safeTelecomRow(row, sessions, duplicateSessions)) unique = true;
+                results.add(unique && strictCandidate(session, row)
                         ? new Result(row, Decision.MATCH, session)
                         : new Result(row, Decision.DEFER, null));
             }
@@ -133,7 +142,7 @@ public final class CallReconciler {
     private static boolean possibleAssociation(Session session, Log row) {
         if (session.subId >= 0 && row.subId >= 0 && session.subId != row.subId) return false;
         // Clean, verified evidence of different callers cannot refer to the same answered session.
-        if (!session.gap && session.subId >= 0 && row.subId == session.subId
+        if ((!session.gap || TelecomSnapshot.isTelecomSession(session.id)) && session.subId >= 0 && row.subId == session.subId
                 && session.phoneGE9 != null && row.phoneGE9 != null
                 && !session.phoneGE9.equals(row.phoneGE9)) return false;
         if (session.ringWall < 0 || row.dateWall < 0) return false;
@@ -144,6 +153,13 @@ public final class CallReconciler {
 
     private static boolean strictCandidate(Session session, Log row) {
         if (!validLog(row) || session.subId < 0 || row.subId != session.subId) return false;
+        if (TelecomSnapshot.isTelecomSession(session.id)) {
+            // Only finalized INCOMING rows reach this method. An exact creation timestamp,
+            // verified SIM and unique graph edge also recover an answer lost at process death.
+            // Holding and service rebinds do not change that timestamp or require guessed duration.
+            return session.ringWall == row.dateWall && (session.phoneGE9 == null || row.phoneGE9 == null
+                    || session.phoneGE9.equals(row.phoneGE9));
+        }
         if (session.ringElapsed < 0 || session.answerElapsed < session.ringElapsed
                 || session.answerWall < 0) return false;
         if (session.phoneGE9 != null && row.phoneGE9 != null
@@ -162,6 +178,41 @@ public final class CallReconciler {
         // DATE is the ringing start. Wall-clock end and DATE + DURATION are deliberately unused.
         return logMillis >= addSaturated(talkMillis, -DURATION_TOLERANCE_MS)
                 && logMillis <= addSaturated(talkMillis, DURATION_TOLERANCE_MS);
+    }
+
+    private static boolean exactTelecomAnchor(Session session, Log row) {
+        return TelecomSnapshot.isTelecomSession(session.id) && strictCandidate(session, row)
+                && session.phoneGE9 != null && session.phoneGE9.equals(row.phoneGE9);
+    }
+
+    private static boolean safeTelecomAnchor(Session session, int anchorIndex, List<Log> rows,
+                                               Set<String> duplicateRows) {
+        Log anchor = rows.get(anchorIndex);
+        int anchors = 0;
+        for (int index = 0; index < rows.size(); index++) {
+            Log candidate = rows.get(index);
+            if (!possibleAssociation(session, candidate)) continue;
+            if (!validLog(candidate) || duplicateRows.contains(rowKey(candidate))
+                    || candidate.subId != session.subId || candidate.phoneGE9 == null) return false;
+            if (exactTelecomAnchor(session, candidate)) {
+                if (++anchors > 1) return false;
+            } else if (candidate.dateWall == anchor.dateWall) {
+                return false;
+            }
+        }
+        return anchors == 1;
+    }
+
+    private static boolean safeTelecomRow(Log row, List<Session> sessions, Set<String> duplicateSessions) {
+        int anchors = 0;
+        for (Session candidate : sessions) {
+            if (!possibleAssociation(candidate, row)) continue;
+            if (!TelecomSnapshot.isTelecomSession(candidate.id) || duplicateSessions.contains(candidate.id)
+                    || candidate.subId < 0 || candidate.subId != row.subId || candidate.phoneGE9 == null
+                    || !candidate.phoneGE9.equals(row.phoneGE9)) return false;
+            if (exactTelecomAnchor(candidate, row) && ++anchors > 1) return false;
+        }
+        return anchors == 1;
     }
 
     private static boolean validLog(Log row) {

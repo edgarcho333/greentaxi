@@ -7,7 +7,10 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.ComponentName;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.database.ContentObserver;
@@ -89,10 +92,12 @@ public final class CallMonitorService extends Service {
     private SubscriptionManager subscriptionManager;
     private SubscriptionManager.OnSubscriptionsChangedListener subscriptionListener;
     private int listenerGeneration;
+    private boolean telecomSource;
     private volatile String liveDiagnostic = "";
     private AppSettings settings;
     private CallQueue queue;
     private ContentObserver observer;
+    private BroadcastReceiver dialerRoleReceiver;
     private boolean started;
     private ScheduledFuture<?> quickScan;
     private volatile HttpURLConnection connection;
@@ -114,6 +119,21 @@ public final class CallMonitorService extends Service {
     }
 
     static boolean isRunning() { return running; }
+
+    /** Wake delivery after a Telecom observation has reached durable storage. */
+    static void nudge(android.content.Context context) {
+        android.content.Context app = context.getApplicationContext();
+        AppSettings saved = new AppSettings(app);
+        if (!saved.enabled() || !saved.hasToken() || saved.server().isEmpty() || !permissionsGranted(app)) return;
+        try {
+            // No baseline, authentication or queue changes: an already enabled
+            // monitor may be restarted, but the phone UI never opts it in.
+            app.startForegroundService(new Intent(app, CallMonitorService.class));
+        } catch (RuntimeException restricted) {
+            // Android can refuse a background start. The accepted call remains
+            // durable; an existing monitor, network recovery or opening the app retries it.
+        }
+    }
 
     static boolean notificationsEnabled(android.content.Context context) {
         if (Build.VERSION.SDK_INT >= 33
@@ -152,6 +172,7 @@ public final class CallMonitorService extends Service {
                 observer = newObserver;
                 queue.markOpenSessionsGap();
                 startLiveMonitoring();
+                watchDialerRole();
                 started = true;
                 // Reset persisted pre-update deadlines off the main looper,
                 // including on firmware that refuses network callbacks.
@@ -161,6 +182,7 @@ public final class CallMonitorService extends Service {
                 heartbeatWorker.scheduleWithFixedDelay(() -> requestHeartbeat(0), 2, 60, TimeUnit.SECONDS);
                 scheduleUpload(0);
             } else {
+                configureSubscriptions();
                 scheduleScan();
                 scheduleUpload(0);
                 requestHeartbeat(0);
@@ -182,6 +204,26 @@ public final class CallMonitorService extends Service {
         if (worker.isShutdown()) return;
         if (quickScan != null) quickScan.cancel(false);
         quickScan = worker.schedule(this::tick, delayMillis, TimeUnit.MILLISECONDS);
+    }
+
+    private void watchDialerRole() {
+        if (!BuildConfig.PHONE_PILOT || dialerRoleReceiver != null) return;
+        BroadcastReceiver receiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context context, Intent intent) {
+                // Read Android's actual role, never a sender-provided package or state.
+                configureSubscriptions();
+                scheduleScan();
+                scheduleUpload(0);
+            }
+        };
+        try {
+            IntentFilter filter = new IntentFilter(TelecomManager.ACTION_DEFAULT_DIALER_CHANGED);
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
+            else registerReceiver(receiver, filter);
+            dialerRoleReceiver = receiver;
+        } catch (RuntimeException unavailable) {
+            // Resume/start and periodic refresh still recover if OEM firmware refuses this observer.
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -213,6 +255,22 @@ public final class CallMonitorService extends Service {
     @android.annotation.TargetApi(30)
     private void configureSubscriptions() {
         if (worker.isShutdown() || !settings.enabled()) return;
+        if (DialerRole.isDefault(this)) {
+            if (!telecomSource || !phoneListeners.isEmpty()) {
+                unregisterPhoneListeners();
+                activeSubscriptions = Collections.emptySet();
+                final long wall = System.currentTimeMillis();
+                final long elapsed = SystemClock.elapsedRealtime();
+                // Retire aggregate observations when Android hands calls to our
+                // InCallService. Previously accepted events keep their identities.
+                submitLive(() -> applyLiveActions(liveState.setSubscriptions(Collections.emptySet(), wall, elapsed)));
+            }
+            telecomSource = true;
+            liveDiagnostic = "ტელეფონის რეჟიმი — თითოეული მიღებული ხაზი ცალკე მუშავდება. ";
+            return;
+        }
+        telecomSource = false;
+        if (subscriptionManager == null) return;
         Set<Integer> next = new HashSet<>();
         try {
             List<SubscriptionInfo> subscriptions = subscriptionManager.getActiveSubscriptionInfoList();
@@ -245,7 +303,8 @@ public final class CallMonitorService extends Service {
                         // Capture both clocks when the main-looper callback arrives, before worker lag.
                         final long observedWall = System.currentTimeMillis();
                         final long observedElapsed = SystemClock.elapsedRealtime();
-                        if (generation != listenerGeneration || !settings.enabled() || !permissionsGranted(CallMonitorService.this)) return;
+                        if (generation != listenerGeneration || !settings.enabled() || !permissionsGranted(CallMonitorService.this)
+                                || DialerRole.isDefault(CallMonitorService.this)) return;
                         // This subscription-scoped callback is an observed transition, not
                         // a request for a newer snapshot. Re-reading the current state here
                         // can replace A's answer with B's later waiting/ringing state.
@@ -254,7 +313,12 @@ public final class CallMonitorService extends Service {
                         // outgoing calls, registration snapshots and observation gaps.
                         final int currentState = state;
                         final String phone = CallerPhone.normalize(number);
-                        submitLive(() -> applyLiveActions(liveState.onState(subId, currentState, phone, observedWall, observedElapsed)));
+                        submitLive(() -> {
+                            // Role selection can happen while this task is queued.
+                            if (!DialerRole.isDefault(CallMonitorService.this)) {
+                                applyLiveActions(liveState.onState(subId, currentState, phone, observedWall, observedElapsed));
+                            }
+                        });
                     }
                 };
                 phoneManagers.put(subId, manager);
@@ -315,6 +379,10 @@ public final class CallMonitorService extends Service {
 
     private void tick() {
         if (!settings.enabled() || stopping || worker.isShutdown()) return;
+        // A role may also change in Android settings while our setup screen is closed.
+        mainHandler.post(() -> {
+            if (started && !stopping) configureSubscriptions();
+        });
         if (!permissionsGranted(this)) {
             settings.deliveryFailure("permission");
             setStatus("ზარების წვდომა შეწყდა — შეამოწმეთ ნებართვები");
@@ -455,6 +523,11 @@ public final class CallMonitorService extends Service {
     private int scanCalls() throws Exception {
         // Flush already received telephony transitions before deciding a row has no live session.
         liveWorker.submit(() -> {}).get(5, TimeUnit.SECONDS);
+        if (BuildConfig.PHONE_PILOT && !TelecomCapture.awaitPending(5_000)) {
+            // A reservation still being written must not be mistaken for a new
+            // journal-only call. Retry without advancing the journal watermark.
+            throw new IllegalStateException("telecom_capture_pending");
+        }
         long baseline = settings.baseline();
         long lastDate = settings.lastDate();
         long lastRow = settings.lastRow();
@@ -803,6 +876,11 @@ public final class CallMonitorService extends Service {
             networkCallback = null;
         }
         if (observer != null) getContentResolver().unregisterContentObserver(observer);
+        if (dialerRoleReceiver != null) {
+            try { unregisterReceiver(dialerRoleReceiver); }
+            catch (RuntimeException unavailable) { /* Already removed by Android. */ }
+            dialerRoleReceiver = null;
+        }
         unregisterPhoneListeners();
         if (subscriptionManager != null && subscriptionListener != null) {
             try { subscriptionManager.removeOnSubscriptionsChangedListener(subscriptionListener); }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build the separately paired Samsung 2 receiver and retain its update identity."""
 import hashlib
+import argparse
 import json
 import os
 from pathlib import Path
@@ -96,6 +97,16 @@ def identity(environ):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--phone-pilot', action='store_true', help='Build the separately distributed Android 15+ default-phone pilot with the retained Samsung 2 identity.')
+    options = parser.parse_args()
+    pilot = options.phone_pilot
+    version_name = '0.3.0-pilot' if pilot else VERSION_NAME
+    version_code = 7 if pilot else VERSION_CODE
+    min_sdk = 35 if pilot else 26
+    file_name = 'GreenTaxi-Phone-Pilot.apk' if pilot else 'GreenTaxi-Samsung-2.apk'
+    public_metadata = DOWNLOADS / 'phone-pilot-release.json' if pilot else PUBLIC_METADATA
+    expected_permissions = EXPECTED_PERMISSIONS | ({'android.permission.CALL_PHONE', 'android.permission.USE_FULL_SCREEN_INTENT', 'android.permission.WAKE_LOCK'} if pilot else set())
     os.umask(0o077)
     environ = os.environ.copy()
     environ.update({
@@ -111,10 +122,10 @@ def main():
     if not (TOOLS / 'gradle-8.9/bin/gradle').is_file() or not (TOOLS / 'android-sdk/platforms/android-35/android.jar').is_file():
         raise BuildError('Android build tools are missing. Run scripts/setup-android.sh first.')
     fingerprint = identity(environ)
-    log = Path('/tmp/greentaxi-samsung-v2-gradle.log')
+    log = Path('/tmp/greentaxi-phone-pilot-gradle.log' if pilot else '/tmp/greentaxi-samsung-v2-gradle.log')
     result = subprocess.run([
         str(TOOLS / 'gradle-8.9/bin/gradle'), '--no-daemon', '-p', str(REPO / 'android'),
-        '-PgreenTaxiSamsungV2=true', ':app:assembleRelease', ':app:lintRelease',
+        '-PgreenTaxiSamsungV2=true', f'-PgreenTaxiPhonePilot={str(pilot).lower()}', ':app:assembleRelease', ':app:lintRelease',
     ], env=environ, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     output = result.stdout.decode(errors='replace').replace(environ['GREENTAXI_SAMSUNG_V2_KEY_PASSWORD'], '[REDACTED]')
     log.write_text(output)
@@ -128,31 +139,42 @@ def main():
     if not actual or actual[1].lower() != fingerprint:
         raise BuildError('Samsung 2 APK signature verification failed.')
     badging = captured([str(tools / 'aapt'), 'dump', 'badging', str(apk)], environ).decode()
-    if (f"package: name='{APPLICATION_ID}'" not in badging or f"versionCode='{VERSION_CODE}'" not in badging
-            or f"versionName='{VERSION_NAME}'" not in badging or f"application-label:'{LABEL}'" not in badging):
+    if (f"package: name='{APPLICATION_ID}'" not in badging or f"versionCode='{version_code}'" not in badging
+            or f"versionName='{version_name}'" not in badging or f"application-label:'{LABEL}'" not in badging):
         raise BuildError('The APK has an unexpected Samsung 2 package, label or version.')
-    if "sdkVersion:'26'" not in badging or "targetSdkVersion:'35'" not in badging or 'application-debuggable' in badging:
+    if f"sdkVersion:'{min_sdk}'" not in badging or "targetSdkVersion:'35'" not in badging or 'application-debuggable' in badging:
         raise BuildError('Samsung 2 APK SDK settings or release flags are incorrect.')
     permissions = captured([str(tools / 'aapt'), 'dump', 'permissions', str(apk)], environ).decode()
     requested = set(re.findall(r"uses-permission: name='([^']+)'", permissions))
-    if requested != EXPECTED_PERMISSIONS:
+    if requested != expected_permissions:
         raise BuildError('Unexpected Samsung 2 APK permissions.')
+    manifest = captured([str(tools / 'aapt'), 'dump', 'xmltree', str(apk), 'AndroidManifest.xml'], environ).decode()
+    if pilot:
+        for required in ['ge.greentaxi.calls.PhoneActivity', 'ge.greentaxi.calls.CallActivity', 'ge.greentaxi.calls.TaxiInCallService',
+                         'android.intent.action.DIAL', 'android.permission.BIND_INCALL_SERVICE', 'android.telecom.IN_CALL_SERVICE_UI']:
+            if required not in manifest:
+                raise BuildError('The phone pilot is missing its default-phone components.')
+    elif 'android.telecom.InCallService' in manifest:
+        raise BuildError('The stable receiver must not register default-phone components.')
     DOWNLOADS.mkdir(parents=True, exist_ok=True)
-    destination = DOWNLOADS / 'GreenTaxi-Samsung-2.apk'
-    if destination.is_symlink() or PUBLIC_METADATA.is_symlink():
+    destination = DOWNLOADS / file_name
+    if destination.is_symlink() or public_metadata.is_symlink():
         raise BuildError('Samsung 2 public release files must not be symbolic links.')
     shutil.copyfile(apk, destination)
     destination.chmod(0o644)
     metadata = {
-        'applicationId': APPLICATION_ID, 'label': LABEL, 'versionCode': VERSION_CODE, 'versionName': VERSION_NAME,
-        'minSdk': 26, 'targetSdk': 35, 'liveMonitoringMinSdk': 30,
-        'downloadPath': '/downloads/GreenTaxi-Samsung-2.apk', 'websiteUrl': 'https://green-taxi.ge',
+        'applicationId': APPLICATION_ID, 'label': LABEL, 'versionCode': version_code, 'versionName': version_name,
+        'minSdk': min_sdk, 'targetSdk': 35, 'liveMonitoringMinSdk': 35 if pilot else 30,
+        'downloadPath': '/downloads/' + file_name, 'websiteUrl': 'https://green-taxi.ge',
         'bytes': destination.stat().st_size,
         'sha256': hashlib.file_digest(destination.open('rb'), 'sha256').hexdigest(),
         'certificateSha256': fingerprint,
     }
-    PUBLIC_METADATA.write_text(json.dumps(metadata, indent=2) + '\n')
-    PUBLIC_METADATA.chmod(0o644)
+    if pilot:
+        metadata.update({'releaseChannel': 'phone-pilot', 'defaultPhoneRoleRequiresUserSelection': True,
+                         'updatesApplicationId': APPLICATION_ID, 'stableDownloadPath': '/downloads/GreenTaxi-Samsung-2.apk'})
+    public_metadata.write_text(json.dumps(metadata, indent=2) + '\n')
+    public_metadata.chmod(0o644)
     print(json.dumps({**metadata, 'apkPath': str(destination), 'releaseSigned': True, 'debuggable': False,
                       'lint': 'passed', 'permissions': sorted(requested)}))
 
