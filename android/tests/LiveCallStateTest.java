@@ -23,6 +23,8 @@ public final class LiveCallStateTest {
         run("another offhook subscription prevents answer", LiveCallStateTest::otherOffhook);
         run("different known caller makes a session ambiguous", LiveCallStateTest::conflictingPhone);
         run("answered call waiting becomes an observation gap", LiveCallStateTest::answeredWaiting);
+        run("queued first-answer history survives a later waiting call", LiveCallStateTest::firstAnswerBeforeWaiting);
+        run("rejecting a waiting caller does not answer that caller", LiveCallStateTest::rejectedWaitingCaller);
         run("two close calls receive separate identities", LiveCallStateTest::twoCloseCalls);
         run("fresh process does not infer a missed answer", LiveCallStateTest::restart);
         run("topology change preserves answer without claiming end", LiveCallStateTest::topology);
@@ -205,6 +207,42 @@ public final class LiveCallStateTest {
         equal(gap.answerAt, EPOCH + 20);
         equal(gap.endAt, -1L);
         empty(state(helper, 1, 2, null, 40));
+        idle(helper, 1, 50);
+    }
+
+    private static void firstAnswerBeforeWaiting() {
+        LiveCallState helper = helper(1);
+        idle(helper, 1, 0);
+        LiveCallState.Action ring = one(state(helper, 1, 1, "555010101", 10), LiveCallState.Kind.RING);
+        // These are queued subscription callbacks. The modem can already be
+        // ringing for B when A's historical OFFHOOK reaches the listener.
+        // Process A's callback as delivered; substituting that newer RINGING
+        // snapshot would erase the first valid answer from the event history.
+        LiveCallState.Action answer = one(state(helper, 1, 2, null, 20), LiveCallState.Kind.ANSWER);
+        equal(answer.sessionKey, ring.sessionKey);
+        equal(answer.phone, "555010101");
+        equal(answer.answerAt, EPOCH + 20);
+        LiveCallState.Action gap = one(state(helper, 1, 1, "555010102", 21), LiveCallState.Kind.ABANDON);
+        check(gap.answered);
+        equal(gap.sessionKey, answer.sessionKey);
+        // Answering B while A remains held is ambiguous in aggregate state.
+        // It must await the verified call log instead of inventing an answer.
+        empty(state(helper, 1, 2, "555010102", 22));
+        idle(helper, 1, 50);
+    }
+
+    private static void rejectedWaitingCaller() {
+        LiveCallState helper = helper(1);
+        idle(helper, 1, 0);
+        one(state(helper, 1, 1, "555010101", 10), LiveCallState.Kind.RING);
+        LiveCallState.Action answer = one(state(helper, 1, 2, "555010101", 20), LiveCallState.Kind.ANSWER);
+        LiveCallState.Action gap = one(state(helper, 1, 1, "555010102", 21), LiveCallState.Kind.ABANDON);
+        equal(gap.sessionKey, answer.sessionKey);
+        check(gap.answered);
+        // Rejecting B resumes A and produces the same RINGING -> OFFHOOK.
+        // A known original number here must not create a second answer either.
+        empty(state(helper, 1, 2, "555010101", 22));
+        empty(state(helper, 1, 2, "555010101", 30));
         idle(helper, 1, 50);
     }
 

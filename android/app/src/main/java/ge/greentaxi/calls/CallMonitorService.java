@@ -61,6 +61,12 @@ public final class CallMonitorService extends Service {
     private final ScheduledExecutorService uploadWorker = Executors.newSingleThreadScheduledExecutor();
     // Status requests have their own bounded connection and never occupy the call uploader.
     private final ScheduledExecutorService heartbeatWorker = Executors.newSingleThreadScheduledExecutor();
+    private final Object heartbeatLock = new Object();
+    private final HeartbeatPolicy heartbeatPolicy = new HeartbeatPolicy();
+    private ScheduledFuture<?> pendingHeartbeat;
+    private long heartbeatGeneration;
+    private long scheduledHeartbeatElapsed = Long.MAX_VALUE;
+    private boolean heartbeating;
     private final Object uploadLock = new Object();
     private ScheduledFuture<?> pendingUpload;
     private long uploadGeneration;
@@ -137,6 +143,7 @@ public final class CallMonitorService extends Service {
             } else {
                 startForeground(NOTIFICATION_ID, notification);
             }
+            running = true;
             if (!started) {
                 ContentObserver newObserver = new ContentObserver(mainHandler) {
                     @Override public void onChange(boolean selfChange) { scheduleScan(); }
@@ -151,13 +158,13 @@ public final class CallMonitorService extends Service {
                 networkRecovered();
                 watchNetwork();
                 worker.scheduleWithFixedDelay(this::tick, 0, 60, TimeUnit.SECONDS);
-                heartbeatWorker.scheduleWithFixedDelay(this::sendHeartbeat, 2, 60, TimeUnit.SECONDS);
+                heartbeatWorker.scheduleWithFixedDelay(() -> requestHeartbeat(0), 2, 60, TimeUnit.SECONDS);
                 scheduleUpload(0);
             } else {
                 scheduleScan();
                 scheduleUpload(0);
+                requestHeartbeat(0);
             }
-            running = true;
         } catch (RuntimeException unavailable) {
             running = false;
             settings.status("მონიტორინგი ვერ ჩაირთო — შეამოწმეთ აპის ნებართვები და პარამეტრები");
@@ -239,18 +246,13 @@ public final class CallMonitorService extends Service {
                         final long observedWall = System.currentTimeMillis();
                         final long observedElapsed = SystemClock.elapsedRealtime();
                         if (generation != listenerGeneration || !settings.enabled() || !permissionsGranted(CallMonitorService.this)) return;
-                        int observedState = state;
-                        if (Build.VERSION.SDK_INT >= 31 && state == TelephonyManager.CALL_STATE_OFFHOOK) {
-                            try {
-                                // Use the actual state for delayed callbacks; never invent IDLE during call waiting.
-                                observedState = manager.getCallStateForSubscription();
-                            } catch (SecurityException unavailable) { return; }
-                            catch (RuntimeException unavailable) { return; }
-                        }
-                        // On Android 11 the explicit subscription listener is the mobile-only
-                        // authority. The same idle-first state machine rejects outgoing calls,
-                        // call waiting and observation gaps on both Android versions.
-                        final int currentState = observedState;
+                        // This subscription-scoped callback is an observed transition, not
+                        // a request for a newer snapshot. Re-reading the current state here
+                        // can replace A's answer with B's later waiting/ringing state.
+                        // Preserve the ordered callback history on every supported Android.
+                        // The conservative state machine still rejects ambiguous waiting,
+                        // outgoing calls, registration snapshots and observation gaps.
+                        final int currentState = state;
                         final String phone = CallerPhone.normalize(number);
                         submitLive(() -> applyLiveActions(liveState.onState(subId, currentState, phone, observedWall, observedElapsed)));
                     }
@@ -303,7 +305,10 @@ public final class CallMonitorService extends Service {
         for (LiveCallState.Action action : actions) {
             if (!settings.enabled() || liveWorker.isShutdown()) return;
             queue.liveAction(action, settings.installationId());
-            if (action.kind == LiveCallState.Kind.ANSWER) scheduleUpload(0);
+            if (action.kind == LiveCallState.Kind.ANSWER) {
+                scheduleUpload(0);
+                requestHeartbeat(0);
+            }
             else if (action.kind == LiveCallState.Kind.END || action.kind == LiveCallState.Kind.ABANDON) scheduleScan();
         }
     }
@@ -328,6 +333,7 @@ public final class CallMonitorService extends Service {
             if (unresolved > 0) diagnostic += "ჟურნალთან დაკავშირება მოწმდება (" + unresolved + "). ";
             journalDiagnostic = diagnostic;
             scheduleUpload(0);
+            requestHeartbeat(0);
             refreshDeliveryStatus();
         } catch (RuntimeException unavailable) {
             settings.deliveryFailure("storage");
@@ -388,6 +394,7 @@ public final class CallMonitorService extends Service {
                     // validated default-network recovery, preserving payloads and attempts.
                     queue.retryAllNow();
                     scheduleUpload(0);
+                    requestHeartbeat(0);
                 } catch (RuntimeException unavailable) { settings.deliveryFailure("storage"); }
             });
         } catch (java.util.concurrent.RejectedExecutionException stopped) { /* Service is stopping. */ }
@@ -609,6 +616,7 @@ public final class CallMonitorService extends Service {
                 if (!settings.bindingCurrent(binding)) return 0;
                 queue.delivered(event);
                 settings.deliverySucceeded();
+                requestHeartbeat(0);
                 synchronized (uploadLock) {
                     // Pace a recovered backlog: two working phones together
                     // stay within the server's normal 120-call-events/minute limit.
@@ -623,6 +631,7 @@ public final class CallMonitorService extends Service {
             }
             queue.retry(event, "http_" + responseCode);
             settings.deliveryFailure("http_" + responseCode);
+            requestHeartbeat(0);
             uploadDiagnostic = "სერვერი მიუწვდომელია (" + responseCode + ") · ზარები შენახულია";
             long retryDelay = 3_000;
             if (responseCode == 429) {
@@ -636,6 +645,7 @@ public final class CallMonitorService extends Service {
             if (!stopping && settings.enabled() && settings.bindingCurrent(binding)) {
                 queue.retry(event, "connection_failed");
                 settings.deliveryFailure("network");
+                requestHeartbeat(0);
             }
             uploadDiagnostic = "კავშირი ვერ შესრულდა · ზარები შენახულია; ხელახლა ვცდით";
             return 3_000;
@@ -654,6 +664,49 @@ public final class CallMonitorService extends Service {
         return code.matches("^(network|http_[1-5][0-9]{2}|permission|storage|unknown)$") ? code : "unknown";
     }
 
+    private void requestHeartbeat(long delayMillis) {
+        synchronized (heartbeatLock) {
+            if (stopping || heartbeatWorker.isShutdown()) return;
+            heartbeatPolicy.request(SystemClock.elapsedRealtime(), Math.max(0, delayMillis));
+            armHeartbeatLocked();
+        }
+    }
+
+    /** Caller holds heartbeatLock. Bursts share one pending request and one connection. */
+    private void armHeartbeatLocked() {
+        if (stopping || heartbeatWorker.isShutdown() || heartbeating) return;
+        long next = heartbeatPolicy.nextAt();
+        if (next < 0) return;
+        if (pendingHeartbeat != null && !pendingHeartbeat.isDone() && scheduledHeartbeatElapsed <= next) return;
+        if (pendingHeartbeat != null) pendingHeartbeat.cancel(false);
+        scheduledHeartbeatElapsed = next;
+        final long generation = ++heartbeatGeneration;
+        try {
+            pendingHeartbeat = heartbeatWorker.schedule(() -> heartbeatCycle(generation),
+                    Math.max(0, next - SystemClock.elapsedRealtime()), TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.RejectedExecutionException stopped) { /* Service is stopping. */ }
+    }
+
+    private void heartbeatCycle(long generation) {
+        synchronized (heartbeatLock) {
+            if (stopping || generation != heartbeatGeneration) return;
+            pendingHeartbeat = null;
+            scheduledHeartbeatElapsed = Long.MAX_VALUE;
+            if (!heartbeatPolicy.begin(SystemClock.elapsedRealtime())) {
+                armHeartbeatLocked();
+                return;
+            }
+            heartbeating = true;
+        }
+        try { sendHeartbeat(); }
+        finally {
+            synchronized (heartbeatLock) {
+                heartbeating = false;
+                armHeartbeatLocked();
+            }
+        }
+    }
+
     private void sendHeartbeat() {
         if (stopping || !settings.enabled() || settings.authPaused() || !networkAvailable()) return;
         AppSettings.Binding binding = settings.binding();
@@ -663,7 +716,7 @@ public final class CallMonitorService extends Service {
             if (!"https".equalsIgnoreCase(endpoint.getProtocol())) return;
             JSONObject payload = new JSONObject();
             String version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-            payload.put("appVersion", version == null ? "0.2.2" : version.substring(0, Math.min(version.length(), 32)));
+            payload.put("appVersion", version == null ? "unknown" : version.substring(0, Math.min(version.length(), 32)));
             String android = Build.VERSION.RELEASE == null ? Integer.toString(Build.VERSION.SDK_INT) : Build.VERSION.RELEASE;
             payload.put("androidVersion", android.substring(0, Math.min(android.length(), 32)));
             payload.put("monitoring", running && permissionsGranted(this));
@@ -739,6 +792,11 @@ public final class CallMonitorService extends Service {
     @Override public void onDestroy() {
         running = false;
         stopping = true;
+        synchronized (heartbeatLock) {
+            heartbeatGeneration++;
+            heartbeatPolicy.clear();
+            if (pendingHeartbeat != null) pendingHeartbeat.cancel(false);
+        }
         if (connectivityManager != null && networkCallback != null) {
             try { connectivityManager.unregisterNetworkCallback(networkCallback); }
             catch (RuntimeException unavailable) { /* Callback already removed by Android. */ }

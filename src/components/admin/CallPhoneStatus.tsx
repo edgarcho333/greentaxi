@@ -5,6 +5,7 @@ import './call-phone-status.css';
 
 const POLL_MS = 15_000;
 const TIMEOUT_MS = 8_000;
+const CALL_RECEIVER_VERSION = '0.2.3';
 type ConnectionState = 'online' | 'stale' | 'unknown' | 'disabled';
 
 export function callDeviceTime(value: string | null | undefined) {
@@ -82,13 +83,42 @@ function stateFor(device: CallDevice, available = true): ConnectionState {
 
 export function CallDeviceConnectionBadge({ device, available = true }: { device: CallDevice; available?: boolean }) {
   const state = stateFor(device, available);
-  const label = state === 'online' ? 'ტელეფონი კავშირზეა' : state === 'stale' ? 'კავშირი შესამოწმებელია' : state === 'disabled' ? 'წვდომა გაუქმებულია' : available ? 'სტატუსი უცნობია' : 'სტატუსი ვერ განახლდა';
-  const Icon = state === 'online' ? CheckCircle2 : state === 'stale' ? AlertCircle : state === 'disabled' ? Smartphone : Clock3;
+  const label = state === 'online' ? 'ტელეფონი კავშირზეა' : state === 'stale' ? device.heartbeat?.monitoring === false ? 'ბოლო ანგარიშში გამორთულია' : 'სტატუსი არ განახლებულა' : state === 'disabled' ? 'წვდომა გაუქმებულია' : available ? 'სტატუსი უცნობია' : 'სტატუსი ვერ განახლდა';
+  const Icon = state === 'online' ? CheckCircle2 : state === 'disabled' ? Smartphone : Clock3;
   return <span className={`call-phone-connection ${state}`} data-call-phone-connection data-connection-state={state}><Icon size={18} />{label}</span>;
 }
 
 function CallReceiverDownload() {
   return <span className="call-phone-summary-help call-phone-download-help"><span>დააყენეთ Green Taxi Samsung 2 და ხელახლა დააკავშირეთ ტელეფონი. ახალი მონიტორინგი ჯერ გამორთული დატოვეთ. ზარებს შორის დაელოდეთ ძველში „გასაგზავნი ზარები: 0“-ს, გამორთეთ ძველი და მაშინვე ჩართეთ ახალი მონიტორინგი.</span><a className="call-phone-download-link" href="/downloads/GreenTaxi-Samsung-2.apk" download="GreenTaxi-Samsung-2.apk" aria-label="ახალი აპის ჩამოტვირთვა: Green Taxi Samsung 2" data-call-phone-apk><Download size={18} />ახალი აპის ჩამოტვირთვა</a></span>;
+}
+
+function needsCallReceiverUpdate(version: string) {
+  const parts = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
+  if (!parts) return false;
+  const current = CALL_RECEIVER_VERSION.split('.').map(Number);
+  for (let index = 0; index < current.length; index++) {
+    const supplied = Number(parts[index + 1]);
+    if (supplied !== current[index]) return supplied < current[index];
+  }
+  return false;
+}
+
+function CallReceiverUpdate({ device }: { device: CallDevice }) {
+  if (!device.active || !device.heartbeat || !needsCallReceiverUpdate(device.heartbeat.appVersion)) return null;
+  return <div className="call-phone-update" data-call-phone-update>
+    <span>ხელმისაწვდომია ვერსია {CALL_RECEIVER_VERSION}. აპის განახლებისას დაკავშირება შენარჩუნდება.</span>
+    <a className="call-phone-download-link" href="/downloads/GreenTaxi-Samsung-2.apk" download="GreenTaxi-Samsung-2.apk" aria-label={`აპის განახლება ${CALL_RECEIVER_VERSION}: Green Taxi Samsung 2`} data-call-phone-apk><Download size={18} />განახლება {CALL_RECEIVER_VERSION}</a>
+  </div>;
+}
+
+function StaleReportHelp({ device, available, showLastCall = false }: { device: CallDevice; available: boolean; showLastCall?: boolean }) {
+  if (stateFor(device, available) !== 'stale') return null;
+  const receivedAt = new Date(device.heartbeat?.receivedAt ?? '').getTime();
+  const lastCallAt = new Date(device.lastSeenAt ?? '').getTime();
+  return <div className="call-phone-report-help" data-call-phone-stale-help>
+    <span>გახსენით აპი და შეამოწმეთ მონიტორინგი.</span>
+    {showLastCall && Number.isFinite(lastCallAt) && lastCallAt > receivedAt && <span data-call-phone-last-call>ბოლო მიღებული ზარი: {callDeviceTime(device.lastSeenAt)}</span>}
+  </div>;
 }
 
 export function CallDeviceTelemetry({ device, available = true }: { device: CallDevice; available?: boolean }) {
@@ -105,6 +135,8 @@ export function CallDeviceTelemetry({ device, available = true }: { device: Call
       {heartbeat.pendingCount > 0 && heartbeat.oldestPendingAt && <div><dt>უძველესი გასაგზავნი ზარი</dt><dd>{callDeviceTime(heartbeat.oldestPendingAt)}</dd></div>}
     </dl>
     {heartbeat.lastError && <p className="call-phone-delivery-error"><AlertCircle size={17} />{callDeviceError(heartbeat.lastError)}</p>}
+    <StaleReportHelp device={device} available={available} />
+    <CallReceiverUpdate device={device} />
   </div>;
 }
 
@@ -121,6 +153,8 @@ export default function CallPhoneStatus() {
       {device.heartbeat ? <span className={device.heartbeat.pendingCount > 0 ? 'call-phone-pending waiting' : 'call-phone-pending'} data-call-phone-pending>{!error && device.connectionState === 'online' ? 'გასაგზავნია' : 'ბოლო ანგარიშში გასაგზავნი'}: <b>{device.heartbeat.pendingCount}</b></span> : <CallReceiverDownload />}
       {device.heartbeat && !device.heartbeat.monitoring && <small>ბოლო ანგარიშში მონიტორინგი გამორთულია</small>}
       {device.heartbeat && (error || device.connectionState !== 'online' || device.heartbeat.pendingCount > 0) && <small>ბოლო სტატუსი: {callDeviceTime(device.heartbeat.receivedAt)}</small>}
+      <StaleReportHelp device={device} available={!error} showLastCall />
+      <CallReceiverUpdate device={device} />
     </article>)}</div>}
   </section>;
 }

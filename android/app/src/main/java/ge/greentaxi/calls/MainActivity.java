@@ -80,10 +80,15 @@ public final class MainActivity extends Activity {
             });
         }
 
-        TextView brand = text("Green Taxi", 32);
+        String applicationLabel = getApplicationInfo().loadLabel(getPackageManager()).toString();
+        setTitle(applicationLabel);
+        TextView brand = text(applicationLabel, 28);
         brand.setTextColor(GREEN);
         brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         add(content, brand, 0);
+        try {
+            add(content, text("ვერსია " + getPackageManager().getPackageInfo(getPackageName(), 0).versionName, 14), 4);
+        } catch (PackageManager.NameNotFoundException unavailable) { /* Installed package is normally always available. */ }
         add(content, text("ზარებიდან განაცხადების დამატება", 20), 8);
         add(content, text("მხოლოდ მიღებული შემომავალი SIM-ზარები დაემატება ოპერატორის შემოსულ განაცხადებს. საუბარი არ იწერება. მგზავრობის დეტალებს ოპერატორი შეავსებს.", 15), 12);
         add(content, text("Android 11-დან ჩვეულებრივი შემომავალი ზარის განაცხადი ემატება პასუხისას. გაურკვეველ შემთხვევებში ვამოწმებთ ჟურნალს საუბრის დასრულების შემდეგ.", 14), 8);
@@ -342,7 +347,7 @@ public final class MainActivity extends Activity {
     }
 
     private void resumeMonitoring() {
-        if (!settings.enabled() || CallMonitorService.isRunning() || !settings.hasToken()
+        if (!settings.enabled() || !settings.hasToken()
                 || !validServer(settings.server()) || !CallMonitorService.permissionsGranted(this)
                 || !CallMonitorService.notificationsEnabled(this)) return;
         try {
@@ -369,7 +374,7 @@ public final class MainActivity extends Activity {
         access += "\nშეტყობინებები: " + (CallMonitorService.notificationsEnabled(this) ? "ჩართულია" : "გამორთულია");
         permissionsView.setText(access);
         statusView.setText(settings.enabled() && !CallMonitorService.isRunning()
-                ? "მონიტორინგი ამჟამად არ მუშაობს; შეამოწმეთ ნებართვები და ხელახლა ჩართეთ"
+                ? "მონიტორინგი ამჟამად არ მუშაობს; შეამოწმეთ ნებართვები და ხელახლა ჩართეთ\nბოლო შეტყობინება: " + settings.status()
                 : settings.status());
         queueView.setText("გასაგზავნი ზარები: " + queue.pendingCount()
                 + "\nსერვერის მიერ მიღებული ზარები: " + queue.deliveredCount()

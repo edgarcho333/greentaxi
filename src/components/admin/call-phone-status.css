@@ -11,7 +11,7 @@
 .call-phone-connection { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #b7ccbf; border-radius: 7px; background: #f2f6f3; color: #465e4f; font-size: 14px; line-height: 1.5; }
 .call-phone-connection svg { flex-shrink: 0; }
 .call-phone-connection.online { color: #145a33; border-color: #a8ccb5; background: #e8f6ec; }
-.call-phone-connection.stale { color: #79500c; border-color: #ddc38c; background: #fff6e4; }
+.call-phone-connection.stale { color: #4d6256; border-color: #c6d4cb; background: #f1f5f2; }
 .call-phone-connection.disabled { color: #6d7370; border-color: #d5dcd7; background: #f2f4f2; }
 .call-phone-status .call-phone-pending { font-size: 15px; white-space: normal; }
 .call-phone-pending.waiting { color: #825714; }
@@ -22,6 +22,10 @@
 .call-phone-download-link > svg { flex-shrink: 0; }
 .call-phone-download-link:hover { background: #edf8f1; }
 .call-phone-download-link:focus-visible { outline: 3px solid #006d3a; outline-offset: 3px; }
+.call-phone-update { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; width: 100%; color: #42614f; font-size: 14px; line-height: 1.6; }
+.call-phone-update > span { min-width: 0; overflow-wrap: anywhere; }
+.call-phone-report-help { display: flex; flex-direction: column; gap: 3px; width: 100%; color: #617667; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.admin-settings .call-phone-report-help, .admin-settings .call-phone-update { margin-top: 10px; }
 .call-phone-status-note, .call-phone-status-error { margin: 8px 0; font-size: 14px; line-height: 1.6; }
 .call-phone-status-error { display: flex; align-items: flex-start; gap: 8px; color: #8a4232; }
 .call-phone-status-error > svg { flex-shrink: 0; margin-top: 3px; }

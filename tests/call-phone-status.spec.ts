@@ -31,10 +31,10 @@ async function device(name: string): Promise<{ device: CallDevice; token: string
   const paired = await response.json() as { device: CallDevice; token: string };
   deviceIds.push(paired.device.id); return paired;
 }
-async function heartbeat(token: string, pendingCount = 3, lastError: string | null = 'network') {
+async function heartbeat(token: string, pendingCount = 3, lastError: string | null = 'network', appVersion = '0.2.2', monitoring = true) {
   const response = await api.post('/api/integrations/android/heartbeat', {
     headers: { Authorization: `Bearer ${token}` }, data: {
-      appVersion: '0.2.2', androidVersion: '11', monitoring: true, pendingCount,
+      appVersion, androidVersion: '11', monitoring, pendingCount,
       oldestPendingAt: pendingCount ? new Date(Date.now() - 60_000).toISOString() : null, lastError,
     },
   });
@@ -59,6 +59,7 @@ test('phone status separates live queue reports from legacy apps without inventi
   await open(page);
   await expect(phone(page, a02.device.id).locator('[data-call-phone-connection]')).toHaveAttribute('data-connection-state', 'online');
   await expect(phone(page, a02.device.id)).toContainText('ტელეფონი კავშირზეა');
+  await expect(phone(page, a02.device.id).locator('[data-call-phone-stale-help]')).toHaveCount(0);
   await expect(phone(page, a02.device.id).locator('[data-call-phone-pending]')).toHaveText('გასაგზავნია: 3');
   await expect(phone(page, legacy.device.id).locator('[data-call-phone-connection]')).toHaveAttribute('data-connection-state', 'unknown');
   await expect(phone(page, legacy.device.id)).toContainText('სტატუსი უცნობია');
@@ -73,17 +74,45 @@ test('phone status separates live queue reports from legacy apps without inventi
 
 test('a stale phone report is clearly historical instead of claiming its last queue count is live', async ({ page }) => {
   const a02 = await device('Samsung A02 ძველი ანგარიშის ტესტი');
+  const stopped = await device('Samsung A14 გამორთული მონიტორინგის ტესტი');
   await heartbeat(a02.token, 4);
+  await heartbeat(stopped.token, 0, null, '0.2.3', false);
   const rows = await devices();
   const lastReport = new Date(Date.now() - 5 * 60_000).toISOString();
-  const stale = rows.map(row => row.id === a02.device.id ? { ...row, connectionState: 'stale', heartbeat: { ...row.heartbeat!, receivedAt: lastReport } } : row);
+  const stale = rows.map(row => row.id === a02.device.id ? { ...row, connectionState: 'stale', lastSeenAt: new Date(Date.now() - 30_000).toISOString(), heartbeat: { ...row.heartbeat!, receivedAt: lastReport } } : row);
   await page.route('**/api/admin/devices/status', route => route.fulfill({ json: { devices: stale } }));
   await open(page);
   const card = phone(page, a02.device.id);
   await expect(card.locator('[data-call-phone-connection]')).toHaveAttribute('data-connection-state', 'stale');
-  await expect(card).toContainText('კავშირი შესამოწმებელია');
+  await expect(card).toContainText('სტატუსი არ განახლებულა');
+  await expect(card).not.toContainText('კავშირი შესამოწმებელია');
+  await expect(card).not.toContainText('ტელეფონი კავშირზეა');
   await expect(card.locator('[data-call-phone-pending]')).toHaveText('ბოლო ანგარიშში გასაგზავნი: 4');
   await expect(card).toContainText('ბოლო სტატუსი:');
+  await expect(card.locator('[data-call-phone-stale-help]')).toContainText('გახსენით აპი და შეამოწმეთ მონიტორინგი.');
+  await expect(card.locator('[data-call-phone-last-call]')).toContainText('ბოლო მიღებული ზარი:');
+  const stoppedCard = phone(page, stopped.device.id);
+  await expect(stoppedCard.locator('[data-call-phone-connection]')).toHaveAttribute('data-connection-state', 'stale');
+  await expect(stoppedCard.locator('[data-call-phone-connection]')).toHaveText('ბოლო ანგარიშში გამორთულია');
+  await expect(stoppedCard).not.toContainText('სტატუსი არ განახლებულა');
+  await expect(stoppedCard.locator('[data-call-phone-pending]')).toHaveText('ბოლო ანგარიშში გასაგზავნი: 0');
+  await summary(page).screenshot({ path: '/tmp/greentaxi-call-status-stale.png' });
+});
+
+test('a compatible receiver update keeps pairing instructions separate and is hidden for the current version', async ({ page }) => {
+  const previous = await device('Samsung A55 0.2.2 განახლების ტესტი');
+  const current = await device('Samsung A14 0.2.3 განახლების ტესტი');
+  await heartbeat(previous.token, 0, null, '0.2.2');
+  await heartbeat(current.token, 0, null, '0.2.3');
+  await open(page);
+  const previousCard = phone(page, previous.device.id);
+  await expect(previousCard.locator('[data-call-phone-update]')).toContainText('დაკავშირება შენარჩუნდება');
+  await expect(previousCard.getByRole('link', { name: 'აპის განახლება 0.2.3: Green Taxi Samsung 2', exact: true })).toHaveAttribute('href', '/downloads/GreenTaxi-Samsung-2.apk');
+  await expect(previousCard).not.toContainText('ხელახლა დააკავშირეთ ტელეფონი');
+  await expect(previousCard.locator('[data-call-phone-stale-help]')).toHaveCount(0);
+  await expect(phone(page, current.device.id).locator('[data-call-phone-update]')).toHaveCount(0);
+  await expect(phone(page, current.device.id).getByRole('link')).toHaveCount(0);
+  await expect(phone(page, current.device.id).locator('[data-call-phone-connection]')).toHaveAttribute('data-connection-state', 'online');
 });
 
 test('a failed browser refresh stops claiming the phone is online and preserves only its last reported queue', async ({ page }) => {
