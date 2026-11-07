@@ -13,3 +13,11 @@
   .admin-page-header .admin-header-actions{width:100%;min-width:0;justify-content:flex-end}
   .admin-page-header .admin-header-actions .admin-primary{max-width:100%;min-height:44px;white-space:normal}
 }
+
+/* Keep passengers from one visible same-car group recognisable without merging their rows. */
+.admin-booking-table .admin-together-row > td:first-child { border-left: 4px solid #287447; }
+.admin-together-badge { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; max-width: 100%; margin-top: 7px; padding: 5px 7px; border: 1px solid #a1c2ad; border-radius: 7px; color: #205d37; background: #eaf5ee; font-size: 13px; font-weight: 600; line-height: 1.5; }
+.admin-together-badge > svg { flex-shrink: 0; }
+.admin-together-badge > b { font-variant-numeric: tabular-nums; }
+.admin-booking-table .admin-together-row > td:nth-child(2) { white-space: normal; overflow: visible; }
+.admin-together-row .admin-passenger-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }

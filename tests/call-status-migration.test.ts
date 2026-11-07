@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 import { createDatabase, postgresPoolOptions, postgresSql, type Database } from '../server/database.js';
 
 const OLD_CALL_COLUMNS = 'id,device_id,event_id,request_hash,phone,occurred_at,duration_seconds,created_at,deleted_at,booking_id,phase,answered_hash,legacy_hash';
+const PRE020_BOOKING_COLUMNS = 'id,name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,deleted_at,source,created_at,updated_at,booking_type,assigned_vehicle_key,assigned_vehicle_name,caller_phone,luggage,dog,seat_preference';
 
 for (const dialect of ['sqlite', 'postgres'] as const) {
   test(`${dialect} all-incoming migration adds nullable status without changing any existing data, pairing or call links`,
@@ -84,14 +85,14 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
           ? "SELECT table_name AS name FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name"
           : "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
         const tables = tableRows.map(row => String(row.name));
-        const query = (table: string) => `SELECT ${table === 'call_inquiries' ? OLD_CALL_COLUMNS : '*'} FROM ${table}${table === 'schema_versions' ? ' WHERE version<=18' : ''} ORDER BY 1,2`;
+        const query = (table: string) => `SELECT ${table === 'call_inquiries' ? OLD_CALL_COLUMNS : table === 'bookings' ? PRE020_BOOKING_COLUMNS : '*'} FROM ${table}${table === 'schema_versions' ? ' WHERE version<=18' : ''} ORDER BY 1,2`;
         const snapshots = new Map<string, string>();
         for (const table of tables) snapshots.set(table, JSON.stringify(await rows(query(table))));
         sqlite?.close(); sqlite = undefined;
 
         for (let attempt = 0; attempt < 2; attempt++) {
           database = await createDatabase({ dbPath, databaseUrl, production: false });
-          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 19);
+          assert.equal((await database.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 20);
           for (const table of tables) assert.equal(JSON.stringify(await database.prepare(query(table)).all()), snapshots.get(table), `${table} changed during additive status migration`);
           const calls = await database.prepare('SELECT id,call_status,ringing_hash FROM call_inquiries ORDER BY id').all();
           assert.deepEqual(calls.map(row => ({ ...row })), [

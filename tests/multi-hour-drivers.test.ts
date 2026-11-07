@@ -11,6 +11,8 @@ import { createApp } from '../server/index.js';
 
 const DAY = '2030-01-02';
 const PHONE = '555960001';
+// Preserve every pre-group booking field when an artificial version-sixteen fixture is upgraded.
+const pre020BookingColumns = 'id,name,phone,seats,direction,gori_address,pickup_stop_id,pickup_stop_name,didube_name,didube_address,requested_date,requested_time,assigned_date,assigned_time,status,deleted_at,source,created_at,updated_at,booking_type,assigned_vehicle_key,assigned_vehicle_name,caller_phone,luggage,dog,seat_preference';
 async function storage(postgres = !!process.env.TEST_DATABASE_URL) {
   const directory = mkdtempSync(join(tmpdir(), 'greentaxi-multi-hour-'));
   const dbPath = join(directory, 'test.sqlite');
@@ -171,7 +173,7 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
   test(`${dialect} multi-hour migration preserves all version-sixteen rows and backfills declined and working assignments exactly once`, { skip: dialect === 'postgres' && !process.env.TEST_DATABASE_URL }, async () => {
     const stored = await storage(dialect === 'postgres'); let db = await stored.open();
     try {
-      await db.exec('ALTER TABLE call_inquiries DROP COLUMN call_status; ALTER TABLE call_inquiries DROP COLUMN ringing_hash; DROP TABLE call_device_heartbeats; DROP TABLE driver_trip_assignments;');
+      await db.exec('ALTER TABLE bookings DROP COLUMN travel_group_id; ALTER TABLE bookings DROP COLUMN travel_group_order; ALTER TABLE call_inquiries DROP COLUMN call_status; ALTER TABLE call_inquiries DROP COLUMN ringing_hash; DROP TABLE call_device_heartbeats; DROP TABLE driver_trip_assignments;');
       await db.prepare('DELETE FROM schema_versions WHERE version>=?').run(17);
       for (const [id, declined, time] of [[1, 0, '09:30'], [2, 1, '14:00']] as const) {
         await db.prepare("INSERT INTO driver_day_overrides(driver_id,date,declined,assignment_mode,manual_time,updated_at) VALUES (?,?,?,'manual',?,'2030-01-01T00:00:00Z')").run(id, DAY, declined, time);
@@ -180,12 +182,12 @@ for (const dialect of ['sqlite', 'postgres'] as const) {
       await db.prepare("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ('preserved-session',1,1894060800000)").run();
       const tables = ['drivers', 'driver_accounts', 'driver_sessions', 'users', 'sessions', 'settings', 'stops', 'bookings', 'driver_day_overrides', 'audit_log', 'schema_versions'];
       const snapshots = new Map<string, string>();
-      for (const table of tables) snapshots.set(table, JSON.stringify(await db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()));
+      for (const table of tables) snapshots.set(table, JSON.stringify(await db.prepare(`SELECT ${table === 'bookings' ? pre020BookingColumns : '*'} FROM ${table} ORDER BY 1`).all()));
       await db.close();
       for (let pass = 0; pass < 2; pass++) {
         db = await stored.open();
-        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 19);
-        for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await db.prepare(`SELECT * FROM ${table}${table === 'schema_versions' ? ' WHERE version<17' : ''} ORDER BY 1`).all()), snapshot, table);
+        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM schema_versions').get())?.count, 20);
+        for (const [table, snapshot] of snapshots) assert.equal(JSON.stringify(await db.prepare(`SELECT ${table === 'bookings' ? pre020BookingColumns : '*'} FROM ${table}${table === 'schema_versions' ? ' WHERE version<17' : ''} ORDER BY 1`).all()), snapshot, table);
         const assignments = await db.prepare('SELECT driver_id,date,time FROM driver_trip_assignments ORDER BY driver_id').all();
         assert.deepEqual(assignments.map(row => ({ ...row })), [{ driver_id: 1, date: DAY, time: '09:30' }, { driver_id: 2, date: DAY, time: '14:00' }]);
         if (!pass) await db.close();

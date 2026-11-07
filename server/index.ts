@@ -14,6 +14,7 @@ import { mountDriverPortal } from './driver-portal.js';
 import { DriverAccountError, setDriverPhone } from './driver-accounts.js';
 import { archiveManagedDriver, createManagedDriver, updateManagedDriver } from './driver-management.js';
 import { callBookingRelated, readActiveCallBookings, readPreferredBookingPhones } from './call-bookings.js';
+import { assignTravelGroup } from './travel-groups.js';
 
 const scrypt = promisify(scryptCallback);
 const DIRECTIONS: Direction[] = ['gori-tbilisi', 'tbilisi-gori'];
@@ -146,6 +147,7 @@ function booking(row: Row): Booking {
     requestedDate: row.requested_date, requestedTime: row.requested_time,
     assignedDate: row.assigned_date, assignedTime: row.assigned_time,
     status: row.status, source: row.source, deletedAt: row.deleted_at, createdAt: row.created_at, updatedAt: row.updated_at,
+    travelGroupId: row.travel_group_id ?? null, travelGroupOrder: row.travel_group_order ?? null,
   };
 }
 
@@ -808,6 +810,8 @@ export async function createApp(options: Options = {}) {
         await audit('call.convert', req.employee, child.id, { callId: inquiry.id });
         created.push(child);
       }
+      const membership = await assignTravelGroup(db, created.map(child => child.id));
+      created.forEach((child, index) => Object.assign(child, membership[index]));
       // Retain the first-booking sentinel for existing queue/history and old clients.
       await db.prepare('UPDATE call_inquiries SET booking_id=? WHERE id=?').run(created[0].id, inquiry.id);
       return { bookings: created };
@@ -958,6 +962,8 @@ export async function createApp(options: Options = {}) {
       for (const input of inputs) prepared.push(await inputBooking(input, undefined, true));
       const created: Booking[] = [];
       for (const [index, input] of inputs.entries()) created.push(await createBooking(input, req.employee, 'employee', prepared[index]));
+      const membership = await assignTravelGroup(db, created.map(child => child.id));
+      created.forEach((child, index) => Object.assign(child, membership[index]));
       return { bookings: created };
     });
   });

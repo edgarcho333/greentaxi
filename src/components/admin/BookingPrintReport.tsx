@@ -1,5 +1,6 @@
 import { directions, type Booking, type Direction, type Stop } from '../../api';
 import { formatPhone } from '../../../shared/phone';
+import { groupTravelBookings } from '../../../shared/travel-groups';
 import { BookingTypeSummary } from './BookingTypeFields';
 import { BookingOptionsSummary } from './BookingOptions';
 import './booking-print-report.css';
@@ -25,11 +26,16 @@ function PickupAddress({ booking, stops }: { booking: Booking; stops: Stop[] }) 
 }
 
 export default function BookingPrintReport({ bookings, date, direction, time, stops = [] }: BookingPrintReportProps) {
-  const rows = [...bookings].sort((first, second) => {
+  const sortedRows = [...bookings].sort((first, second) => {
     const timeOrder = (first.assignedTime ?? first.requestedTime).localeCompare(second.assignedTime ?? second.requestedTime);
     if (timeOrder) return timeOrder;
     return first.direction.localeCompare(second.direction) || first.id - second.id;
   });
+  const groups = groupTravelBookings(sortedRows);
+  const rows = groups.flatMap(group => group.bookings);
+  const travelGroups = new Map(groups.flatMap(group => group.grouped
+    ? group.bookings.map(booking => [booking.id, { key: group.key, label: `#${String(Math.min(...group.bookings.map(member => member.id))).padStart(4, '0')}` }] as const)
+    : []));
   const seatTotal = rows.reduce((sum, booking) => sum + booking.seats, 0);
 
   return <article className="booking-print-report" lang="ka" aria-label="ჯავშნების დასაბეჭდი სია">
@@ -48,8 +54,8 @@ export default function BookingPrintReport({ bookings, date, direction, time, st
       <colgroup><col className="booking-print-col-address" /><col className="booking-print-col-seats" /><col className="booking-print-col-phone" /><col className="booking-print-col-time" /><col className="booking-print-col-number" /></colgroup>
       <thead><tr><th scope="col">მისამართი</th><th scope="col" className="booking-print-seats">ადგილები</th><th scope="col">ტელეფონის ნომერი</th><th scope="col">საათი</th><th scope="col" className="booking-print-number">ნომერი</th></tr></thead>
       <tbody>
-        {rows.map((booking, index) => <tr key={booking.id}>
-          <td><PickupAddress booking={booking} stops={stops} /></td>
+        {rows.map((booking, index) => <tr key={booking.id} data-print-booking-id={booking.id} data-travel-group={travelGroups.get(booking.id)?.key} className={travelGroups.has(booking.id) ? 'booking-print-together-row' : undefined}>
+          <td><PickupAddress booking={booking} stops={stops} />{travelGroups.has(booking.id) && <span className="booking-print-together" data-print-travel-group>ერთ მანქანაში <b>{travelGroups.get(booking.id)!.label}</b></span>}</td>
           <td className="booking-print-seats">{booking.seats}</td>
           <td className="booking-print-phone">{formatPhone(booking.phone)}{booking.callerPhone && formatPhone(booking.callerPhone) !== formatPhone(booking.phone) && <small className="operator-booking-caller"><span>ზარის ნომერი:</span>{' '}<span className="booking-print-caller-phone">{formatPhone(booking.callerPhone)}</span></small>}</td>
           <td className="booking-print-time">{booking.assignedTime ?? booking.requestedTime}</td>

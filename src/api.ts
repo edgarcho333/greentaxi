@@ -14,6 +14,7 @@ export type DriverDayStatus = { date: string; working: boolean; assignedTime: st
 export type DriverBooking = {
   id: number; name: string; phone: string; direction: Direction; seats: number; bookingType: BookingType;
   callerPhone?: string | null;
+  travelGroupId?: string | null; travelGroupOrder?: number | null;
   luggage: boolean; dog: boolean; seatPreference: SeatPreference | null; goriAddress: string; pickupStopName: string | null;
   didubeName: string; didubeAddress: string; date: string; time: string;
 };
@@ -29,6 +30,7 @@ export type Booking = {
   bookingType?: BookingType; assignedVehicleKey?: string | null; assignedVehicleName?: string | null;
   id: number; name: string; phone: string; seats: number; direction: Direction;
   callerPhone?: string | null; luggage?: boolean; dog?: boolean; seatPreference?: SeatPreference | null;
+  travelGroupId?: string | null; travelGroupOrder?: number | null;
   goriAddress: string; pickupStopId: number | null; pickupStopName: string | null;
   didubeName: string; didubeAddress: string;
   requestedDate: string; requestedTime: string; assignedDate: string | null;

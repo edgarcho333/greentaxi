@@ -74,6 +74,16 @@
 .driver-seat-summary > span { min-width: 0; }
 .driver-seat-summary > strong { margin-left: auto; color: #15562f; font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .driver-booking-list { display: grid; gap: 17px; }
+.driver-travel-group { min-width: 0; padding: 15px; border: 3px solid #277047; border-radius: 14px; background: #e8f4eb; }
+.driver-travel-group-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: #164a2b; font-size: 19px; line-height: 1.5; }
+.driver-travel-group-heading > svg { flex-shrink: 0; }
+.driver-travel-group-heading > span { margin-left: auto; padding: 4px 8px; border: 1px solid #9fbfa9; border-radius: 8px; background: #fff; font-size: 17px; white-space: nowrap; }
+.driver-travel-group-route { margin: 5px 0 13px; color: #365a41; font-size: 16px; }
+.driver-travel-group-pickups { display: grid; gap: 12px; }
+.driver-travel-group-pickups .driver-booking-card { border-width: 1px; background: #fff; }
+.driver-travel-group-pickups .driver-booking-card > header { margin-bottom: 5px; padding-bottom: 6px; }
+.driver-travel-group-pickups .driver-booking-address { margin-top: 8px; margin-bottom: 8px; }
+.driver-travel-group-warning { margin: 0 0 13px; padding: 10px 12px; border: 1px solid #bd8e4c; border-radius: 9px; color: #76491e; background: #fff5df; font-size: 16px; line-height: 1.6; }
 .driver-booking-card { min-width: 0; padding: 18px; border: 2px solid #b1cdb9; border-radius: 12px; background: #fbfdfb; }
 .driver-booking-card > header { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid #c6d9cc; color: #214d32; font-size: 18px; line-height: 1.5; }
 .driver-booking-card h3 { margin: 0 0 10px; color: #19432a; font-size: 19px; line-height: 1.6; overflow-wrap: anywhere; }
@@ -123,6 +133,7 @@
   .driver-attendance-buttons button svg { width: 20px; height: 20px; }
   .driver-feedback { padding: 12px; font-size: 18px; }
   .driver-booking-card { padding: 15px 12px; }
+  .driver-travel-group { padding: 12px 10px; }
   .driver-booking-card h3 { font-size: 19px; }
   .driver-booking-phone { padding: 9px 10px; font-size: 20px; gap: 8px; }
   .driver-booking-address strong { font-size: 18px; }

@@ -3,6 +3,7 @@ import type { Express, Request, RequestHandler, Response } from 'express';
 import type { DriverBooking, DriverDashboard, DriverDayStatus, DriverIdentity, DriverSession } from '../src/api.js';
 import { DRIVER_DIRECTION } from '../shared/driver-rotation.js';
 import { normalizePhone } from '../shared/phone.js';
+import { visibleTravelGroups } from './travel-groups.js';
 import type { Database } from './database.js';
 import { DriverAccountError, normalizeDriverPhone } from './driver-accounts.js';
 
@@ -113,7 +114,7 @@ export function mountDriverPortal(app: Express, dependencies: {
       const status = await days(driver.id, window);
       const selected = status.find(day => day.date === date)!;
       const columns = `id,name,phone,caller_phone,direction,seats,booking_type,luggage,dog,seat_preference,
-        gori_address,pickup_stop_name,didube_name,didube_address,assigned_date,assigned_time`;
+        gori_address,pickup_stop_name,didube_name,didube_address,assigned_date,assigned_time,travel_group_id,travel_group_order`;
       // Exclusivity is local to its exact departure, not the driver's whole day.
       const exclusive = await database.prepare(`SELECT ${columns} FROM bookings
         WHERE direction=? AND assigned_date=? AND status='confirmed' AND deleted_at IS NULL
@@ -125,13 +126,14 @@ export function mountDriverPortal(app: Express, dependencies: {
         AND booking_type IN ('passenger','parcel') ORDER BY assigned_time,id`).all(DRIVER_DIRECTION, date, ...sharedTimes) : [];
       const rows = [...exclusive, ...shared].sort((first, second) => first.assigned_time.localeCompare(second.assigned_time) || first.id - second.id);
       const bookingScope: DriverDashboard['bookingScope'] = exclusive.length ? sharedTimes.length ? 'mixed' : 'assigned' : sharedTimes.length ? 'trip' : 'assigned';
-      const bookings: DriverBooking[] = rows.map(row => ({
+      const bookings: DriverBooking[] = visibleTravelGroups(rows.map(row => ({
         id: row.id, name: row.name, phone: normalizePhone(row.phone) ?? row.phone, direction: row.direction,
         callerPhone: row.caller_phone == null ? null : normalizePhone(row.caller_phone) ?? row.caller_phone,
         seats: row.seats, bookingType: row.booking_type, luggage: row.luggage === 1, dog: row.dog === 1,
         seatPreference: row.seat_preference, goriAddress: row.gori_address, pickupStopName: row.pickup_stop_name,
         didubeName: row.didube_name, didubeAddress: row.didube_address, date: row.assigned_date, time: row.assigned_time,
-      }));
+        travelGroupId: row.travel_group_id ?? null, travelGroupOrder: row.travel_group_order ?? null,
+      })));
       const effective = (await dependencies.configuredTimes(DRIVER_DIRECTION, date)).effective;
       const trips = [...new Set([...(selected.assignedTimes ?? []), ...ownTimes])].sort().map(time => ({ direction: DRIVER_DIRECTION, time, active: selected.working && effective.includes(time) }));
       return { driver: currentDriver, ...window, days: status, date, bookings, bookingScope, trips, trip: trips[0] ?? null };
