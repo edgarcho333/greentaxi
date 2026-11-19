@@ -13,6 +13,13 @@
 .driver-install-instructions ol { display: grid; gap: 12px; margin: 0; padding-left: 23px; font-size: 16px; line-height: 1.75; }
 .driver-install-instructions li { padding-left: 3px; }
 .driver-install-instructions li svg { display: inline; vertical-align: -4px; color: #155e36; }
+.driver-install-browser-note { margin: 0 0 12px; color: #365b43; font-size: 14px; line-height: 1.7; }
+.driver-install-browser-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 15px; }
+.driver-install-browser-picker button { min-width: 0; min-height: 48px; padding: 9px 6px; border: 1px solid #9fbea9; border-radius: 8px; color: #255538; background: #f1f7f3; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.driver-install-browser-picker button[aria-pressed=true] { color: #fff; border-color: #096b3b; background: #096b3b; }
+.driver-install-open-browser { margin-top: 15px; padding-top: 13px; border-top: 1px solid #d4e2d8; }
+.driver-install-browser-link { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; padding: 10px 12px; border: 1px solid #9fbea9; border-radius: 9px; color: #215c37; background: #edf6f0; font-size: 15px; font-weight: 600; line-height: 1.5; text-align: center; }
+.driver-install-browser-link svg { flex-shrink: 0; }
 .driver-install-note { margin: 13px 0; color: #466351; font-size: 14px; line-height: 1.7; }
 .driver-install-understood { width: 100%; background: #eff6f1; color: #215c37; border-color: #9fbea9; }
 .driver-install-reopen { width: 100%; max-width: 500px; margin: 0 auto 12px; }

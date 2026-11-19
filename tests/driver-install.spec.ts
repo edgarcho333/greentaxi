@@ -92,6 +92,37 @@ test('the driver keeps one install offer after logging in', async ({ page }) => 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
+test('Chrome manual instructions cover installation and shortcut creation in a normal tab', async ({ page }) => {
+  await page.goto('/driver');
+  await offer(page).getByRole('button', { name: 'როგორ დავამატო?', exact: true }).click();
+  const browsers = offer(page).getByRole('group', { name: 'Android ბრაუზერი' });
+  await expect(browsers.getByRole('button', { name: 'Chrome', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(offer(page)).toContainText('არა ინკოგნიტო');
+  await expect(offer(page).locator('ol')).toContainText('Add to Home screen');
+  await expect(offer(page).locator('ol')).toContainText('Create shortcut');
+  await expect(offer(page)).toContainText('თუ გვერდი სხვა აპში გაიხსნა');
+  // A local HTTP test origin must not generate an Android intent pretending to be HTTPS.
+  await expect(offer(page).getByRole('link', { name: 'გახსნა Chrome-ში', exact: true })).toHaveCount(0);
+});
+
+test.describe('Samsung Internet', () => {
+  test.use({ userAgent: `${android} SamsungBrowser/27.0` });
+  test('defaults to Samsung bottom-menu instructions and lets a driver choose Chrome', async ({ page }) => {
+    await page.goto('/driver');
+    await offer(page).getByRole('button', { name: 'როგორ დავამატო?', exact: true }).click();
+    const browsers = offer(page).getByRole('group', { name: 'Android ბრაუზერი' });
+    await expect(browsers.getByRole('button', { name: 'Samsung Internet', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(offer(page).locator('ol')).toContainText('ქვედა');
+    await expect(offer(page).locator('ol')).toContainText('Add page to');
+    await expect(offer(page).locator('ol')).toContainText('Home screen');
+    await browsers.getByRole('button', { name: 'Chrome', exact: true }).click();
+    await expect(browsers.getByRole('button', { name: 'Chrome', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(offer(page).locator('ol')).toContainText('Create shortcut');
+    await expect(offer(page).locator('ol')).not.toContainText('Add page to');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+});
+
 test.describe('iPhone', () => {
   test.use({ userAgent: iphone });
   test('Safari instructions work without an Android prompt or APK download', async ({ page }) => {
@@ -99,6 +130,7 @@ test.describe('iPhone', () => {
     await offer(page).getByRole('button', { name: 'როგორ დავამატო?', exact: true }).click();
     await expect(offer(page).getByText('Safari', { exact: true })).toBeVisible();
     await expect(offer(page)).toContainText('Add to Home Screen');
+    await expect(offer(page).getByRole('group', { name: 'Android ბრაუზერი' })).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'Android აპის ჩამოტვირთვა' })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });

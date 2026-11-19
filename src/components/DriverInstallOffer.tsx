@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, HousePlus, MoreVertical, Share, Smartphone, X } from 'lucide-react';
+import { Download, ExternalLink, HousePlus, Menu, MoreVertical, Share, Smartphone, X } from 'lucide-react';
+import { androidChromeIntent } from '../../shared/driver-install';
 import './driver-install.css';
 
 type InstallPrompt = Event & {
@@ -105,15 +106,19 @@ export function useDriverInstall() {
 export type DriverInstallState = ReturnType<typeof useDriverInstall>;
 
 export default function DriverInstallOffer({ install }: { install: DriverInstallState }) {
+  const [androidBrowser, setAndroidBrowser] = useState<'chrome' | 'samsung'>(() => /SamsungBrowser\//i.test(navigator.userAgent) ? 'samsung' : 'chrome');
   if (!install.device || install.installed) return null;
   if (install.dismissed) return <div className="driver-install-reopen"><button type="button" onClick={install.reopen}><HousePlus size={19} />მთავარ ეკრანზე დამატება</button></div>;
   const ios = install.device === 'ios';
+  const chromeIntent = ios ? null : androidChromeIntent(window.location.origin);
   return <section className="driver-install-offer" aria-label="მთავარ ეკრანზე დამატება" data-driver-install-offer>
     <div className="driver-install-heading"><Smartphone size={24} /><h2>GreenTaxi მთავარ ეკრანზე</h2><button type="button" className="driver-install-dismiss" aria-label="დამატების შეთავაზების დახურვა" onClick={install.dismiss}><X size={23} /></button></div>
     <p>მძღოლის გვერდი ერთი შეხებით გახსენით — როგორც აპი.</p>
     <button type="button" className="driver-install-action" aria-expanded={install.instructions} aria-controls="driver-install-instructions" disabled={install.busy} onClick={() => void install.install()}><HousePlus size={22} />{install.busy ? 'იხსნება…' : ios || !install.canPrompt ? 'როგორ დავამატო?' : 'დამატება'}</button>
     {install.instructions && <div id="driver-install-instructions" className="driver-install-instructions">
-      <ol>{ios ? <><li>გახსენით ეს გვერდი <strong>Safari</strong>-ში.</li><li>დააჭირეთ <Share size={20} aria-hidden="true" /> <strong>გაზიარებას</strong> (Share).</li><li>აირჩიეთ <strong>მთავარ ეკრანზე დამატება</strong> (Add to Home Screen), შემდეგ — <strong>დამატება</strong> (Add).</li></> : <><li>გახსენით ეს გვერდი <strong>Chrome</strong>-ში ან <strong>Samsung Internet</strong>-ში.</li><li>გახსენით ბრაუზერის <MoreVertical size={20} aria-hidden="true" /> <strong>მენიუ</strong>.</li><li>აირჩიეთ <strong>მთავარ ეკრანზე დამატება</strong> ან <strong>აპის დაყენება</strong> და დაადასტურეთ.</li></>}</ol>
+      {!ios && <><p className="driver-install-browser-note">გამოიყენეთ ჩვეულებრივი ჩანართი — არა ინკოგნიტო ან საიდუმლო რეჟიმი.</p><div className="driver-install-browser-picker" role="group" aria-label="Android ბრაუზერი"><button type="button" aria-pressed={androidBrowser === 'chrome'} onClick={() => setAndroidBrowser('chrome')}>Chrome</button><button type="button" aria-pressed={androidBrowser === 'samsung'} onClick={() => setAndroidBrowser('samsung')}>Samsung Internet</button></div></>}
+      <ol>{ios ? <><li>გახსენით ეს გვერდი <strong>Safari</strong>-ში.</li><li>დააჭირეთ <Share size={20} aria-hidden="true" /> <strong>გაზიარებას</strong> (Share).</li><li>აირჩიეთ <strong>მთავარ ეკრანზე დამატება</strong> (Add to Home Screen), შემდეგ — <strong>დამატება</strong> (Add).</li></> : androidBrowser === 'samsung' ? <><li>გახსენით გვერდი <strong>Samsung Internet</strong>-ში.</li><li>დააჭირეთ ქვედა <Menu size={20} aria-hidden="true" /> <strong>მენიუს</strong>.</li><li>აირჩიეთ <strong>გვერდის დამატება</strong> (Add page to), შემდეგ — <strong>მთავარი ეკრანი</strong> (Home screen).</li><li>დააჭირეთ <strong>დამატებას</strong> (Add).</li></> : <><li>გახსენით გვერდი <strong>Chrome</strong>-ში.</li><li>დააჭირეთ <MoreVertical size={20} aria-hidden="true" /> <strong>მენიუს</strong>.</li><li>აირჩიეთ <strong>მთავარ ეკრანზე დამატება</strong> (Add to Home screen) ან <strong>აპის დაყენება</strong> (Install app).</li><li>დაადასტურეთ <strong>დაყენება</strong> (Install) ან <strong>მალსახმობის შექმნა</strong> (Create shortcut / Add).</li></>}</ol>
+      {!ios && <div className="driver-install-open-browser"><p className="driver-install-browser-note">თუ გვერდი სხვა აპში გაიხსნა ან ეს პუნქტები არ ჩანს, გახსენით Chrome-ში.</p>{chromeIntent && <a className="driver-install-browser-link" href={chromeIntent}><ExternalLink size={20} />გახსნა Chrome-ში</a>}</div>}
       <p className="driver-install-note">შესასვლელად ისევ თქვენი ტელეფონის ნომერი გამოიყენეთ. ჯავშნების სანახავად ინტერნეტია საჭირო.</p>
       <button type="button" className="driver-install-understood" onClick={install.closeInstructions}>გასაგებია</button>
     </div>}
