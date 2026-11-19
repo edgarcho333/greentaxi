@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, CalendarDays, Check, CheckCircle2, Clock3, Copy, LoaderCircle, MapPin, Pencil, Plus, RotateCcw, Save, ShieldCheck, Smartphone, UserRoundPlus, X } from 'lucide-react';
+import { AlertCircle, CalendarDays, Check, CheckCircle2, Clock3, Copy, LoaderCircle, MapPin, Pencil, Plus, Printer, RotateCcw, Save, ShieldCheck, Smartphone, UserRoundPlus, X } from 'lucide-react';
 import { directions, request, today, type CallDevice, type Direction, type Schedule, type Stop, type User } from '../../api';
 import DriverRoster from './DriverRoster';
+import DriversPrint from './DriversPrint';
 import { CallDeviceConnectionBadge, CallDeviceTelemetry, callDeviceTime, useCallDevices } from './CallPhoneStatus';
 import './settings.css';
 
@@ -47,6 +48,7 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
   const [scheduleFeedback, setScheduleFeedback] = useState<Feedback>(null);
   const [driverRefresh, setDriverRefresh] = useState(0);
   const [driverBusy, setDriverBusy] = useState(false);
+  const [driversPrintOpen, setDriversPrintOpen] = useState(false);
   const [stops, setStops] = useState<Stop[]>([]);
   const [locations, setLocations] = useState<LocationSettings>({ didubeName: '', didubeAddress: '' });
   const [stopDraft, setStopDraft] = useState({ name: '', address: '' });
@@ -242,6 +244,7 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
         {disabledWithOrders.length > 0 && <div className="admin-config-warning"><AlertCircle size={18} /><span>გამორთულ დროებზე დარჩენილია ჯავშნები: {disabledWithOrders.map(slot => `${slot.time} (${slot.bookingCount})`).join(', ')}. გადაიტანეთ ისინი მოქმედ დროზე ჯავშნების გვერდიდან.</span></div>}
         <div className="admin-config-footnote"><ShieldCheck size={16} />განრიგის შეცვლა არსებულ ჯავშნებს არ წაშლის.</div>
       </> : null}
+      <div className="admin-config-driver-print"><div><h3>მძღოლების სრული სია</h3><p>ყველა მძღოლის ტელეფონის ნომერი და ტევადობა მუდმივი რიგით.</p></div><button type="button" className="admin-config-button secondary" disabled={driverBusy || !!scheduleBusy} onClick={() => setDriversPrintOpen(true)}><Printer size={23} />ყველა მძღოლის ბეჭდვა</button></div>
       <DriverRoster direction={direction} date={date} refreshKey={driverRefresh} disabled={!!scheduleBusy} onBusyChange={setDriverBusy} onChange={onChange} />
     </section>
 
@@ -290,5 +293,6 @@ export default function AdminSettings({ onChange }: { onChange: () => void }) {
       <FeedbackMessage feedback={staffFeedback} />
       <div className="admin-config-staff-columns"><div><div className="admin-config-access-note"><ShieldCheck size={20} /><div><strong>ყველას თანაბარი წვდომა აქვს</strong><p>ყველა თანამშრომელს შეუძლია ჯავშნების, განრიგისა და პარამეტრების მართვა.</p></div></div>{staffLoading ? <div className="admin-config-loading">{loadingIcon}თანამშრომლები იტვირთება…</div> : <div className="admin-config-user-list">{users.map(user => <div className="admin-config-user" key={user.id}><span className="admin-config-avatar">{user.name.charAt(0)}</span><div><strong>{user.name}</strong><span>{user.login}</span></div><span className="admin-config-status">ადმინისტრატორი</span></div>)}</div>}</div><form className="admin-config-staff-form" onSubmit={addStaff}><h3>ახალი თანამშრომელი</h3><label>სახელი<input value={staffDraft.name} onChange={event => setStaffDraft({ ...staffDraft, name: event.target.value })} autoComplete="off" minLength={2} maxLength={100} required disabled={staffBusy} /></label><div className="admin-config-input-row"><label>მომხმარებლის სახელი<input value={staffDraft.login} onChange={event => setStaffDraft({ ...staffDraft, login: event.target.value })} autoComplete="off" spellCheck={false} minLength={3} maxLength={64} pattern="[a-zA-Z0-9_.-]+" required disabled={staffBusy} /></label><label>პაროლი<input type="password" value={staffDraft.password} onChange={event => setStaffDraft({ ...staffDraft, password: event.target.value })} autoComplete="new-password" minLength={10} maxLength={512} required disabled={staffBusy} /></label></div><span className="admin-config-field-help">პაროლი უნდა შეიცავდეს მინიმუმ 10 სიმბოლოს.</span><button type="submit" className="admin-config-button primary" disabled={staffBusy || staffDraft.name.trim().length < 2 || staffDraft.login.trim().length < 3 || staffDraft.password.length < 10}>{staffBusy ? loadingIcon : <UserRoundPlus size={16} />}თანამშრომლის დამატება</button></form></div>
     </section>
+    {driversPrintOpen && <DriversPrint onClose={() => setDriversPrintOpen(false)} />}
   </div>;
 }

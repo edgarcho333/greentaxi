@@ -1,0 +1,26 @@
+.admin-dialog.admin-drivers-print-dialog { width: min(1100px, calc(100vw - 48px)); max-width: 1100px; min-width: 0; max-height: calc(100dvh - 48px); color: #173f29; font-family: var(--font-body); }
+.admin-dialog.admin-drivers-print-dialog > header { gap: 18px; align-items: flex-start; }
+.admin-dialog.admin-drivers-print-dialog > header h2 { font-size: 23px; line-height: 1.5; }
+.admin-dialog.admin-drivers-print-dialog > header p { max-width: 720px; color: #486551; font-size: 15px; line-height: 1.7; }
+.admin-drivers-print-dialog .admin-icon-button { flex: 0 0 48px; width: 48px; height: 48px; color: #245238; border-color: #a3c0ad; }
+.admin-drivers-print-body { min-width: 0; padding: 20px 25px; }
+.admin-drivers-print-preview { max-width: 100%; max-height: 55vh; overflow: auto; border: 1px solid #d6e2d9; border-radius: 8px; background: #f4f7f4; }
+.admin-drivers-print-state { display: flex; align-items: center; justify-content: center; flex-direction: column; min-height: 230px; gap: 15px; color: #3d654a; font-size: 17px; text-align: center; }
+.admin-drivers-print-state p { margin: 0; }
+.admin-drivers-print-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 25px; border-top: 1px solid #dce7df; background: #f9fcfa; }
+.admin-drivers-print-footer > span { color: #587561; font-size: 13px; }
+.admin-drivers-print-footer > div { min-width: 0; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.admin-drivers-print-footer button { min-height: 52px; padding: 12px 17px; font-size: 17px; }
+.admin-drivers-print-frame { position: fixed; left: -10000px; top: 0; width: 794px; height: 1123px; border: 0; pointer-events: none; }
+@media (max-width: 760px) {
+  .admin-dialog.admin-drivers-print-dialog { width: calc(100vw - 28px); max-height: calc(100dvh - 28px); }
+  .admin-dialog.admin-drivers-print-dialog > header { padding: 20px 17px; gap: 10px; }
+  .admin-dialog.admin-drivers-print-dialog > header h2 { font-size: 21px; }
+  .admin-dialog.admin-drivers-print-dialog > header p { font-size: 14px; }
+  .admin-drivers-print-body { padding: 16px; }
+  .admin-drivers-print-preview { max-height: 48vh; }
+  .admin-drivers-print-footer { padding: 15px 16px; }
+  .admin-drivers-print-footer > span { display: none; }
+  .admin-drivers-print-footer > div { flex: 1; }
+  .admin-drivers-print-footer button { flex: 1 1 125px; font-size: 16px; }
+}

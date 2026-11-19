@@ -1,0 +1,25 @@
+.driver-install-offer { width: 100%; max-width: 500px; padding: 16px; margin-bottom: 17px; border: 1px solid #9fbea9; border-radius: 13px; background: #e4f1e8; color: #214d32; }
+.driver-login-page .driver-install-offer { margin-bottom: 0; }
+.driver-install-heading { display: flex; align-items: center; gap: 9px; }
+.driver-install-heading > svg { flex-shrink: 0; color: #096b3b; }
+.driver-install-heading h2 { flex: 1; min-width: 0; margin: 0; color: #16472b; font-size: 17px; line-height: 1.5; }
+.driver-install-dismiss { display: grid; flex-shrink: 0; place-items: center; width: 44px; height: 44px; margin: -8px -8px -8px 0; padding: 0; border: 0; border-radius: 9px; background: transparent; color: #365f45; }
+.driver-install-dismiss:hover { background: #cfe5d6; }
+.driver-install-offer > p { margin: 8px 0 13px; font-size: 15px; line-height: 1.7; }
+.driver-install-action, .driver-install-understood { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; padding: 10px 16px; border: 1px solid #096b3b; border-radius: 9px; background: #096b3b; color: #fff; font-size: 16px; font-weight: 600; line-height: 1.5; }
+.driver-install-action { width: 100%; }
+.driver-install-action:hover:not(:disabled) { background: #07542e; }
+.driver-install-instructions { margin-top: 15px; padding: 14px; border: 1px solid #bad1c2; border-radius: 10px; background: #fff; }
+.driver-install-instructions ol { display: grid; gap: 12px; margin: 0; padding-left: 23px; font-size: 16px; line-height: 1.75; }
+.driver-install-instructions li { padding-left: 3px; }
+.driver-install-instructions li svg { display: inline; vertical-align: -4px; color: #155e36; }
+.driver-install-note { margin: 13px 0; color: #466351; font-size: 14px; line-height: 1.7; }
+.driver-install-understood { width: 100%; background: #eff6f1; color: #215c37; border-color: #9fbea9; }
+.driver-install-reopen { width: 100%; max-width: 500px; margin: 0 auto 12px; }
+.driver-login-page .driver-install-reopen { margin-bottom: 0; }
+.driver-install-reopen button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid #b6cebf; border-radius: 9px; color: #2e5c3e; background: #edf5ef; font-size: 14px; line-height: 1.5; }
+@media (max-width: 380px) {
+  .driver-install-offer { padding: 13px; }
+  .driver-install-heading h2 { font-size: 16px; }
+  .driver-install-instructions { padding: 12px; }
+}

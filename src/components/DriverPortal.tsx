@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowLeft, ArrowRight, CarFront, CheckCircle2, Clock3, Dog, Download, Leaf, LoaderCircle, LogOut, Luggage, MapPin, Package, Phone, RefreshCw, UsersRound, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CarFront, CheckCircle2, Clock3, Dog, Leaf, LoaderCircle, LogOut, Luggage, MapPin, Package, Phone, RefreshCw, UsersRound, X } from 'lucide-react';
 import { ApiError, directions, request, type DriverBooking, type DriverDashboard, type DriverDayStatus, type DriverIdentity, type DriverSession } from '../api';
 import { formatPhone, normalizePhone, phoneDialNumber } from '../../shared/phone';
 import { groupTravelBookings, type TravelBookingGroup } from '../../shared/travel-groups';
+import DriverInstallOffer, { DriverAndroidDownload, useDriverInstall, type DriverInstallState } from './DriverInstallOffer';
 import './driver-portal.css';
 
 type Calendar = { today: string; tomorrow: string };
@@ -13,6 +14,7 @@ const dateLabel = (date: string) => date.split('-').reverse().join('/');
 const unauthorized = (cause: unknown) => cause instanceof ApiError && cause.status === 401;
 
 export default function DriverPortal() {
+  const install = useDriverInstall();
   const [auth, setAuth] = useState<Auth>({ state: 'loading' });
   const [notice, setNotice] = useState('');
   const controller = useRef<AbortController | null>(null);
@@ -37,20 +39,20 @@ export default function DriverPortal() {
   useEffect(() => { mounted.current = true; void loadSession(); return () => { mounted.current = false; sequence.current++; controller.current?.abort(); }; }, [loadSession]);
   const expired = useCallback(() => { setNotice('სესია დასრულდა. შედით ხელახლა.'); setAuth({ state: 'anonymous' }); }, []);
 
-  if (auth.state === 'authenticated') return <DriverHome key={auth.session.driver.id} session={auth.session} onExpired={expired} onLogout={async () => {
+  if (auth.state === 'authenticated') return <DriverHome key={auth.session.driver.id} session={auth.session} install={install} onExpired={expired} onLogout={async () => {
     try { await request('/driver/auth/logout', { method: 'POST', body: '{}' }); }
     catch (cause) { if (!unauthorized(cause)) throw cause; }
     setNotice(''); setAuth({ state: 'anonymous' });
   }} />;
   if (auth.state === 'loading' || auth.state === 'error') return <main className="driver-portal driver-portal-loading"><DriverBrand />{auth.state === 'loading' ? <p role="status"><LoaderCircle size={30} className="driver-spin" />იტვირთება…</p> : <><p className="driver-feedback error" role="alert">{auth.message}</p><button className="driver-button" onClick={() => void loadSession()}><RefreshCw size={23} />ხელახლა ცდა</button></>}</main>;
-  return <DriverLogin notice={notice} onLogin={session => { setNotice(''); acceptSession(session); }} />;
+  return <DriverLogin notice={notice} install={install} onLogin={session => { setNotice(''); acceptSession(session); }} />;
 }
 
 function DriverBrand() {
   return <a href="/" className="driver-brand" aria-label="GreenTaxi — მთავარი გვერდი"><Leaf size={31} /><span><strong>Green</strong>Taxi</span></a>;
 }
 
-function DriverLogin({ notice, onLogin }: { notice: string; onLogin: (session: DriverSession) => void }) {
+function DriverLogin({ notice, install, onLogin }: { notice: string; install: DriverInstallState; onLogin: (session: DriverSession) => void }) {
   const [phone, setPhone] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -69,14 +71,14 @@ function DriverLogin({ notice, onLogin }: { notice: string; onLogin: (session: D
     } catch (cause) { if (mounted.current) setError(message(cause)); }
     finally { saving.current = false; if (mounted.current) setBusy(false); }
   }
-  return <main className="driver-portal driver-login-page"><DriverBrand /><section className="driver-login-card" aria-labelledby="driver-login-title"><span className="driver-login-icon"><CarFront size={34} /></span><h1 id="driver-login-title">მძღოლის შესვლა</h1><p id="driver-login-phone-help">შეიყვანეთ ადმინისტრატორთან მითითებული ტელეფონის ნომერი.</p>{notice && <p className="driver-feedback" role="status">{notice}</p>}<form onSubmit={submit} aria-busy={busy}>
+  return <main className="driver-portal driver-login-page"><DriverBrand /><DriverInstallOffer install={install} /><section className="driver-login-card" aria-labelledby="driver-login-title"><span className="driver-login-icon"><CarFront size={34} /></span><h1 id="driver-login-title">მძღოლის შესვლა</h1><p id="driver-login-phone-help">შეიყვანეთ ადმინისტრატორთან მითითებული ტელეფონის ნომერი.</p>{notice && <p className="driver-feedback" role="status">{notice}</p>}<form onSubmit={submit} aria-busy={busy}>
     <label>ტელეფონის ნომერი<span className="driver-login-input"><Phone size={23} /><input aria-label="ტელეფონის ნომერი" aria-describedby={`driver-login-phone-help${error ? ' driver-login-phone-error' : ''}`} aria-invalid={error ? true : undefined} type="tel" inputMode="tel" value={phone} onChange={event => { setPhone(event.target.value); setError(''); }} onBlur={() => setPhone(value => formatPhone(value))} autoComplete="tel" placeholder="599 12 34 56" maxLength={32} required disabled={busy} /></span></label>
     {error && <p id="driver-login-phone-error" className="driver-feedback error" role="alert">{error}</p>}
     <button type="submit" className="driver-button primary driver-login-submit" disabled={busy}>{busy ? <LoaderCircle size={24} className="driver-spin" /> : <ArrowRight size={24} />}შესვლა</button>
-  </form></section><a className="driver-download-link" href="/downloads/GreenTaxi-Driver-Android.apk" download><Download size={24} />Android აპის ჩამოტვირთვა</a><a className="driver-back-link" href="/"><ArrowLeft size={22} />მთავარ გვერდზე დაბრუნება</a></main>;
+  </form></section><DriverAndroidDownload device={install.device} /><a className="driver-back-link" href="/"><ArrowLeft size={22} />მთავარ გვერდზე დაბრუნება</a></main>;
 }
 
-function DriverHome({ session, onExpired, onLogout }: { session: DriverSession & { driver: DriverIdentity }; onExpired: () => void; onLogout: () => Promise<void> }) {
+function DriverHome({ session, install, onExpired, onLogout }: { session: DriverSession & { driver: DriverIdentity }; install: DriverInstallState; onExpired: () => void; onLogout: () => Promise<void> }) {
   const [identity, setIdentity] = useState(session.driver);
   const [calendar, setCalendar] = useState<Calendar>({ today: session.today, tomorrow: session.tomorrow });
   const [selectedDay, setSelectedDay] = useState<0 | 1>(0);
@@ -197,6 +199,7 @@ function DriverHome({ session, onExpired, onLogout }: { session: DriverSession &
   }
 
   return <main className="driver-portal driver-home" data-driver-portal><header className="driver-page-header"><DriverBrand /><button type="button" className="driver-button driver-logout" onClick={() => void logout()} disabled={loggingOut || savingDate !== null}><LogOut size={23} />გამოსვლა</button></header><div className="driver-welcome"><span className="driver-welcome-icon"><CarFront size={31} /></span><div><h1>მძღოლის გვერდი</h1><p data-driver-name>{identity.name}</p></div></div>
+    <DriverInstallOffer install={install} />
     {logoutError && <p className="driver-feedback error" role="alert">{logoutError}</p>}
     <section className="driver-section driver-attendance" aria-label="სამუშაო დღე" data-driver-attendance data-date={attendanceDate} aria-busy={savingDate !== null}><DayButtons calendar={calendar} value={selectedDay} onChange={day => { setSelectedDay(day); setHourSelection(null); setFeedback(null); }} label="დღეები" disabled={savingDate !== null || loggingOut} /><div className="driver-section-heading driver-work-question"><h2>იმუშავებთ?</h2></div>
       {!dayStatus ? <p className="driver-loading-status" role="status"><LoaderCircle size={24} className="driver-spin" />მონაწილეობა იტვირთება…</p> : <><div className="driver-attendance-buttons" role="group" aria-label="მონაწილეობა"><button type="button" className="driver-working" aria-pressed={dayStatus.working} disabled={savingDate !== null || loggingOut} onClick={() => void setWorking(true)}><CheckCircle2 size={28} /><span>ვმუშაობ</span></button><button type="button" className="driver-not-working" aria-pressed={!dayStatus.working} disabled={savingDate !== null || loggingOut} onClick={() => void setWorking(false)}><X size={29} /><span>არ ვმუშაობ</span></button></div><p className="driver-attendance-current" role="status">{savingDate ? 'ინახება…' : dayStatus.working ? 'ამ დღეს მუშაობთ.' : 'ამ დღეს არ მუშაობთ.'}</p></>}
